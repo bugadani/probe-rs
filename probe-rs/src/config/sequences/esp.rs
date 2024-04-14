@@ -51,6 +51,7 @@ impl EspFlashSizeDetector {
             self.attach_fn,
             sequence,
         )?;
+        tracing::info!("Flash attached");
         detect_flash_size_esp32(interface, self.spiflash_peripheral)
     }
 

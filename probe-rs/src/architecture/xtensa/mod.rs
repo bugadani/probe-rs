@@ -303,7 +303,7 @@ impl<'probe> CoreInterface for Xtensa<'probe> {
         self.sequence
             .reset_system_and_halt(self.interface, Duration::from_millis(500))?;
 
-        self.run()
+        Ok(self.interface.resume()?)
     }
 
     fn reset_and_halt(&mut self, timeout: Duration) -> Result<CoreInformation, Error> {

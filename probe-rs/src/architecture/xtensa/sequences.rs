@@ -1,7 +1,7 @@
 use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use crate::architecture::xtensa::communication_interface::{
-    ProgramStatus, XtensaCommunicationInterface, XtensaError,
+    ProgramStatus, XtensaCommunicationInterface,
 };
 
 /// A interface to operate debug sequences for Xtensa targets.
@@ -29,8 +29,10 @@ pub trait XtensaDebugSequence: Send + Sync + Debug {
         &self,
         interface: &mut XtensaCommunicationInterface,
         timeout: Duration,
-    ) -> Result<(), XtensaError> {
+    ) -> Result<(), crate::Error> {
         interface.reset_and_halt(timeout)?;
+
+        self.on_connect(interface)?;
 
         // TODO: this is only necessary to run code, so this might not be the best place
         // Make sure the CPU is in a known state and is able to run code we download.

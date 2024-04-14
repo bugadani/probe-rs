@@ -159,7 +159,7 @@ impl Xdm {
     }
 
     #[tracing::instrument(skip(self))]
-    fn init(&mut self) -> Result<(), XtensaError> {
+    pub(crate) fn init(&mut self) -> Result<(), XtensaError> {
         self.probe.tap_reset()?;
 
         let mut pwr_control = PowerControl(0);
@@ -171,7 +171,7 @@ impl Xdm {
         // Wakeup and enable the JTAG
         self.pwr_write(PowerDevice::PowerControl, pwr_control.0)?;
 
-        tracing::trace!("Waiting for power domain to turn on");
+        tracing::debug!("Waiting for power domain to turn on");
         let now = std::time::Instant::now();
         loop {
             let bits = self.pwr_write(PowerDevice::PowerStat, 0)?;

@@ -71,6 +71,9 @@ pub trait RiscvDebugSequence: Send + Sync + Debug {
         timeout: Duration,
     ) -> Result<(), crate::Error> {
         interface.reset_hart_and_halt(timeout)?;
+
+        self.on_connect(interface)?;
+
         Ok(())
     }
 }

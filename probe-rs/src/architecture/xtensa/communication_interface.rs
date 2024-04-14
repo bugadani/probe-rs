@@ -101,7 +101,7 @@ struct XtensaCommunicationInterfaceState {
 /// An interface that implements controls for Xtensa cores.
 pub struct XtensaCommunicationInterface {
     /// The Xtensa debug module
-    pub(super) xdm: Xdm,
+    pub(crate) xdm: Xdm,
     state: XtensaCommunicationInterfaceState,
 
     hw_breakpoint_num: u32,
@@ -496,6 +496,10 @@ impl XtensaCommunicationInterface {
 
         self.state.saved_registers.clear();
         self.xdm.execute()
+    }
+
+    pub(crate) fn clear_register_cache(&mut self) {
+        self.state.saved_registers.clear();
     }
 
     fn read_memory(&mut self, address: u64, mut dst: &mut [u8]) -> Result<(), XtensaError> {
