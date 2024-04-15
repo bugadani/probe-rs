@@ -76,7 +76,7 @@ impl XtensaDebugSequence for ESP32 {
 
     fn reset_system_and_halt(
         &self,
-        interface: &mut XtensaCommunicationInterface,
+        session: &mut Session,
         timeout: Duration,
     ) -> Result<(), crate::Error> {
         interface.reset_and_halt(timeout)?;
@@ -137,13 +137,14 @@ impl XtensaDebugSequence for ESP32 {
 
         // TODO: this is only necessary to run code, so this might not be the best place
         // Make sure the CPU is in a known state and is able to run code we download.
-        interface.write_register({
-            let mut ps = ProgramStatus(0);
-            ps.set_intlevel(1);
-            ps.set_user_mode(true);
-            ps.set_woe(true);
-            ps
-        })?;
+
+        let mut ps = ProgramStatus(0);
+        ps.set_intlevel(1);
+        ps.set_user_mode(true);
+        ps.set_woe(true);
+        session
+            .core(0)?
+            .write_core_reg(ProgramStatus::register(), ps.0)?;
 
         Ok(())
     }

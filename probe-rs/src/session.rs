@@ -357,7 +357,7 @@ impl Session {
             core.halt(Duration::from_millis(100))?;
         }
 
-        session.halted_access(|sess| sequence_handle.on_connect(sess.get_xtensa_interface()?))?;
+        session.halted_access(|sess| sequence_handle.on_connect(sess))?;
 
         Ok(session)
     }
@@ -440,6 +440,41 @@ impl Session {
             .get_mut(core_index)
             .ok_or(Error::CoreNotFound(core_index))?;
         self.interface.attach(&self.target, combined_state)
+    }
+
+    pub(crate) fn cores<'iter, 'core>(
+        &'iter mut self,
+    ) -> impl Iterator<Item = Result<Core<'core>, Error>> + 'iter
+    where
+        'core: 'iter,
+    {
+        struct CoreIter<'iter, 'core> {
+            session: &'iter mut Session,
+            index: usize,
+            _core: std::marker::PhantomData<&'core ()>,
+        }
+
+        impl<'core> Iterator for CoreIter<'_, 'core> {
+            type Item = Result<Core<'core>, Error>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let index = self.index;
+
+                if index == self.session.cores.len() {
+                    return None;
+                }
+
+                self.index += 1;
+
+                Some(self.session.core(index))
+            }
+        }
+
+        CoreIter {
+            session: self,
+            index: 0,
+            _core: std::marker::PhantomData,
+        }
     }
 
     /// Read available trace data from the specified data sink.

@@ -263,6 +263,18 @@ impl TryFrom<RegisterId> for Register {
     }
 }
 
+impl Into<RegisterId> for Register {
+    fn into(self) -> RegisterId {
+        let bytes = match self {
+            Register::Cpu(reg) => [0, reg as u8],
+            Register::Special(reg) => [1, reg as u8],
+            Register::CurrentPc => [0, 0xFF],
+            Register::CurrentPs => [1, 0xFF],
+        };
+        RegisterId(u16::from_le_bytes(bytes))
+    }
+}
+
 impl From<CpuRegister> for Register {
     fn from(value: CpuRegister) -> Self {
         Self::Cpu(value)

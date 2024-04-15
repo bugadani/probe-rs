@@ -1,7 +1,8 @@
 use std::{fmt::Debug, sync::Arc, time::Duration};
 
-use crate::architecture::xtensa::communication_interface::{
-    ProgramStatus, XtensaCommunicationInterface,
+use crate::{
+    architecture::xtensa::communication_interface::{ProgramStatus, XtensaCommunicationInterface},
+    Session,
 };
 
 /// A interface to operate debug sequences for Xtensa targets.
@@ -17,10 +18,7 @@ pub trait XtensaDebugSequence: Send + Sync + Debug {
     }
 
     /// Executed when the probe establishes a connection to the target.
-    fn on_connect(
-        &self,
-        _interface: &mut XtensaCommunicationInterface,
-    ) -> Result<(), crate::Error> {
+    fn on_connect(&self, _session: &mut Session) -> Result<(), crate::Error> {
         Ok(())
     }
 
@@ -35,22 +33,25 @@ pub trait XtensaDebugSequence: Send + Sync + Debug {
     /// Executes a system-wide reset without debug domain (or warm-reset that preserves debug connection) via software mechanisms.
     fn reset_system_and_halt(
         &self,
-        interface: &mut XtensaCommunicationInterface,
+        session: &mut Session,
         timeout: Duration,
     ) -> Result<(), crate::Error> {
-        interface.reset_and_halt(timeout)?;
-
-        self.on_connect(interface)?;
+        for core in session.cores() {
+            core?.reset_and_halt(timeout)?;
+        }
+        use crate::architecture::xtensa::communication_interface::TypedRegister;
+        self.on_connect(session)?;
 
         // TODO: this is only necessary to run code, so this might not be the best place
         // Make sure the CPU is in a known state and is able to run code we download.
-        interface.write_register({
-            let mut ps = ProgramStatus(0);
-            ps.set_intlevel(1);
-            ps.set_user_mode(true);
-            ps.set_woe(true);
-            ps
-        })?;
+
+        let mut ps = ProgramStatus(0);
+        ps.set_intlevel(1);
+        ps.set_user_mode(true);
+        ps.set_woe(true);
+        session
+            .core(0)?
+            .write_core_reg(ProgramStatus::register(), ps.0)?;
 
         Ok(())
     }
