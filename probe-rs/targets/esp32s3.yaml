@@ -14,10 +14,14 @@ variants:
     cores:
       - name: cpu0
         type: xtensa
-        core_access_options: !Xtensa {}
+        core_access_options:
+          !Xtensa
+            jtag_tap: 0
       - name: cpu1
         type: xtensa
-        core_access_options: !Xtensa {}
+        core_access_options:
+          !Xtensa
+            jtag_tap: 1
     memory_map:
       - !Nvm
         range:

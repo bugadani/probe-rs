@@ -826,6 +826,10 @@ impl DebugProbe for JLink {
         Ok(())
     }
 
+    fn select_jtag_tap(&mut self, index: usize) -> Result<(), DebugProbeError> {
+        self.select_target(index)
+    }
+
     fn set_speed(&mut self, speed_khz: u32) -> Result<u32, DebugProbeError> {
         if speed_khz == 0 || speed_khz >= 0xffff {
             return Err(DebugProbeError::UnsupportedSpeed(speed_khz));
@@ -892,14 +896,8 @@ impl DebugProbe for JLink {
                 tracing::debug!("Resetting JTAG chain using trst");
                 self.reset_trst()?;
 
-                let chain = self.scan_chain()?;
-                tracing::info!("Found {} TAPs on reset scan", chain.len());
-
-                if chain.len() > 1 {
-                    tracing::info!("More than one TAP detected, defaulting to tap0");
-                }
-
-                self.select_target(&chain, 0)?;
+                self.scan_chain()?;
+                self.select_target(0)?;
             }
             WireProtocol::Swd => {
                 // Attaching is handled in sequence

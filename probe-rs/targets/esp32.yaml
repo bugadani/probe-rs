@@ -13,10 +13,14 @@ variants:
     cores:
       - name: main
         type: xtensa
-        core_access_options: !Xtensa {}
+        core_access_options:
+          !Xtensa
+            jtag_tap: 0
       - name: app
         type: xtensa
-        core_access_options: !Xtensa {}
+        core_access_options:
+          !Xtensa
+            jtag_tap: 1
     memory_map:
       - !Nvm
         range:

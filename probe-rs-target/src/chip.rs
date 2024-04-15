@@ -158,4 +158,7 @@ pub struct RiscvCoreAccessOptions {
 
 /// The data required to access an Xtensa core
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct XtensaCoreAccessOptions {}
+pub struct XtensaCoreAccessOptions {
+    /// The JTAG TAP index of the core's debug module
+    pub jtag_tap: Option<usize>,
+}

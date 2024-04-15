@@ -15,8 +15,8 @@ use super::JTAGAccess;
 use crate::{
     architecture::riscv::communication_interface::{RiscvCommunicationInterface, RiscvError},
     probe::{
-        DebugProbe, DebugProbeError, DebugProbeInfo, DebugProbeSelector, JtagChainItem,
-        ProbeCreationError, ProbeFactory, WireProtocol,
+        DebugProbe, DebugProbeError, DebugProbeInfo, DebugProbeSelector, ProbeCreationError,
+        ProbeFactory, WireProtocol,
     },
 };
 
@@ -386,8 +386,8 @@ impl DebugProbe for WchLink {
 
 /// Wrap WCH-Link's USB based DMI access as a fake JTAGAccess
 impl JTAGAccess for WchLink {
-    fn scan_chain(&mut self) -> Result<Vec<JtagChainItem>, DebugProbeError> {
-        Ok(vec![])
+    fn scan_chain(&mut self) -> Result<(), DebugProbeError> {
+        Ok(())
     }
 
     fn tap_reset(&mut self) -> Result<(), DebugProbeError> {

@@ -333,24 +333,28 @@ impl Session {
 
         probe.attach_to_unspecified()?;
 
-        let interface = probe
-            .try_into_xtensa_interface()
-            .map_err(|(_probe, err)| err)?;
+        let mut interface = Box::new(
+            probe
+                .try_into_xtensa_interface()
+                .map_err(|(_probe, err)| err)?,
+        );
+
+        for core in cores.iter() {
+            core.enable_xtensa_debug(&mut interface)?;
+        }
 
         let mut session = Session {
             target,
-            interface: ArchitectureInterface::Xtensa(Box::new(interface)),
+            interface: ArchitectureInterface::Xtensa(interface),
             cores,
             configured_trace_sink: None,
         };
 
-        {
-            // Wait for the cores to be halted.
-            for core_id in 0..session.cores.len() {
-                let mut core = session.core(core_id)?;
+        // Wait for the cores to be halted.
+        for core_id in 0..session.cores.len() {
+            let mut core = session.core(core_id)?;
 
-                core.halt(Duration::from_millis(100))?;
-            }
+            core.halt(Duration::from_millis(100))?;
         }
 
         session.halted_access(|sess| sequence_handle.on_connect(sess.get_xtensa_interface()?))?;

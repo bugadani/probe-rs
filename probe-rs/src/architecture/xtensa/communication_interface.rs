@@ -131,6 +131,11 @@ impl XtensaCommunicationInterface {
         }
     }
 
+    pub(crate) fn select_jtag_tap(&mut self, tap: usize) -> Result<(), DebugProbeError> {
+        self.xdm.probe.select_jtag_tap(tap)?;
+        Ok(())
+    }
+
     /// Destruct the interface and return the stored probe driver.
     pub fn close(self) -> Probe {
         Probe::from_attached_probe(self.xdm.probe.into_probe())
