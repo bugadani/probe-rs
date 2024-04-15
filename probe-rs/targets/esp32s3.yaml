@@ -15,6 +15,9 @@ variants:
       - name: cpu0
         type: xtensa
         core_access_options: !Xtensa {}
+      - name: cpu1
+        type: xtensa
+        core_access_options: !Xtensa {}
     memory_map:
       - !Nvm
         range:
@@ -23,30 +26,35 @@ variants:
         is_boot_memory: true
         cores:
           - cpu0
+          - cpu1
       - !Ram # Data bus for internal SRAM 1
         range:
           start: 0x3FC88000
           end: 0x3FCF0000
         cores:
           - cpu0
+          - cpu1
       - !Ram # Data bus for internal SRAM 2
         range:
           start: 0x3FCF0000
           end: 0x3FD00000
         cores:
           - cpu0
+          - cpu1
       - !Ram # Instruction bus for internal SRAM 1
         range:
           start: 0x40370000
           end: 0x40378000
         cores:
           - cpu0
+          - cpu1
       - !Ram # Instruction bus for internal SRAM 2
         range:
           start: 0x40378000
           end: 0x403E0000
         cores:
           - cpu0
+          - cpu1
       - !Nvm # External instruction bus
         range:
           start: 0x42000000
@@ -54,6 +62,7 @@ variants:
         is_alias: true
         cores:
           - cpu0
+          - cpu1
       - !Nvm # External Data Bus
         range:
           start: 0x3C000000
@@ -61,6 +70,7 @@ variants:
         is_alias: true
         cores:
           - cpu0
+          - cpu1
     flash_algorithms:
       - esp32s3-flashloader
 flash_algorithms:
@@ -90,3 +100,4 @@ flash_algorithms:
           address: 0x0
     cores:
       - cpu0
+      - cpu1

@@ -14,6 +14,9 @@ variants:
       - name: main
         type: xtensa
         core_access_options: !Xtensa {}
+      - name: app
+        type: xtensa
+        core_access_options: !Xtensa {}
     memory_map:
       - !Nvm
         range:
@@ -22,6 +25,7 @@ variants:
         is_boot_memory: true
         cores:
           - main
+          - app
       - !Nvm # External instruction bus
         range:
           start: 0x400C2000
@@ -29,6 +33,7 @@ variants:
         is_alias: true
         cores:
           - main
+          - app
       - !Nvm # External Data Bus
         range:
           start: 0x3F400000
@@ -36,24 +41,28 @@ variants:
         is_alias: true
         cores:
           - main
+          - app
       - !Ram # SRAM2, Data bus
         range:
           start: 0x3FFAE000
           end: 0x3FFE0000
         cores:
           - main
+          - app
       - !Ram # SRAM1, Data bus
         range:
           start: 0x3FFE0000
           end: 0x40000000
         cores:
           - main
+          - app
       - !Ram # SRAM0, Instruction bus, non-cache
         range:
           start: 0x40080000
           end: 0x400A0000
         cores:
           - main
+          - app
     flash_algorithms:
       - esp32-flashloader
 flash_algorithms:
@@ -83,3 +92,4 @@ flash_algorithms:
           address: 0x0
     cores:
       - main
+      - app
