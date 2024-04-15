@@ -193,6 +193,8 @@ impl Xdm {
         self.write_nexus_register(DebugControlSet({
             let mut reg = DebugControlBits(0);
             reg.set_enable_ocd(true);
+            reg.set_break_in_en(true);
+            reg.set_break_out_en(true);
             reg
         }))?;
 
@@ -435,6 +437,8 @@ impl Xdm {
 
             control.set_enable_ocd(true);
             control.set_debug_interrupt(true);
+            control.set_break_in_en(true);
+            control.set_break_out_en(true);
 
             control
         }));
@@ -482,6 +486,8 @@ impl Xdm {
             let mut control = DebugControlBits(0);
 
             control.set_enable_ocd(true);
+            control.set_break_in_en(true);
+            control.set_break_out_en(true);
 
             control
         }))?;
