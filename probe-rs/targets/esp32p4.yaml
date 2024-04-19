@@ -5,16 +5,19 @@ manufacturer:
 variants:
   - name: esp32p4
     part: null
-    scan_chain:
-      - name: lpcpu
-        ir_len: 5
-      - name: hp
-        ir_len: 5
+    jtag:
+      scan_chain:
+        - name: lpcpu
+          ir_len: 5
+        - name: hp
+          ir_len: 5
     default_binary_format: idf
     cores:
       - name: main
         type: riscv
-        core_access_options: !Riscv {}
+        core_access_options: 
+          !Riscv
+            jtag_tap: 1
     memory_map:
       - !Nvm
         range:

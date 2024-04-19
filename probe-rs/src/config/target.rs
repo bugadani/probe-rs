@@ -9,6 +9,7 @@ use super::{
         esp32h2::ESP32H2,
         esp32s2::ESP32S2,
         esp32s3::ESP32S3,
+        esp32p4::ESP32P4,
         infineon::XMC4000,
         nrf52::Nrf52,
         nrf53::Nrf5340,
@@ -21,7 +22,7 @@ use super::{
     },
     Core, MemoryRegion, RawFlashAlgorithm, RegistryError, TargetDescriptionSource,
 };
-use crate::flashing::FlashLoader;
+use crate::{architecture::{arm::{ap::MemoryAp, sequences::{ArmDebugSequence, DefaultArmSequence}, ApAddress, DpAddress}, riscv::sequences::{DefaultRiscvSequence, RiscvDebugSequence}, xtensa::sequences::{DefaultXtensaSequence, XtensaDebugSequence}}, flashing::FlashLoader};
 use probe_rs_target::{Architecture, BinaryFormat, ChipFamily, Jtag, MemoryRange};
 use std::sync::Arc;
 
