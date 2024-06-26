@@ -21,6 +21,11 @@ pub struct NvmRegion {
 }
 
 impl NvmRegion {
+    /// Returns whether the region is accessible by the given core.
+    pub fn accessible_by(&self, core_name: &str) -> bool {
+        self.cores.iter().any(|c| c == core_name)
+    }
+
     /// Returns the access permissions for the region.
     pub fn access(&self) -> MemoryAccess {
         self.access.unwrap_or_default()
@@ -104,6 +109,11 @@ pub struct RamRegion {
 }
 
 impl RamRegion {
+    /// Returns whether the region is accessible by the given core.
+    pub fn accessible_by(&self, core_name: &str) -> bool {
+        self.cores.iter().any(|c| c == core_name)
+    }
+
     /// Returns the access permissions for the region.
     pub fn access(&self) -> MemoryAccess {
         self.access.unwrap_or_default()
@@ -146,6 +156,11 @@ pub struct GenericRegion {
 }
 
 impl GenericRegion {
+    /// Returns whether the region is accessible by the given core.
+    pub fn accessible_by(&self, core_name: &str) -> bool {
+        self.cores.iter().any(|c| c == core_name)
+    }
+
     /// Returns the access permissions for the region.
     pub fn access(&self) -> MemoryAccess {
         self.access.unwrap_or_default()
