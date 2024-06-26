@@ -492,7 +492,13 @@ mod tests {
         registry
             .families
             .iter()
-            .map(|family| family.validate())
+            .flat_map(|family| {
+                // Validate all chip descriptors by constructing a Target.
+                family
+                    .variants()
+                    .iter()
+                    .map(|chip| registry.get_target(family, chip))
+            })
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
     }
