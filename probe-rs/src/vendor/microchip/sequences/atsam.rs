@@ -380,7 +380,10 @@ impl AtSAM {
     ///
     /// # Errors
     /// Subject to probe communication errors
-    pub fn release_reset_extension(&self, memory: &mut dyn ArmMemoryInterface) -> Result<(), ArmError> {
+    pub fn release_reset_extension(
+        &self,
+        memory: &mut dyn ArmMemoryInterface,
+    ) -> Result<(), ArmError> {
         // Enable debug mode if it is not already enabled
         let mut dhcsr = Dhcsr(0);
         dhcsr.enable_write();

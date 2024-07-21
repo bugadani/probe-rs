@@ -8,7 +8,7 @@ use crate::{
         CpuRegister, Register,
     },
     config::DebugSequence,
-    MemoryInterface, Session,
+    Error, MemoryInterface, Session,
 };
 
 #[derive(Debug)]
@@ -195,7 +195,7 @@ impl SpiRegisters {
 }
 
 fn execute_flash_command_generic(
-    interface: &mut impl MemoryInterface,
+    interface: &mut impl MemoryInterface<Error = Error>,
     regs: &SpiRegisters,
     command: u8,
     miso_bits: u32,

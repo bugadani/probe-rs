@@ -1896,6 +1896,8 @@ impl RiscvValue for u128 {
 }
 
 impl MemoryInterface for RiscvCommunicationInterface<'_> {
+    type Error = Error;
+
     fn supports_native_64bit_access(&mut self) -> bool {
         false
     }

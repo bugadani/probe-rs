@@ -629,6 +629,8 @@ impl<'state> CoreInterface for Riscv32<'state> {
 }
 
 impl MemoryInterface for Riscv32<'_> {
+    type Error = Error;
+
     fn supports_native_64bit_access(&mut self) -> bool {
         self.interface.supports_native_64bit_access()
     }

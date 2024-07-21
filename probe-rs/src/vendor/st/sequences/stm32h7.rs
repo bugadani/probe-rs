@@ -111,7 +111,10 @@ mod dbgmcu {
         }
 
         /// Write the control register to memory.
-        pub fn write(&mut self, memory: &mut (impl ArmMemoryInterface + ?Sized)) -> Result<(), ArmError> {
+        pub fn write(
+            &mut self,
+            memory: &mut (impl ArmMemoryInterface + ?Sized),
+        ) -> Result<(), ArmError> {
             memory.write_word_32(DBGMCU + Self::ADDRESS, self.0)
         }
     }

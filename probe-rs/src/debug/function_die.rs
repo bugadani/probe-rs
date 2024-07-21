@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{debug::stack_frame::StackFrameInfo, MemoryInterface};
+use crate::{debug::stack_frame::StackFrameInfo, Error, MemoryInterface};
 
 use super::{
     debug_info, extract_file,
@@ -224,7 +224,7 @@ impl<'abbrev, 'unit> FunctionDie<'abbrev, 'unit> {
     pub fn frame_base(
         &self,
         debug_info: &super::DebugInfo,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         frame_info: StackFrameInfo,
     ) -> Result<Option<u64>, DebugError> {
         match self.unit_info.extract_location(

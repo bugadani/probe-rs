@@ -74,6 +74,8 @@ impl MockMemory {
 }
 
 impl MemoryInterface for MockMemory {
+    type Error = crate::Error;
+
     fn supports_native_64bit_access(&mut self) -> bool {
         false
     }

@@ -118,7 +118,10 @@ impl RomTable {
     ///
     /// This does not check whether the data actually signalizes
     /// to contain a ROM table but assumes this was checked beforehand.
-    fn try_parse(memory: &mut dyn ArmMemoryInterface, base_address: u64) -> Result<RomTable, RomTableError> {
+    fn try_parse(
+        memory: &mut dyn ArmMemoryInterface,
+        base_address: u64,
+    ) -> Result<RomTable, RomTableError> {
         // This is required for the collect down below.
         let mut entries = vec![];
 

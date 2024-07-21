@@ -417,7 +417,10 @@ impl MIMXRT5xxS {
 
     /// A port of the "WaitForStopAfterReset" sequence from the CMSIS Pack for
     /// this chip.
-    fn wait_for_stop_after_reset(&self, probe: &mut dyn ArmMemoryInterface) -> Result<(), ArmError> {
+    fn wait_for_stop_after_reset(
+        &self,
+        probe: &mut dyn ArmMemoryInterface,
+    ) -> Result<(), ArmError> {
         tracing::trace!("waiting for MIMXRT5xxS halt after reset");
 
         // Note: despite the name of this sequence in the CMSIS Pack, the

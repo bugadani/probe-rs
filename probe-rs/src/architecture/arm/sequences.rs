@@ -139,7 +139,10 @@ fn armv7a_reset_system(
 }
 
 /// DebugCoreStart for v7 Cortex-A devices
-fn armv7a_core_start(core: &mut dyn ArmMemoryInterface, debug_base: Option<u64>) -> Result<(), ArmError> {
+fn armv7a_core_start(
+    core: &mut dyn ArmMemoryInterface,
+    debug_base: Option<u64>,
+) -> Result<(), ArmError> {
     use crate::architecture::arm::core::armv7a_debug_regs::{Dbgdsccr, Dbgdscr, Dbgdsmcr, Dbglar};
 
     let debug_base =
@@ -779,7 +782,10 @@ pub trait ArmDebugSequence: Send + Sync + Debug {
     ///
     /// [ARM SVD Debug Description]: https://open-cmsis-pack.github.io/Open-CMSIS-Pack-Spec/main/html/debug_description.htmll#recoverSupportStart
     #[doc(alias = "RecoverSupportStart")]
-    fn recover_support_start(&self, _interface: &mut dyn ArmMemoryInterface) -> Result<(), ArmError> {
+    fn recover_support_start(
+        &self,
+        _interface: &mut dyn ArmMemoryInterface,
+    ) -> Result<(), ArmError> {
         // Empty by default
         Ok(())
     }

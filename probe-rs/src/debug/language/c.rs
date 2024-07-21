@@ -7,7 +7,7 @@ use crate::{
         Bitfield, DebugError, Variable, VariableCache, VariableLocation, VariableName,
         VariableType, VariableValue,
     },
-    MemoryInterface,
+    Error, MemoryInterface,
 };
 use std::fmt::{Display, Write};
 
@@ -18,7 +18,7 @@ impl ProgrammingLanguage for C {
     fn read_variable_value(
         &self,
         variable: &Variable,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         variable_cache: &VariableCache,
     ) -> VariableValue {
         match variable.type_name.inner() {
@@ -69,7 +69,7 @@ impl ProgrammingLanguage for C {
     fn update_variable(
         &self,
         variable: &Variable,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         new_value: &str,
     ) -> Result<(), DebugError> {
         match variable.type_name.inner() {
@@ -158,7 +158,7 @@ impl Display for CChar {
 impl Value for CChar {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError>
     where
@@ -175,7 +175,7 @@ impl Value for CChar {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         new_value: &str,
     ) -> Result<(), DebugError> {
         fn input_error(value: &str) -> DebugError {
@@ -214,7 +214,7 @@ impl UnsignedInt {
     fn get_value(
         variable: &Variable,
         bitfield: Option<Bitfield>,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError>
     where
@@ -241,7 +241,7 @@ impl UnsignedInt {
     fn update_value(
         variable: &Variable,
         bitfield: Option<Bitfield>,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         new_value: &str,
     ) -> Result<(), DebugError> {
         match parse_int::parse::<u128>(new_value) {
@@ -256,7 +256,7 @@ impl UnsignedInt {
 fn write_unsigned_bytes(
     variable: &Variable,
     bitfield: Option<Bitfield>,
-    memory: &mut dyn MemoryInterface,
+    memory: &mut dyn MemoryInterface<Error = Error>,
     unsigned: u128,
 ) -> Result<(), DebugError> {
     // TODO: check that value actually fits into `bytes` number of bytes
@@ -300,7 +300,7 @@ impl SignedInt {
     fn get_value(
         variable: &Variable,
         bitfield: Option<Bitfield>,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         variable_cache: &VariableCache,
     ) -> Result<Self, DebugError>
     where
@@ -329,7 +329,7 @@ impl SignedInt {
     fn update_value(
         variable: &Variable,
         bitfield: Option<Bitfield>,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
         new_value: &str,
     ) -> Result<(), DebugError> {
         match parse_int::parse::<i128>(new_value) {

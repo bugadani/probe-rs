@@ -19,7 +19,10 @@ use self::{
     sequences::ArmDebugSequenceError,
     {armv7a::Armv7aError, armv8a::Armv8aError},
 };
-use crate::{core::memory_mapped_registers::RegisterAddressOutOfBounds, probe::DebugProbeError};
+use crate::{
+    core::memory_mapped_registers::RegisterAddressOutOfBounds, memory::{InvalidDataLengthError, MemoryNotAlignedError},
+    probe::DebugProbeError,
+};
 pub use communication_interface::{
     ApInformation, ArmChipInfo, ArmCommunicationInterface, ArmProbeInterface, DapError,
     MemoryApInformation, Register,
@@ -73,14 +76,9 @@ pub enum ArmError {
     /// The debug probe encountered an error.
     Probe(#[from] DebugProbeError),
 
-    /// Failed to access address 0x{address:08x} as it is not aligned to the requirement of
-    /// {alignment} bytes for this platform and API call.
-    MemoryNotAligned {
-        /// The address of the register.
-        address: u64,
-        /// The required alignment in bytes (address increments).
-        alignment: usize,
-    },
+    /// Failed to access address 0x{0.address:08x} as it is not aligned to the requirement of
+    /// {0.alignment} bytes for this platform and API call.
+    MemoryNotAligned(#[from] MemoryNotAlignedError),
 
     /// A region outside of the AP address space was accessed.
     OutOfBounds,
@@ -131,6 +129,9 @@ pub enum ArmError {
     /// Some required functionality is not implemented: {0}
     NotImplemented(&'static str),
 
+    /// Invalid data length error: {0}
+    InvalidDataLength(#[from] InvalidDataLengthError),
+
     /// Another ARM error occurred: {0}
     Other(String),
 }
@@ -146,7 +147,7 @@ impl ArmError {
 
     /// Constructs a [`ArmError::MemoryNotAligned`] from the address and the required alignment.
     pub fn alignment_error(address: u64, alignment: usize) -> Self {
-        ArmError::MemoryNotAligned { address, alignment }
+        ArmError::MemoryNotAligned(MemoryNotAlignedError { address, alignment })
     }
 }
 

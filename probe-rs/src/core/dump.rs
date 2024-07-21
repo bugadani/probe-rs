@@ -224,6 +224,8 @@ impl CoreDump {
 }
 
 impl MemoryInterface for CoreDump {
+    type Error = crate::Error;
+
     fn supports_native_64bit_access(&mut self) -> bool {
         self.supports_native_64bit_access
     }

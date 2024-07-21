@@ -90,7 +90,7 @@ impl Cfsr {
     /// Additional information about a Bus Fault, or Ok(None) if the fault was not a Bus Fault.
     fn bus_fault_description(
         &self,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
     ) -> Result<Option<String>, Error> {
         let source = if self.bf_exception_entry() {
             "Derived fault on exception entry"
@@ -122,7 +122,7 @@ impl Cfsr {
     /// Additional information about a MemManage Fault, or Ok(None) if the fault was not a MemManage Fault.
     fn memory_management_fault_description(
         &self,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
     ) -> Result<Option<String>, Error> {
         let source = if self.mm_data_access_violation() {
             "Data access violation"
@@ -219,7 +219,7 @@ impl ExceptionReason {
     /// HFSR and CFSR registers.
     pub(crate) fn expanded_description(
         &self,
-        memory: &mut dyn MemoryInterface,
+        memory: &mut dyn MemoryInterface<Error = Error>,
     ) -> Result<String, Error> {
         match self {
             ExceptionReason::ThreadMode => Ok("<No active exception>".to_string()),
@@ -288,7 +288,10 @@ impl ExceptionReason {
 
     /// Determines how the exception return address should be offset when unwinding the stack.
     /// See Armv7-M Architecture Reference Manual, Section B1.5.6.
-    pub(crate) fn is_precise_fault(&self, memory: &mut dyn MemoryInterface) -> Result<bool, Error> {
+    pub(crate) fn is_precise_fault(
+        &self,
+        memory: &mut dyn MemoryInterface<Error = Error>,
+    ) -> Result<bool, Error> {
         let is_precise = match self {
             ExceptionReason::HardFault
             | ExceptionReason::BusFault
@@ -318,7 +321,7 @@ pub struct ArmV7MExceptionHandler;
 impl ExceptionInterface for ArmV7MExceptionHandler {
     fn exception_details(
         &self,
-        memory_interface: &mut dyn MemoryInterface,
+        memory_interface: &mut dyn MemoryInterface<Error = Error>,
         stackframe_registers: &DebugRegisters,
         debug_info: &DebugInfo,
     ) -> Result<Option<ExceptionInfo>, DebugError> {
@@ -332,7 +335,7 @@ impl ExceptionInterface for ArmV7MExceptionHandler {
 
     fn calling_frame_registers(
         &self,
-        memory_interface: &mut dyn MemoryInterface,
+        memory_interface: &mut dyn MemoryInterface<Error = Error>,
         stackframe_registers: &crate::debug::DebugRegisters,
         raw_exception: u32,
     ) -> Result<crate::debug::DebugRegisters, DebugError> {
@@ -367,7 +370,7 @@ impl ExceptionInterface for ArmV7MExceptionHandler {
     fn exception_description(
         &self,
         raw_exception: u32,
-        memory_interface: &mut dyn MemoryInterface,
+        memory_interface: &mut dyn MemoryInterface<Error = Error>,
     ) -> Result<String, DebugError> {
         let description =
             ExceptionReason::from(raw_exception).expanded_description(memory_interface)?;

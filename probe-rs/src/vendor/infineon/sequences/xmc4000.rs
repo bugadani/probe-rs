@@ -427,7 +427,10 @@ impl ArmDebugSequence for XMC4000 {
     }
 }
 
-fn spin_until_core_is_halted(core: &mut dyn ArmMemoryInterface, timeout: Duration) -> Result<(), ArmError> {
+fn spin_until_core_is_halted(
+    core: &mut dyn ArmMemoryInterface,
+    timeout: Duration,
+) -> Result<(), ArmError> {
     let start = Instant::now();
     loop {
         let dhcsr = Dhcsr(core.read_word_32(Dhcsr::get_mmio_address())?);

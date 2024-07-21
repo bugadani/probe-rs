@@ -74,7 +74,7 @@ bitfield! {
 /// Decode the exception information.
 pub(crate) fn exception_details(
     exception_interface: &impl ExceptionInterface,
-    memory_interface: &mut dyn MemoryInterface,
+    memory_interface: &mut dyn MemoryInterface<Error = Error>,
     stackframe_registers: &DebugRegisters,
     debug_info: &DebugInfo,
 ) -> Result<Option<ExceptionInfo>, DebugError> {
@@ -242,7 +242,7 @@ pub(crate) fn raw_exception(
 /// This function will read the values of the registers from the stack and update the passed `stackframe_registers` with the new values.
 // TODO: probe-rs does not currently do anything with the floating point registers. When support is added, please note that the list of registers to read is different for cores that have the floating point extension.
 pub(crate) fn calling_frame_registers(
-    memory: &mut dyn MemoryInterface,
+    memory: &mut dyn MemoryInterface<Error = Error>,
     stackframe_registers: &crate::debug::DebugRegisters,
     _raw_exception: u32,
 ) -> Result<crate::debug::DebugRegisters, crate::Error> {

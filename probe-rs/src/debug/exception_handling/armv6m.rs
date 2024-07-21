@@ -67,7 +67,7 @@ impl ExceptionReason {
     /// See Armv6-M Architecture Reference Manual, section B1.5.6.
     pub(crate) fn is_precise_fault(
         &self,
-        _memory: &mut dyn MemoryInterface,
+        _memory: &mut dyn MemoryInterface<Error = Error>,
     ) -> Result<bool, Error> {
         Ok(match self {
             ExceptionReason::HardFault => {
@@ -86,7 +86,7 @@ pub struct ArmV6MExceptionHandler;
 impl ExceptionInterface for ArmV6MExceptionHandler {
     fn exception_details(
         &self,
-        memory_interface: &mut dyn MemoryInterface,
+        memory_interface: &mut dyn MemoryInterface<Error = Error>,
         stackframe_registers: &DebugRegisters,
         debug_info: &DebugInfo,
     ) -> Result<Option<ExceptionInfo>, DebugError> {
@@ -100,7 +100,7 @@ impl ExceptionInterface for ArmV6MExceptionHandler {
 
     fn calling_frame_registers(
         &self,
-        memory_interface: &mut dyn MemoryInterface,
+        memory_interface: &mut dyn MemoryInterface<Error = Error>,
         stackframe_registers: &crate::debug::DebugRegisters,
         raw_exception: u32,
     ) -> Result<crate::debug::DebugRegisters, DebugError> {
@@ -136,7 +136,7 @@ impl ExceptionInterface for ArmV6MExceptionHandler {
     fn exception_description(
         &self,
         raw_exception: u32,
-        _memory_interface: &mut dyn MemoryInterface,
+        _memory_interface: &mut dyn MemoryInterface<Error = Error>,
     ) -> Result<String, DebugError> {
         // TODO: Some ARMv6-M cores (e.g. the Cortex-M0) do not have HFSR and CFGR registers, so we cannot
         //       determine the cause of the hard fault. We should add a check for this, and return a more

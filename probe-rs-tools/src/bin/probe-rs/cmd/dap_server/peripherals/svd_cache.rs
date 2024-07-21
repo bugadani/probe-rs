@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use probe_rs::debug::{get_object_reference, DebugError, ObjectRef};
-use probe_rs::MemoryInterface;
+use probe_rs::{Error, MemoryInterface};
 
 /// VariableCache stores available `Variable`s, and provides methods to create and navigate the parent-child relationships of the Variables.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,7 +189,7 @@ impl Variable {
     /// Value of the variable, compatible with DAP
     ///
     /// The value might be retrieved using the `MemoryInterface` to read the value from the target.
-    pub fn get_value(&self, memory: &mut dyn MemoryInterface) -> String {
+    pub fn get_value(&self, memory: &mut dyn MemoryInterface<Error = Error>) -> String {
         self.variable_kind.get_value(memory)
     }
 }
@@ -227,7 +227,7 @@ pub enum SvdVariable {
 }
 
 impl SvdVariable {
-    fn get_value(&self, memory: &mut dyn MemoryInterface) -> String {
+    fn get_value(&self, memory: &mut dyn MemoryInterface<Error = Error>) -> String {
         match &self {
             SvdVariable::Root => "".to_string(),
             // For peripheral and peripheral group, we use the description as the value if there is one, otherwise there is no value

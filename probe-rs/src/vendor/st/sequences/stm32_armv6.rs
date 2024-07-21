@@ -7,8 +7,8 @@ use std::sync::Arc;
 use probe_rs_target::CoreType;
 
 use crate::architecture::arm::{
-    ap::MemoryAp, memory::adi_v5_memory_interface::ArmMemoryInterface, sequences::ArmDebugSequence, ArmError,
-    ArmProbeInterface,
+    ap::MemoryAp, memory::adi_v5_memory_interface::ArmMemoryInterface, sequences::ArmDebugSequence,
+    ArmError, ArmProbeInterface,
 };
 
 /// Supported families for custom sequences on ARMv6 STM32 devices.
@@ -54,13 +54,16 @@ mod rcc {
             impl $name {
                 const ADDRESS: u64 = $offset;
                 /// Read the enable register from memory.
-                pub fn read(memory: &mut dyn ArmProbe) -> Result<Self, ArmError> {
+                pub fn read(memory: &mut dyn ArmMemoryInterface) -> Result<Self, ArmError> {
                     let contents = memory.read_word_32(RCC + Self::ADDRESS)?;
                     Ok(Self(contents))
                 }
 
                 /// Write the enable register to memory.
-                pub fn write(&mut self, memory: &mut dyn ArmProbe) -> Result<(), ArmError> {
+                pub fn write(
+                    &mut self,
+                    memory: &mut dyn ArmMemoryInterface,
+                ) -> Result<(), ArmError> {
                     memory.write_word_32(RCC + Self::ADDRESS, self.0)
                 }
             }

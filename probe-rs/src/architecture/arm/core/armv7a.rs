@@ -814,6 +814,8 @@ impl<'probe> CoreInterface for Armv7a<'probe> {
 }
 
 impl<'probe> MemoryInterface for Armv7a<'probe> {
+    type Error = Error;
+
     fn supports_native_64bit_access(&mut self) -> bool {
         false
     }
@@ -1042,8 +1044,8 @@ mod test {
         }
     }
 
-    impl ArmMemoryInterface for MockProbe {
-        fn update_core_status(&mut self, _: CoreStatus) {}
+    impl MemoryInterface for MockProbe {
+        type Error = ArmError;
 
         fn read_8(&mut self, _address: u64, _data: &mut [u8]) -> Result<(), ArmError> {
             todo!()
@@ -1138,9 +1140,25 @@ mod test {
             todo!()
         }
 
+        fn read_64(&mut self, _address: u64, _data: &mut [u64]) -> Result<(), ArmError> {
+            todo!()
+        }
+
+        fn write_64(&mut self, _address: u64, _data: &[u64]) -> Result<(), ArmError> {
+            todo!()
+        }
+
         fn supports_8bit_transfers(&self) -> Result<bool, ArmError> {
             Ok(false)
         }
+
+        fn supports_native_64bit_access(&mut self) -> bool {
+            false
+        }
+    }
+
+    impl ArmMemoryInterface for MockProbe {
+        fn update_core_status(&mut self, _: CoreStatus) {}
 
         fn get_arm_communication_interface(
             &mut self,
@@ -1155,20 +1173,8 @@ mod test {
             })
         }
 
-        fn read_64(&mut self, _address: u64, _data: &mut [u64]) -> Result<(), ArmError> {
-            todo!()
-        }
-
-        fn write_64(&mut self, _address: u64, _data: &[u64]) -> Result<(), ArmError> {
-            todo!()
-        }
-
         fn ap(&mut self) -> MemoryAp {
             todo!()
-        }
-
-        fn supports_native_64bit_access(&mut self) -> bool {
-            false
         }
     }
 

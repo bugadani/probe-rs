@@ -710,6 +710,8 @@ fn as_bytes_mut<T: DataType>(data: &mut [T]) -> &mut [u8] {
 }
 
 impl<'probe> MemoryInterface for XtensaCommunicationInterface<'probe> {
+    type Error = crate::Error;
+
     fn read(&mut self, address: u64, dst: &mut [u8]) -> Result<(), crate::Error> {
         self.read_memory(address, dst)?;
 

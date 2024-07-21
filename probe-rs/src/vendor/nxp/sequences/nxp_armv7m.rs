@@ -64,7 +64,10 @@ impl MIMXRT10xx {
     ///
     /// If the user changed the FlexRAM configuration in software, this will undo
     /// that configuration, preferring the system's POR FlexRAM state.
-    fn use_boot_fuses_for_flexram(&self, probe: &mut dyn ArmMemoryInterface) -> Result<(), ArmError> {
+    fn use_boot_fuses_for_flexram(
+        &self,
+        probe: &mut dyn ArmMemoryInterface,
+    ) -> Result<(), ArmError> {
         const IOMUXC_GPR_GPR16: u64 = 0x400A_C040;
         const FLEXRAM_BANK_CFG_SEL_MASK: u32 = 1 << 2;
         let mut gpr16 = probe.read_word_32(IOMUXC_GPR_GPR16)?;
@@ -198,7 +201,11 @@ impl MIMXRT11xx {
     }
 
     /// Poll the AP's status until it can accept transfers.
-    fn wait_for_enable(&self, probe: &mut dyn ArmMemoryInterface, timeout: Duration) -> Result<(), ArmError> {
+    fn wait_for_enable(
+        &self,
+        probe: &mut dyn ArmMemoryInterface,
+        timeout: Duration,
+    ) -> Result<(), ArmError> {
         let ap = probe.ap();
         let interface = probe.get_arm_communication_interface()?;
 
@@ -336,7 +343,10 @@ impl MIMXRT11xx {
     }
 
     /// See documentation for [`MIMXRT10xx::use_boot_fuses_for_flexram`].
-    fn use_boot_fuses_for_flexram(&self, probe: &mut dyn ArmMemoryInterface) -> Result<(), ArmError> {
+    fn use_boot_fuses_for_flexram(
+        &self,
+        probe: &mut dyn ArmMemoryInterface,
+    ) -> Result<(), ArmError> {
         const IOMUXC_GPR_GPR16: u64 = 0x400E_4040;
         const FLEXRAM_BANK_CFG_SEL_MASK: u32 = 1 << 2;
         let mut gpr16 = probe.read_word_32(IOMUXC_GPR_GPR16)?;

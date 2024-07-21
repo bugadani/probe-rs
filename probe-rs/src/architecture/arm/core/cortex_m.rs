@@ -151,7 +151,10 @@ impl IdPfr1 {
     }
 }
 
-pub(crate) fn read_core_reg(memory: &mut dyn ArmMemoryInterface, addr: RegisterId) -> Result<u32, ArmError> {
+pub(crate) fn read_core_reg(
+    memory: &mut dyn ArmMemoryInterface,
+    addr: RegisterId,
+) -> Result<u32, ArmError> {
     // Write the DCRSR value to select the register we want to read.
     let mut dcrsr_val = Dcrsr(0);
     dcrsr_val.set_regwnr(false); // Perform a read.

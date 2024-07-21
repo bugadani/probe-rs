@@ -167,6 +167,8 @@ impl<'probe> Xtensa<'probe> {
 }
 
 impl<'probe> MemoryInterface for Xtensa<'probe> {
+    type Error = Error;
+
     fn supports_native_64bit_access(&mut self) -> bool {
         self.interface.supports_native_64bit_access()
     }
