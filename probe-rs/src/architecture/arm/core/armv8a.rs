@@ -10,8 +10,8 @@ use super::{
 };
 use crate::{
     architecture::arm::{
-        core::armv8a_debug_regs::*, memory::adi_v5_memory_interface::ArmMemoryInterface,
-        sequences::ArmDebugSequence, ArmError,
+        core::armv8a_debug_regs::*, memory::ArmMemoryInterface, sequences::ArmDebugSequence,
+        ArmError,
     },
     core::{
         memory_mapped_registers::MemoryMappedRegister, CoreRegisters, RegisterId, RegisterValue,
@@ -852,7 +852,8 @@ impl<'probe> Armv8a<'probe> {
             return Err(MemoryNotAlignedError {
                 address,
                 alignment: 4,
-            }.into());
+            }
+            .into());
         }
 
         // Save x0
@@ -964,7 +965,8 @@ impl<'probe> Armv8a<'probe> {
             return Err(MemoryNotAlignedError {
                 address,
                 alignment: 4,
-            }.into());
+            }
+            .into());
         }
 
         // Save x0

@@ -20,7 +20,8 @@ use self::{
     {armv7a::Armv7aError, armv8a::Armv8aError},
 };
 use crate::{
-    core::memory_mapped_registers::RegisterAddressOutOfBounds, memory::{InvalidDataLengthError, MemoryNotAlignedError},
+    core::memory_mapped_registers::RegisterAddressOutOfBounds,
+    memory::{InvalidDataLengthError, MemoryNotAlignedError},
     probe::DebugProbeError,
 };
 pub use communication_interface::{
