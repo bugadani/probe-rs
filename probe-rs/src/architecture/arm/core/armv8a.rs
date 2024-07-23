@@ -1685,7 +1685,8 @@ impl<'probe> MemoryInterface for Armv8a<'probe> {
 mod test {
     use crate::{
         architecture::arm::{
-            ap::MemoryAp, communication_interface::SwdSequence, sequences::DefaultArmSequence,
+            ap::memory_ap::MemoryAp, communication_interface::SwdSequence,
+            sequences::DefaultArmSequence,
         },
         probe::DebugProbeError,
     };
@@ -1838,7 +1839,7 @@ mod test {
     impl ArmMemoryInterface for MockProbe {
         fn update_core_status(&mut self, _: CoreStatus) {}
 
-        fn ap(&mut self) -> MemoryAp {
+        fn ap(&mut self) -> &mut MemoryAp {
             todo!()
         }
 
@@ -1853,6 +1854,24 @@ mod test {
             Err(DebugProbeError::NotImplemented {
                 function_name: "get_arm_communication_interface",
             })
+        }
+
+        fn get_parts(
+            &mut self,
+        ) -> Result<
+            (
+                &mut crate::architecture::arm::ArmCommunicationInterface<
+                    crate::architecture::arm::communication_interface::Initialized,
+                >,
+                &mut MemoryAp,
+            ),
+            DebugProbeError,
+        > {
+            todo!()
+        }
+
+        fn base_address(&mut self) -> Result<u64, ArmError> {
+            todo!()
         }
     }
 
