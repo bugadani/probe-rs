@@ -1471,8 +1471,6 @@ impl<'probe> CoreInterface for Armv8a<'probe> {
 }
 
 impl<'probe> MemoryInterface for Armv8a<'probe> {
-    type Error = Error;
-
     fn supports_native_64bit_access(&mut self) -> bool {
         self.state.is_64_bit
     }

@@ -189,11 +189,7 @@ impl CoreDump {
     }
 
     /// Retrieve a memory range that contains the requested address and size, from the coredump.
-    fn get_memory_from_coredump(
-        &self,
-        address: u64,
-        size_in_bytes: u64,
-    ) -> Result<&[u8], crate::Error> {
+    fn get_memory_from_coredump(&self, address: u64, size_in_bytes: u64) -> Result<&[u8], Error> {
         for (range, memory) in &self.data {
             if range.contains_range(&(address..(address + size_in_bytes))) {
                 let offset = (address - range.start) as usize;
@@ -202,12 +198,12 @@ impl CoreDump {
             }
         }
         // If we get here, then no range with the requested memory address and size was found.
-        Err(crate::Error::Other(format!("The coredump does not include the memory for address {address:#x} of size {size_in_bytes:#x}")))
+        Err(Error::Other(format!("The coredump does not include the memory for address {address:#x} of size {size_in_bytes:#x}")))
     }
 
     /// Read the requested memory range from the coredump, and return the data in the requested buffer.
     /// The word-size of the read is determined by the size of the items in the `data` buffer.
-    fn read_memory_range<T>(&self, address: u64, data: &mut [T]) -> Result<(), crate::Error>
+    fn read_memory_range<T>(&self, address: u64, data: &mut [T]) -> Result<(), Error>
     where
         T: scroll::ctx::FromCtx<scroll::Endian>,
     {
@@ -224,93 +220,91 @@ impl CoreDump {
 }
 
 impl MemoryInterface for CoreDump {
-    type Error = crate::Error;
-
     fn supports_native_64bit_access(&mut self) -> bool {
         self.supports_native_64bit_access
     }
 
-    fn read_word_64(&mut self, address: u64) -> Result<u64, crate::Error> {
+    fn read_word_64(&mut self, address: u64) -> Result<u64, Error> {
         let mut data = [0u64; 1];
         self.read_memory_range(address, &mut data)?;
         Ok(data[0])
     }
 
-    fn read_word_32(&mut self, address: u64) -> Result<u32, crate::Error> {
+    fn read_word_32(&mut self, address: u64) -> Result<u32, Error> {
         let mut data = [0u32; 1];
         self.read_memory_range(address, &mut data)?;
         Ok(data[0])
     }
 
-    fn read_word_16(&mut self, address: u64) -> Result<u16, crate::Error> {
+    fn read_word_16(&mut self, address: u64) -> Result<u16, Error> {
         let mut data = [0u16; 1];
         self.read_memory_range(address, &mut data)?;
         Ok(data[0])
     }
 
-    fn read_word_8(&mut self, address: u64) -> Result<u8, crate::Error> {
+    fn read_word_8(&mut self, address: u64) -> Result<u8, Error> {
         let mut data = [0u8; 1];
         self.read_memory_range(address, &mut data)?;
         Ok(data[0])
     }
 
-    fn read_64(&mut self, address: u64, data: &mut [u64]) -> Result<(), crate::Error> {
+    fn read_64(&mut self, address: u64, data: &mut [u64]) -> Result<(), Error> {
         self.read_memory_range(address, data)?;
         Ok(())
     }
 
-    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), crate::Error> {
+    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), Error> {
         self.read_memory_range(address, data)?;
         Ok(())
     }
 
-    fn read_16(&mut self, address: u64, data: &mut [u16]) -> Result<(), crate::Error> {
+    fn read_16(&mut self, address: u64, data: &mut [u16]) -> Result<(), Error> {
         self.read_memory_range(address, data)?;
         Ok(())
     }
 
-    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), crate::Error> {
+    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), Error> {
         self.read_memory_range(address, data)?;
         Ok(())
     }
 
-    fn write_word_64(&mut self, _address: u64, _data: u64) -> Result<(), crate::Error> {
+    fn write_word_64(&mut self, _address: u64, _data: u64) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_word_32(&mut self, _address: u64, _data: u32) -> Result<(), crate::Error> {
+    fn write_word_32(&mut self, _address: u64, _data: u32) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_word_16(&mut self, _address: u64, _data: u16) -> Result<(), crate::Error> {
+    fn write_word_16(&mut self, _address: u64, _data: u16) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_word_8(&mut self, _address: u64, _data: u8) -> Result<(), crate::Error> {
+    fn write_word_8(&mut self, _address: u64, _data: u8) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_64(&mut self, _address: u64, _data: &[u64]) -> Result<(), crate::Error> {
+    fn write_64(&mut self, _address: u64, _data: &[u64]) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_32(&mut self, _address: u64, _data: &[u32]) -> Result<(), crate::Error> {
+    fn write_32(&mut self, _address: u64, _data: &[u32]) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_16(&mut self, _address: u64, _data: &[u16]) -> Result<(), crate::Error> {
+    fn write_16(&mut self, _address: u64, _data: &[u16]) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_8(&mut self, _address: u64, _data: &[u8]) -> Result<(), crate::Error> {
+    fn write_8(&mut self, _address: u64, _data: &[u8]) -> Result<(), Error> {
         todo!()
     }
 
-    fn supports_8bit_transfers(&self) -> Result<bool, crate::Error> {
+    fn supports_8bit_transfers(&self) -> Result<bool, Error> {
         todo!()
     }
 
-    fn flush(&mut self) -> Result<(), crate::Error> {
+    fn flush(&mut self) -> Result<(), Error> {
         todo!()
     }
 }

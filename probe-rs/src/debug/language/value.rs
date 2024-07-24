@@ -5,7 +5,7 @@ use crate::{
         language::parsing::ParseToBytes, DebugError, Variable, VariableCache, VariableName,
         VariableValue,
     },
-    Error, MemoryInterface,
+    MemoryInterface,
 };
 
 /// Traits and Impl's to read from, and write to, memory value based on Variable::typ and Variable::location.
@@ -13,7 +13,7 @@ pub trait Value {
     /// The MS DAP protocol passes the value as a string, so this trait is here to provide the memory read logic before returning it as a string.
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError>
     where
@@ -24,7 +24,7 @@ pub trait Value {
     /// - The input format of the [Variable.value] is a [String], and the impl of this trait must convert the memory value appropriately before storing.
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError>;
 }
@@ -44,7 +44,7 @@ where
 impl Value for bool {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mem_data = memory.read_word_8(variable.memory_location.memory_address()?)?;
@@ -54,7 +54,7 @@ impl Value for bool {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         memory
@@ -76,7 +76,7 @@ impl Value for bool {
 impl Value for char {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mem_data = memory.read_word_32(variable.memory_location.memory_address()?)?;
@@ -89,7 +89,7 @@ impl Value for char {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         memory
@@ -111,7 +111,7 @@ impl Value for char {
 impl Value for String {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut str_value: String = "".to_owned();
@@ -176,7 +176,7 @@ impl Value for String {
 
     fn update_value(
         _variable: &Variable,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _new_value: &str,
     ) -> Result<(), DebugError> {
         Err(DebugError::WarnAndContinue { message:"Unsupported datatype: \"String\". Please only update variables with a base data type.".to_string()})
@@ -185,7 +185,7 @@ impl Value for String {
 impl Value for i8 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 1];
@@ -196,7 +196,7 @@ impl Value for i8 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = i8::parse_to_bytes(new_value)?;
@@ -210,7 +210,7 @@ impl Value for i8 {
 impl Value for i16 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 2];
@@ -221,7 +221,7 @@ impl Value for i16 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = i16::parse_to_bytes(new_value)?;
@@ -235,7 +235,7 @@ impl Value for i16 {
 impl Value for i32 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 4];
@@ -246,7 +246,7 @@ impl Value for i32 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = i32::parse_to_bytes(new_value)?;
@@ -260,7 +260,7 @@ impl Value for i32 {
 impl Value for i64 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 8];
@@ -271,7 +271,7 @@ impl Value for i64 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = i64::parse_to_bytes(new_value)?;
@@ -285,7 +285,7 @@ impl Value for i64 {
 impl Value for i128 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 16];
@@ -296,7 +296,7 @@ impl Value for i128 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = i128::parse_to_bytes(new_value)?;
@@ -310,7 +310,7 @@ impl Value for i128 {
 impl Value for u8 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 1];
@@ -321,7 +321,7 @@ impl Value for u8 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = u8::parse_to_bytes(new_value)?;
@@ -335,7 +335,7 @@ impl Value for u8 {
 impl Value for u16 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 2];
@@ -346,7 +346,7 @@ impl Value for u16 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = u16::parse_to_bytes(new_value)?;
@@ -360,7 +360,7 @@ impl Value for u16 {
 impl Value for u32 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 4];
@@ -371,7 +371,7 @@ impl Value for u32 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = u32::parse_to_bytes(new_value)?;
@@ -385,7 +385,7 @@ impl Value for u32 {
 impl Value for u64 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 8];
@@ -396,7 +396,7 @@ impl Value for u64 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = u64::parse_to_bytes(new_value)?;
@@ -410,7 +410,7 @@ impl Value for u64 {
 impl Value for u128 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 16];
@@ -421,7 +421,7 @@ impl Value for u128 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = u128::parse_to_bytes(new_value)?;
@@ -435,7 +435,7 @@ impl Value for u128 {
 impl Value for f32 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 4];
@@ -446,7 +446,7 @@ impl Value for f32 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = f32::parse_to_bytes(new_value)?;
@@ -460,7 +460,7 @@ impl Value for f32 {
 impl Value for f64 {
     fn get_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> Result<Self, DebugError> {
         let mut buff = [0u8; 8];
@@ -471,7 +471,7 @@ impl Value for f64 {
 
     fn update_value(
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         let buff = f64::parse_to_bytes(new_value)?;

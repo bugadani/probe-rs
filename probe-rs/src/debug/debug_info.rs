@@ -232,7 +232,7 @@ impl DebugInfo {
     pub fn cache_deferred_variables(
         &self,
         cache: &mut VariableCache,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         parent_variable: &mut Variable,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<(), DebugError> {
@@ -338,7 +338,7 @@ impl DebugInfo {
     /// This function will also populate the `DebugInfo::VariableCache` with in scope `Variable`s for each `StackFrame`, while taking into account the appropriate strategy for lazy-loading of variables.
     pub(crate) fn get_stackframe_info(
         &self,
-        memory: &mut impl MemoryInterface<Error = Error>,
+        memory: &mut impl MemoryInterface,
         address: u64,
         unwind_context: &mut UnwindContext<GimliReaderOffset>,
         unwind_registers: &registers::DebugRegisters,
@@ -521,7 +521,7 @@ impl DebugInfo {
     /// TODO: Separate logic for stackframe creation and cache population
     pub fn unwind(
         &self,
-        core: &mut impl MemoryInterface<Error = Error>,
+        core: &mut impl MemoryInterface,
         initial_registers: DebugRegisters,
         exception_handler: &dyn ExceptionInterface,
         instruction_set: Option<InstructionSet>,
@@ -532,7 +532,7 @@ impl DebugInfo {
     pub(crate) fn unwind_impl(
         &self,
         initial_registers: registers::DebugRegisters,
-        memory: &mut impl MemoryInterface<Error = Error>,
+        memory: &mut impl MemoryInterface,
         exception_handler: &dyn ExceptionInterface,
         instruction_set: Option<InstructionSet>,
     ) -> Result<Vec<StackFrame>, crate::Error> {
@@ -1067,7 +1067,7 @@ pub fn unwind_register(
     unwind_info: Option<&gimli::UnwindTableRow<GimliReaderOffset>>,
     unwind_cfa: Option<u64>,
     unwound_return_address: &mut Option<RegisterValue>,
-    memory: &mut dyn MemoryInterface<Error = Error>,
+    memory: &mut dyn MemoryInterface,
     instruction_set: Option<InstructionSet>,
 ) -> ControlFlow<crate::Error, ()> {
     use gimli::read::RegisterRule;

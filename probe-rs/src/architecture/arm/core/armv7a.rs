@@ -814,8 +814,6 @@ impl<'probe> CoreInterface for Armv7a<'probe> {
 }
 
 impl<'probe> MemoryInterface for Armv7a<'probe> {
-    type Error = Error;
-
     fn supports_native_64bit_access(&mut self) -> bool {
         false
     }

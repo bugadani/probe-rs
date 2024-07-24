@@ -79,9 +79,7 @@ impl SwdSequence for &mut MockCore {
     }
 }
 
-impl MemoryInterface for &mut MockCore {
-    type Error = ArmError;
-
+impl MemoryInterface<ArmError> for &mut MockCore {
     fn read_8(&mut self, _address: u64, _data: &mut [u8]) -> Result<(), ArmError> {
         todo!()
     }

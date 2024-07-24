@@ -228,8 +228,6 @@ impl<T> MemoryInterface for T
 where
     T: CoreMemoryInterface,
 {
-    type Error = Error;
-
     fn supports_native_64bit_access(&mut self) -> bool {
         self.memory_mut().supports_native_64bit_access()
     }

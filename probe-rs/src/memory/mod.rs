@@ -16,10 +16,10 @@ pub struct MemoryNotAlignedError {
 }
 
 /// An interface to be implemented for drivers that allow target memory access.
-pub trait MemoryInterface {
-    /// The error type used accross this implementation.
-    type Error: std::error::Error + From<InvalidDataLengthError> + From<MemoryNotAlignedError>;
-
+pub trait MemoryInterface<ERR = crate::error::Error>
+where
+    ERR: std::error::Error + From<InvalidDataLengthError> + From<MemoryNotAlignedError>,
+{
     /// Does this interface support native 64-bit wide accesses
     ///
     /// If false all 64-bit operations may be split into 32 or 8 bit operations.
@@ -31,7 +31,7 @@ pub trait MemoryInterface {
     ///
     /// The address where the read should be performed at has to be a multiple of 8.
     /// Returns `AccessPortError::MemoryNotAligned` if this does not hold true.
-    fn read_word_64(&mut self, address: u64) -> Result<u64, Self::Error> {
+    fn read_word_64(&mut self, address: u64) -> Result<u64, ERR> {
         let mut word = 0;
         self.read_64(address, std::slice::from_mut(&mut word))?;
         Ok(word)
@@ -41,7 +41,7 @@ pub trait MemoryInterface {
     ///
     /// The address where the read should be performed at has to be a multiple of 4.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_word_32(&mut self, address: u64) -> Result<u32, Self::Error> {
+    fn read_word_32(&mut self, address: u64) -> Result<u32, ERR> {
         let mut word = 0;
         self.read_32(address, std::slice::from_mut(&mut word))?;
         Ok(word)
@@ -51,14 +51,14 @@ pub trait MemoryInterface {
     ///
     /// The address where the read should be performed at has to be a multiple of 2.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_word_16(&mut self, address: u64) -> Result<u16, Self::Error> {
+    fn read_word_16(&mut self, address: u64) -> Result<u16, ERR> {
         let mut word = 0;
         self.read_16(address, std::slice::from_mut(&mut word))?;
         Ok(word)
     }
 
     /// Read an 8bit word of at `address`.
-    fn read_word_8(&mut self, address: u64) -> Result<u8, Self::Error> {
+    fn read_word_8(&mut self, address: u64) -> Result<u8, ERR> {
         let mut word = 0;
         self.read_8(address, std::slice::from_mut(&mut word))?;
         Ok(word)
@@ -69,30 +69,30 @@ pub trait MemoryInterface {
     /// The number of words read is `data.len()`.
     /// The address where the read should be performed at has to be a multiple of 8.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_64(&mut self, address: u64, data: &mut [u64]) -> Result<(), Self::Error>;
+    fn read_64(&mut self, address: u64, data: &mut [u64]) -> Result<(), ERR>;
 
     /// Read a block of 32bit words at `address`.
     ///
     /// The number of words read is `data.len()`.
     /// The address where the read should be performed at has to be a multiple of 4.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), Self::Error>;
+    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), ERR>;
 
     /// Read a block of 16bit words at `address`.
     ///
     /// The number of words read is `data.len()`.
     /// The address where the read should be performed at has to be a multiple of 2.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_16(&mut self, address: u64, data: &mut [u16]) -> Result<(), Self::Error>;
+    fn read_16(&mut self, address: u64, data: &mut [u16]) -> Result<(), ERR>;
 
     /// Read a block of 8bit words at `address`.
-    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), Self::Error>;
+    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), ERR>;
 
     /// Reads bytes using 64 bit memory access.
     ///
     /// The address where the read should be performed at has to be a multiple of 8.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_mem_64bit(&mut self, address: u64, data: &mut [u8]) -> Result<(), Self::Error> {
+    fn read_mem_64bit(&mut self, address: u64, data: &mut [u8]) -> Result<(), ERR> {
         // Default implementation uses `read_64`, then converts u64 values back
         // to bytes. Assumes target is little endian. May be overridden to
         // provide an implementation that avoids heap allocation and endian
@@ -112,7 +112,7 @@ pub trait MemoryInterface {
     ///
     /// The address where the read should be performed at has to be a multiple of 4.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn read_mem_32bit(&mut self, address: u64, data: &mut [u8]) -> Result<(), Self::Error> {
+    fn read_mem_32bit(&mut self, address: u64, data: &mut [u8]) -> Result<(), ERR> {
         // Default implementation uses `read_32`, then converts u32 values back
         // to bytes. Assumes target is little endian. May be overridden to
         // provide an implementation that avoids heap allocation and endian
@@ -138,7 +138,7 @@ pub trait MemoryInterface {
     /// used.
     ///
     ///  Generally faster than `read_8`.
-    fn read(&mut self, address: u64, data: &mut [u8]) -> Result<(), Self::Error> {
+    fn read(&mut self, address: u64, data: &mut [u8]) -> Result<(), ERR> {
         if self.supports_native_64bit_access() {
             // Avoid heap allocation and copy if we don't need it.
             self.read_8(address, data)?;
@@ -158,7 +158,7 @@ pub trait MemoryInterface {
     ///
     /// The address where the write should be performed at has to be a multiple of 8.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn write_word_64(&mut self, address: u64, data: u64) -> Result<(), Self::Error> {
+    fn write_word_64(&mut self, address: u64, data: u64) -> Result<(), ERR> {
         self.write_64(address, std::slice::from_ref(&data))
     }
 
@@ -166,7 +166,7 @@ pub trait MemoryInterface {
     ///
     /// The address where the write should be performed at has to be a multiple of 4.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn write_word_32(&mut self, address: u64, data: u32) -> Result<(), Self::Error> {
+    fn write_word_32(&mut self, address: u64, data: u32) -> Result<(), ERR> {
         self.write_32(address, std::slice::from_ref(&data))
     }
 
@@ -174,12 +174,12 @@ pub trait MemoryInterface {
     ///
     /// The address where the write should be performed at has to be a multiple of 2.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn write_word_16(&mut self, address: u64, data: u16) -> Result<(), Self::Error> {
+    fn write_word_16(&mut self, address: u64, data: u16) -> Result<(), ERR> {
         self.write_16(address, std::slice::from_ref(&data))
     }
 
     /// Write an 8bit word at `address`.
-    fn write_word_8(&mut self, address: u64, data: u8) -> Result<(), Self::Error> {
+    fn write_word_8(&mut self, address: u64, data: u8) -> Result<(), ERR> {
         self.write_8(address, std::slice::from_ref(&data))
     }
 
@@ -188,28 +188,28 @@ pub trait MemoryInterface {
     /// The number of words written is `data.len()`.
     /// The address where the write should be performed at has to be a multiple of 8.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn write_64(&mut self, address: u64, data: &[u64]) -> Result<(), Self::Error>;
+    fn write_64(&mut self, address: u64, data: &[u64]) -> Result<(), ERR>;
 
     /// Write a block of 32bit words at `address`.
     ///
     /// The number of words written is `data.len()`.
     /// The address where the write should be performed at has to be a multiple of 4.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn write_32(&mut self, address: u64, data: &[u32]) -> Result<(), Self::Error>;
+    fn write_32(&mut self, address: u64, data: &[u32]) -> Result<(), ERR>;
 
     /// Write a block of 16bit words at `address`.
     ///
     /// The number of words written is `data.len()`.
     /// The address where the write should be performed at has to be a multiple of 2.
     /// Returns [`Error::MemoryNotAligned`] if this does not hold true.
-    fn write_16(&mut self, address: u64, data: &[u16]) -> Result<(), Self::Error>;
+    fn write_16(&mut self, address: u64, data: &[u16]) -> Result<(), ERR>;
 
     /// Write a block of 8bit words at `address`.
-    fn write_8(&mut self, address: u64, data: &[u8]) -> Result<(), Self::Error>;
+    fn write_8(&mut self, address: u64, data: &[u8]) -> Result<(), ERR>;
 
     /// Writes bytes using 64 bit memory access. Address must be 64 bit aligned
     /// and data must be an exact multiple of 8.
-    fn write_mem_64bit(&mut self, address: u64, data: &[u8]) -> Result<(), Self::Error> {
+    fn write_mem_64bit(&mut self, address: u64, data: &[u8]) -> Result<(), ERR> {
         // Default implementation uses `write_64`, then converts u64 values back
         // to bytes. Assumes target is little endian. May be overridden to
         // provide an implementation that avoids heap allocation and endian
@@ -230,7 +230,7 @@ pub trait MemoryInterface {
 
     /// Writes bytes using 32 bit memory access. Address must be 32 bit aligned
     /// and data must be an exact multiple of 8.
-    fn write_mem_32bit(&mut self, address: u64, data: &[u8]) -> Result<(), Self::Error> {
+    fn write_mem_32bit(&mut self, address: u64, data: &[u8]) -> Result<(), ERR> {
         // Default implementation uses `write_32`, then converts u32 values back
         // to bytes. Assumes target is little endian. May be overridden to
         // provide an implementation that avoids heap allocation and endian
@@ -255,7 +255,7 @@ pub trait MemoryInterface {
     ///
     /// If the target does not support 8-bit aligned access, and `address` is not
     /// aligned on a 32-bit boundary, this function will return a [`Error::MemoryNotAligned`] error.
-    fn write(&mut self, mut address: u64, mut data: &[u8]) -> Result<(), Self::Error> {
+    fn write(&mut self, mut address: u64, mut data: &[u8]) -> Result<(), ERR> {
         let len = data.len();
         let start_extra_count = ((4 - (address % 4) as usize) % 4).min(len);
         let end_extra_count = (len - start_extra_count) % 4;
@@ -305,7 +305,7 @@ pub trait MemoryInterface {
     }
 
     /// Returns whether the current platform supports native 8bit transfers.
-    fn supports_8bit_transfers(&self) -> Result<bool, Self::Error>;
+    fn supports_8bit_transfers(&self) -> Result<bool, ERR>;
 
     /// Flush any outstanding operations.
     ///
@@ -313,7 +313,7 @@ pub trait MemoryInterface {
     /// to assure that any such batched writes have in fact been issued, `flush`
     /// can be called.  Takes no arguments, but may return failure if a batched
     /// operation fails.
-    fn flush(&mut self) -> Result<(), Self::Error>;
+    fn flush(&mut self) -> Result<(), ERR>;
 }
 
 // Helper functions to validate address space constraints

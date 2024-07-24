@@ -3,7 +3,7 @@
 
 use probe_rs_target::CoreType;
 
-use crate::{Error, MemoryInterface};
+use crate::MemoryInterface;
 
 use super::{DebugError, DebugInfo, DebugRegisters, StackFrame};
 
@@ -35,7 +35,7 @@ pub struct UnimplementedExceptionHandler;
 impl ExceptionInterface for UnimplementedExceptionHandler {
     fn exception_details(
         &self,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _stackframe_registers: &DebugRegisters,
         _debug_info: &DebugInfo,
     ) -> Result<Option<ExceptionInfo>, DebugError> {
@@ -47,7 +47,7 @@ impl ExceptionInterface for UnimplementedExceptionHandler {
 
     fn calling_frame_registers(
         &self,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _stackframe_registers: &crate::debug::DebugRegisters,
         _raw_exception: u32,
     ) -> Result<crate::debug::DebugRegisters, DebugError> {
@@ -66,7 +66,7 @@ impl ExceptionInterface for UnimplementedExceptionHandler {
     fn exception_description(
         &self,
         _raw_exception: u32,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
     ) -> Result<String, DebugError> {
         Err(DebugError::NotImplemented("exception description"))
     }
@@ -96,7 +96,7 @@ pub trait ExceptionInterface {
     /// and the unwind should continue normally.
     fn exception_details(
         &self,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         stackframe_registers: &DebugRegisters,
         debug_info: &DebugInfo,
     ) -> Result<Option<ExceptionInfo>, DebugError>;
@@ -104,7 +104,7 @@ pub trait ExceptionInterface {
     /// Using the `stackframe_registers` for a "called frame", retrieve updated register values for the "calling frame".
     fn calling_frame_registers(
         &self,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         stackframe_registers: &crate::debug::DebugRegisters,
         raw_exception: u32,
     ) -> Result<crate::debug::DebugRegisters, DebugError>;
@@ -120,6 +120,6 @@ pub trait ExceptionInterface {
     fn exception_description(
         &self,
         raw_exception: u32,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
     ) -> Result<String, DebugError>;
 }

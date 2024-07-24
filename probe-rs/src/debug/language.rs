@@ -5,7 +5,7 @@ use crate::{
         Bitfield, DebugError, Modifier, Variable, VariableCache, VariableName, VariableType,
         VariableValue,
     },
-    Error, MemoryInterface,
+    MemoryInterface,
 };
 
 /// C, C89, C99, C11, ...
@@ -35,14 +35,14 @@ pub trait ProgrammingLanguage {
     fn read_variable_value(
         &self,
         _variable: &Variable,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> VariableValue;
 
     fn update_variable(
         &self,
         variable: &Variable,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _new_value: &str,
     ) -> Result<(), DebugError>;
 
@@ -84,7 +84,7 @@ impl ProgrammingLanguage for UnknownLanguage {
     fn read_variable_value(
         &self,
         _variable: &Variable,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _variable_cache: &VariableCache,
     ) -> VariableValue {
         VariableValue::Error(format!(
@@ -96,7 +96,7 @@ impl ProgrammingLanguage for UnknownLanguage {
     fn update_variable(
         &self,
         _variable: &Variable,
-        _memory: &mut dyn MemoryInterface<Error = Error>,
+        _memory: &mut dyn MemoryInterface,
         _new_value: &str,
     ) -> Result<(), DebugError> {
         Err(DebugError::Other(format!(

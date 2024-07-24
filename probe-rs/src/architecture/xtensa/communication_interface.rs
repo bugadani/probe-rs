@@ -710,9 +710,7 @@ fn as_bytes_mut<T: DataType>(data: &mut [T]) -> &mut [u8] {
 }
 
 impl<'probe> MemoryInterface for XtensaCommunicationInterface<'probe> {
-    type Error = crate::Error;
-
-    fn read(&mut self, address: u64, dst: &mut [u8]) -> Result<(), crate::Error> {
+    fn read(&mut self, address: u64, dst: &mut [u8]) -> Result<(), ProbeRsError> {
         self.read_memory(address, dst)?;
 
         Ok(())
@@ -722,92 +720,92 @@ impl<'probe> MemoryInterface for XtensaCommunicationInterface<'probe> {
         false
     }
 
-    fn read_word_64(&mut self, address: u64) -> Result<u64, crate::Error> {
+    fn read_word_64(&mut self, address: u64) -> Result<u64, ProbeRsError> {
         let mut out = [0; 8];
         self.read(address, &mut out)?;
 
         Ok(u64::from_le_bytes(out))
     }
 
-    fn read_word_32(&mut self, address: u64) -> Result<u32, crate::Error> {
+    fn read_word_32(&mut self, address: u64) -> Result<u32, ProbeRsError> {
         let mut out = [0; 4];
         self.read(address, &mut out)?;
 
         Ok(u32::from_le_bytes(out))
     }
 
-    fn read_word_16(&mut self, address: u64) -> Result<u16, crate::Error> {
+    fn read_word_16(&mut self, address: u64) -> Result<u16, ProbeRsError> {
         let mut out = [0; 2];
         self.read(address, &mut out)?;
 
         Ok(u16::from_le_bytes(out))
     }
 
-    fn read_word_8(&mut self, address: u64) -> Result<u8, crate::Error> {
+    fn read_word_8(&mut self, address: u64) -> Result<u8, ProbeRsError> {
         let mut out = 0;
         self.read(address, std::slice::from_mut(&mut out))?;
         Ok(out)
     }
 
-    fn read_64(&mut self, address: u64, data: &mut [u64]) -> Result<(), crate::Error> {
+    fn read_64(&mut self, address: u64, data: &mut [u64]) -> Result<(), ProbeRsError> {
         self.read_8(address, as_bytes_mut(data))
     }
 
-    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), crate::Error> {
+    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), ProbeRsError> {
         self.read_8(address, as_bytes_mut(data))
     }
 
-    fn read_16(&mut self, address: u64, data: &mut [u16]) -> Result<(), crate::Error> {
+    fn read_16(&mut self, address: u64, data: &mut [u16]) -> Result<(), ProbeRsError> {
         self.read_8(address, as_bytes_mut(data))
     }
 
-    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), crate::Error> {
+    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), ProbeRsError> {
         self.read(address, data)
     }
 
-    fn write(&mut self, address: u64, data: &[u8]) -> Result<(), crate::Error> {
+    fn write(&mut self, address: u64, data: &[u8]) -> Result<(), ProbeRsError> {
         self.write_memory(address, data)?;
 
         Ok(())
     }
 
-    fn write_word_64(&mut self, address: u64, data: u64) -> Result<(), crate::Error> {
+    fn write_word_64(&mut self, address: u64, data: u64) -> Result<(), ProbeRsError> {
         self.write(address, &data.to_le_bytes())
     }
 
-    fn write_word_32(&mut self, address: u64, data: u32) -> Result<(), crate::Error> {
+    fn write_word_32(&mut self, address: u64, data: u32) -> Result<(), ProbeRsError> {
         self.write(address, &data.to_le_bytes())
     }
 
-    fn write_word_16(&mut self, address: u64, data: u16) -> Result<(), crate::Error> {
+    fn write_word_16(&mut self, address: u64, data: u16) -> Result<(), ProbeRsError> {
         self.write(address, &data.to_le_bytes())
     }
 
-    fn write_word_8(&mut self, address: u64, data: u8) -> Result<(), crate::Error> {
+    fn write_word_8(&mut self, address: u64, data: u8) -> Result<(), ProbeRsError> {
         self.write(address, &[data])
     }
 
-    fn write_64(&mut self, address: u64, data: &[u64]) -> Result<(), crate::Error> {
+    fn write_64(&mut self, address: u64, data: &[u64]) -> Result<(), ProbeRsError> {
         self.write_8(address, as_bytes(data))
     }
 
-    fn write_32(&mut self, address: u64, data: &[u32]) -> Result<(), crate::Error> {
+    fn write_32(&mut self, address: u64, data: &[u32]) -> Result<(), ProbeRsError> {
         self.write_8(address, as_bytes(data))
     }
 
-    fn write_16(&mut self, address: u64, data: &[u16]) -> Result<(), crate::Error> {
+    fn write_16(&mut self, address: u64, data: &[u16]) -> Result<(), ProbeRsError> {
         self.write_8(address, as_bytes(data))
     }
 
-    fn write_8(&mut self, address: u64, data: &[u8]) -> Result<(), crate::Error> {
+    fn write_8(&mut self, address: u64, data: &[u8]) -> Result<(), ProbeRsError> {
         self.write(address, data)
     }
 
-    fn supports_8bit_transfers(&self) -> Result<bool, crate::Error> {
+    fn supports_8bit_transfers(&self) -> Result<bool, ProbeRsError> {
         Ok(true)
     }
 
-    fn flush(&mut self) -> Result<(), crate::Error> {
+    fn flush(&mut self) -> Result<(), ProbeRsError> {
         Ok(())
     }
 }

@@ -68,12 +68,10 @@ where
     }
 }
 
-impl<APA> MemoryInterface for ADIMemoryInterface<'_, APA>
+impl<APA> MemoryInterface<ArmError> for ADIMemoryInterface<'_, APA>
 where
     APA: std::any::Any + FlushableArmAccess + ApAccess + DpAccess,
 {
-    type Error = ArmError;
-
     /// Read a block of 64 bit words at `address`.
     ///
     /// The number of words read is `data.len()`.

@@ -7,7 +7,7 @@ use crate::{
         DebugError, Variable, VariableCache, VariableLocation, VariableName, VariableType,
         VariableValue,
     },
-    Error, MemoryInterface,
+    MemoryInterface,
 };
 
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ impl ProgrammingLanguage for Rust {
     fn read_variable_value(
         &self,
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         variable_cache: &VariableCache,
     ) -> VariableValue {
         match variable.type_name.inner() {
@@ -67,7 +67,7 @@ impl ProgrammingLanguage for Rust {
     fn update_variable(
         &self,
         variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         new_value: &str,
     ) -> Result<(), DebugError> {
         match variable.type_name.inner() {

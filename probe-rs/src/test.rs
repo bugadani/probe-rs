@@ -1,6 +1,6 @@
 //! Helpers for testing the crate
 
-use crate::MemoryInterface;
+use crate::{Error, MemoryInterface};
 
 #[derive(Debug)]
 pub(crate) struct MockMemory {
@@ -74,36 +74,34 @@ impl MockMemory {
 }
 
 impl MemoryInterface for MockMemory {
-    type Error = crate::Error;
-
     fn supports_native_64bit_access(&mut self) -> bool {
         false
     }
 
-    fn read_word_64(&mut self, _address: u64) -> Result<u64, crate::Error> {
+    fn read_word_64(&mut self, _address: u64) -> Result<u64, Error> {
         todo!()
     }
 
-    fn read_word_32(&mut self, address: u64) -> Result<u32, crate::Error> {
+    fn read_word_32(&mut self, address: u64) -> Result<u32, Error> {
         let mut bytes = [0u8; 4];
         self.read_8(address, &mut bytes)?;
 
         Ok(u32::from_le_bytes(bytes))
     }
 
-    fn read_word_8(&mut self, _address: u64) -> Result<u8, crate::Error> {
+    fn read_word_8(&mut self, _address: u64) -> Result<u8, Error> {
         todo!()
     }
 
-    fn read_word_16(&mut self, _address: u64) -> Result<u16, crate::Error> {
+    fn read_word_16(&mut self, _address: u64) -> Result<u16, Error> {
         todo!()
     }
 
-    fn read_64(&mut self, _address: u64, _data: &mut [u64]) -> Result<(), crate::Error> {
+    fn read_64(&mut self, _address: u64, _data: &mut [u64]) -> Result<(), Error> {
         todo!()
     }
 
-    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), crate::Error> {
+    fn read_32(&mut self, address: u64, data: &mut [u32]) -> Result<(), Error> {
         let mut buff = vec![0u8; data.len() * 4];
 
         self.read_8(address, &mut buff)?;
@@ -115,11 +113,11 @@ impl MemoryInterface for MockMemory {
         Ok(())
     }
 
-    fn read_16(&mut self, _address: u64, _data: &mut [u16]) -> Result<(), crate::Error> {
+    fn read_16(&mut self, _address: u64, _data: &mut [u16]) -> Result<(), Error> {
         todo!()
     }
 
-    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), crate::Error> {
+    fn read_8(&mut self, address: u64, data: &mut [u8]) -> Result<(), Error> {
         let stored_data = match self
             .values
             .binary_search_by_key(&address, |(addr, _data)| *addr)
@@ -162,43 +160,43 @@ impl MemoryInterface for MockMemory {
         }
     }
 
-    fn supports_8bit_transfers(&self) -> Result<bool, crate::Error> {
+    fn supports_8bit_transfers(&self) -> Result<bool, Error> {
         Ok(true)
     }
 
-    fn write_word_64(&mut self, _address: u64, _data: u64) -> Result<(), crate::Error> {
+    fn write_word_64(&mut self, _address: u64, _data: u64) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_word_32(&mut self, _address: u64, _data: u32) -> Result<(), crate::Error> {
+    fn write_word_32(&mut self, _address: u64, _data: u32) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_word_16(&mut self, _address: u64, _data: u16) -> Result<(), crate::Error> {
+    fn write_word_16(&mut self, _address: u64, _data: u16) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_word_8(&mut self, _address: u64, _data: u8) -> Result<(), crate::Error> {
+    fn write_word_8(&mut self, _address: u64, _data: u8) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_64(&mut self, _address: u64, _data: &[u64]) -> Result<(), crate::Error> {
+    fn write_64(&mut self, _address: u64, _data: &[u64]) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_32(&mut self, _address: u64, _data: &[u32]) -> Result<(), crate::Error> {
+    fn write_32(&mut self, _address: u64, _data: &[u32]) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_16(&mut self, _address: u64, _data: &[u16]) -> Result<(), crate::Error> {
+    fn write_16(&mut self, _address: u64, _data: &[u16]) -> Result<(), Error> {
         todo!()
     }
 
-    fn write_8(&mut self, _address: u64, _data: &[u8]) -> Result<(), crate::Error> {
+    fn write_8(&mut self, _address: u64, _data: &[u8]) -> Result<(), Error> {
         todo!()
     }
 
-    fn flush(&mut self) -> Result<(), crate::Error> {
+    fn flush(&mut self) -> Result<(), Error> {
         todo!()
     }
 }

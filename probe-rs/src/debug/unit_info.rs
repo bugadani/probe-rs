@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     debug::{language, stack_frame::StackFrameInfo},
-    Error, MemoryInterface,
+    MemoryInterface,
 };
 use gimli::{
     AttributeValue, DebugInfoOffset, DebuggingInformationEntry, EvaluationResult, Location,
@@ -157,7 +157,7 @@ impl UnitInfo {
         tree_node: &gimli::DebuggingInformationEntry<GimliReader>,
         parent_variable: &mut Variable,
         child_variable: &mut Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         cache: &mut VariableCache,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<(), DebugError> {
@@ -396,7 +396,7 @@ impl UnitInfo {
         attributes_entry: &gimli::DebuggingInformationEntry<GimliReader>,
         parent_variable: &Variable,
         child_variable: &mut Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         frame_info: StackFrameInfo<'_>,
         cache: &mut VariableCache,
     ) -> Result<(), DebugError> {
@@ -445,7 +445,7 @@ impl UnitInfo {
         debug_info: &DebugInfo,
         parent_node: gimli::EntriesTreeNode<GimliReader>,
         parent_variable: &mut Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         cache: &mut VariableCache,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<(), DebugError> {
@@ -944,7 +944,7 @@ impl UnitInfo {
         node: &gimli::DebuggingInformationEntry<GimliReader>,
         parent_variable: &Variable,
         child_variable: &mut Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         cache: &mut VariableCache,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<(), DebugError> {
@@ -1363,7 +1363,7 @@ impl UnitInfo {
         array_member_type_node: &DebuggingInformationEntry<GimliReader>,
         cache: &mut VariableCache,
         array_variable: &mut Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         subranges: &[Range<u64>],
         level: usize,
         frame_info: StackFrameInfo<'_>,
@@ -1453,7 +1453,7 @@ impl UnitInfo {
         node_die: &gimli::DebuggingInformationEntry<GimliReader>,
         parent_variable: &Variable,
         child_variable: &mut Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<(), DebugError> {
         // The `byte_size` is used for arrays, etc. to offset the memory location of the next element.
@@ -1547,7 +1547,7 @@ impl UnitInfo {
         debug_info: &DebugInfo,
         node_die: &gimli::DebuggingInformationEntry<GimliReader>,
         parent_location: &VariableLocation,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<ExpressionResult, DebugError> {
         trait ResultExt {
@@ -1652,7 +1652,7 @@ impl UnitInfo {
         debug_info: &DebugInfo,
         location_list_offset: gimli::LocationListsOffset,
         frame_info: StackFrameInfo<'_>,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
     ) -> Result<ExpressionResult, DebugError> {
         let mut locations = match debug_info.locations_section.locations(
             location_list_offset,
@@ -1712,14 +1712,11 @@ impl UnitInfo {
     /// - `Result<ExpressionResult::Location(),_>`: One of the variants of VariableLocation, and needs to be interpreted for handling the 'expected' errors we encounter during evaluation.
     pub(crate) fn evaluate_expression(
         &self,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         expression: gimli::Expression<GimliReader>,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<ExpressionResult, DebugError> {
-        fn evaluate_address(
-            address: u64,
-            memory: &mut dyn MemoryInterface<Error = Error>,
-        ) -> ExpressionResult {
+        fn evaluate_address(address: u64, memory: &mut dyn MemoryInterface) -> ExpressionResult {
             let location = if address >= u32::MAX as u64 && !memory.supports_native_64bit_access() {
                 VariableLocation::Error(format!("The memory location for this variable value ({:#010X}) is invalid. Please report this as a bug.", address))
             } else {
@@ -1799,7 +1796,7 @@ impl UnitInfo {
     /// Tries to get the result of a DWARF expression in the form of a Piece.
     pub(crate) fn expression_to_piece(
         &self,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         expression: gimli::Expression<GimliReader>,
         frame_info: StackFrameInfo<'_>,
     ) -> Result<Vec<gimli::Piece<GimliReader, usize>>, DebugError> {
@@ -1843,7 +1840,7 @@ impl UnitInfo {
         unit_ref: UnitOffset,
         child_variable: &mut Variable,
         parent_variable: &Variable,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
     ) {
         let location = if let Some(child_member_index) = child_variable.member_index {
             // Push the array member to the proper location according to its index.
@@ -2184,13 +2181,13 @@ fn provide_cfa(
 /// Reads memory requested by the DWARF resolver.
 fn read_memory(
     size: u8,
-    memory: &mut dyn MemoryInterface<Error = Error>,
+    memory: &mut dyn MemoryInterface,
     address: u64,
     evaluation: &mut gimli::Evaluation<EndianReader>,
 ) -> Result<EvaluationResult<EndianReader>, DebugError> {
     /// Reads `SIZE` bytes from the memory.
     fn read<const SIZE: usize>(
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         address: u64,
     ) -> Result<[u8; SIZE], DebugError> {
         let mut buff = [0u8; SIZE];

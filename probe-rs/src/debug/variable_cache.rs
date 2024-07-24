@@ -398,7 +398,7 @@ impl VariableCache {
     pub fn recurse_deferred_variables(
         &mut self,
         debug_info: &DebugInfo,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         max_recursion_depth: usize,
         frame_info: StackFrameInfo<'_>,
     ) {
@@ -417,7 +417,7 @@ impl VariableCache {
     fn recurse_deferred_variables_internal(
         &mut self,
         debug_info: &DebugInfo,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         parent_variable: &mut Variable,
         max_recursion_depth: usize,
         current_recursion_depth: usize,

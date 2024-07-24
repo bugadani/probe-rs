@@ -33,7 +33,7 @@ pub struct CoreInformation {
 }
 
 /// A generic interface to control a MCU core.
-pub trait CoreInterface: MemoryInterface<Error = Error> {
+pub trait CoreInterface: MemoryInterface {
     /// Wait until the core is halted. If the core does not halt on its own,
     /// a [`DebugProbeError::Timeout`](crate::probe::DebugProbeError::Timeout) error will be returned.
     fn wait_for_core_halted(&mut self, timeout: Duration) -> Result<(), Error>;
@@ -179,8 +179,6 @@ pub trait CoreInterface: MemoryInterface<Error = Error> {
 }
 
 impl<'probe> MemoryInterface for Core<'probe> {
-    type Error = Error;
-
     fn supports_native_64bit_access(&mut self) -> bool {
         self.inner.supports_native_64bit_access()
     }

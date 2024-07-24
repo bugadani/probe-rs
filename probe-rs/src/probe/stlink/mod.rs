@@ -1599,9 +1599,7 @@ impl SwdSequence for StLinkMemoryInterface<'_> {
     }
 }
 
-impl MemoryInterface for StLinkMemoryInterface<'_> {
-    type Error = ArmError;
-
+impl MemoryInterface<ArmError> for StLinkMemoryInterface<'_> {
     fn supports_native_64bit_access(&mut self) -> bool {
         false
     }

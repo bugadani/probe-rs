@@ -1,7 +1,4 @@
-use crate::{
-    debug::{language::ProgrammingLanguage, unit_info::UnitInfo},
-    Error,
-};
+use crate::debug::{language::ProgrammingLanguage, unit_info::UnitInfo};
 
 use super::*;
 use gimli::{DebugInfoOffset, DwLang, UnitOffset};
@@ -551,7 +548,7 @@ impl Variable {
     /// attempts unsupported data types.
     pub fn update_value(
         &self,
-        memory: &mut impl MemoryInterface<Error = Error>,
+        memory: &mut impl MemoryInterface,
         variable_cache: &mut VariableCache,
         new_value: String,
     ) -> Result<(), DebugError> {
@@ -632,7 +629,7 @@ impl Variable {
     /// Evaluate the variable's result if possible and set self.value, or else set self.value as the error String.
     pub fn extract_value(
         &mut self,
-        memory: &mut dyn MemoryInterface<Error = Error>,
+        memory: &mut dyn MemoryInterface,
         variable_cache: &VariableCache,
     ) {
         if let VariableValue::Error(_) = self.value {

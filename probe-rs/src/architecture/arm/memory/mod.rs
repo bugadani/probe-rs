@@ -13,7 +13,7 @@ use super::{
 pub use romtable::{Component, ComponentId, CoresightComponent, PeripheralType};
 
 /// An ArmMemoryInterface (ArmProbeInterface + MemoryAp)
-pub trait ArmMemoryInterface: crate::MemoryInterface<Error = ArmError> + SwdSequence {
+pub trait ArmMemoryInterface: crate::MemoryInterface<ArmError> + SwdSequence {
     /// The underlying MemoryAp.
     fn ap(&mut self) -> &mut MemoryAp;
 
