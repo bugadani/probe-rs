@@ -1,0 +1,74 @@
+name: esp32c61
+manufacturer:
+  id: 0x12
+  cc: 0xc
+chip_detection:
+- !Espressif
+  idcode: 0x14c25
+  variants:
+    0x2421606f: esp32c61
+variants:
+- name: esp32c61
+  cores:
+  - name: main
+    type: riscv
+    core_access_options: !Riscv
+  memory_map:
+  - !Nvm
+    name: 16 MB Max addressable Flash
+    range:
+      start: 0x0
+      end: 0x1000000
+    cores:
+    - main
+    access:
+      boot: true
+  - !Ram
+    range:
+      start: 0x40800000
+      end: 0x40860000
+    cores:
+    - main
+  - !Nvm
+    name: External flash (Read Only)
+    range:
+      start: 0x41000000
+      end: 0x41000000
+    cores:
+    - main
+    is_alias: true
+  flash_algorithms:
+  - esp32c61-flashloader
+  jtag:
+    scan_chain:
+    - name: main
+      ir_len: 5
+  default_binary_format: idf
+flash_algorithms:
+- name: esp32c61-flashloader
+  description: A flasher loader for the esp32c61.
+  default: true
+  instructions: QREGxpcAAADngOAEAUWyQEEBgoAXAwAAZwDDBxcDAABnAEMJFwMAAGcAowoXAwAAZwDDDRcDAABnAKMSFwMAAGcAQxUJxhcDf/9nAKMRAUWCgEERBsYBRYFFlwB//+eAYBk3BYZAIyIFALe1hkAjqgWufVYjrMWuI64FriOgBbC3BcGquRUMwQFFskBBAYKAtwWGQIxBNwbBqjkWY5fFAEGBFwN//2cAYwsTBXDBgoA3BYZACEG3BcGquRVjFrUAFwN//2cAQwcTBXDBgoC3BoZAlEIuh7cFwaqTh+X+kwVwwWOX9gCTdjYAkwUwwZnCLoWCgLcGgUCThmYysoU6hhcDAABnAIMNQREGxiLEJsK3BoZAlEKuhCqENwXBqpMF5f4TBXDBY5e2ApN1NgATBTDBjeG3BoFAk4amNCKFsoUmhpcAAADngGAJMzWgAH0VZY0ilbJAIkSSREEBgoC3BoZAmEKuhrcFwaqTh+X+kwVwwWMX9wATdzYAkwUwwRnDLoWCgLKFNoYXAwAAZwDD60ERBsY3BoZAFEKqhTcFwaoTB+X+EwVwwWOV5gIBRYlGIyAGAGOf1QAFRSrEA0WBAAWJAckoAJVFlwB//+eAwPp11bJAQQGCgDlxBt4i3CbaSthO1lLUVtJa0F7OYsxmyje7hkADJ4uvNomuimMDpwSRRpMFQMFjYtYQg8UKAIPGGgADxzoAg8cqAJEKcRZiB8IHogbVjV2P2Y0jLKuuIy4LriMgu7A3BYZAIyIFACMqC64DJQuwYcGqjGNjxQCyjLMFlUEjILuwhUSNSWNjpgCFSSFsNzWGQJMLRa83CoZAEQpjhAwIY1KQCGbGAyVLrzMFrEAqyAMnS69el3AAHAhShdaF3oZOiJcAf//ngEDmskVj9bwAkwRgwSGoqoRCRQMmS6+zjLxArpoylSMqq66ZxAMlS68hZuMVxfoZoAMmS6+DJcuvAyWLry6VIyoLrjOExQDehQKZIy6LruNTBfgTBQWAkwUFhgmoE4UEg5PV9EHpjRmgkwVQwS6F8lBiVNJUQlmyWSJakloCW/JLYkzSTCFhgoAFwkERBsaXAH//54AA45MFBYCThQWGfYVtjbJAQQGCgAFFgoAtcRQCI64WAIDOxMojqCYBI6Y2AbKJroQqiQFFEwYF8AHKEwYVAKMFoRCqhTKF/bejBbEAY4kJBBMFABBOhGPkqQATBAAQkwWxAEqFIoaXAAAA54DAymNKBQIzhYQAs4mJQJMFsQAihhnKg8YEAAPHBQCFBIUFfRbjiOb+OaAimaqE45sJ+gFFEaB9VQwCg6DFAYBNxEkDqQUBg6nFABVhgoA=
+  load_address: 0x40810000
+  data_load_address: 0x40850000
+  pc_init: 0x0
+  pc_uninit: 0x3c
+  pc_program_page: 0x24
+  pc_erase_sector: 0x14
+  pc_erase_all: 0x1c
+  pc_verify: 0x2c
+  pc_read: 0x34
+  data_section_offset: 0x408103ec
+  flash_properties:
+    address_range:
+      start: 0x0
+      end: 0x1000000
+    page_size: 0x4000
+    erased_byte_value: 0xff
+    program_page_timeout: 1000
+    erase_sector_timeout: 2000
+    sectors:
+    - size: 0x10000
+      address: 0x0
+  cores:
+  - main

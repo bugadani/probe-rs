@@ -1,4 +1,4 @@
-//! Sequences for the ESP32C6.
+//! Sequences for the ESP32C61.
 
 use std::{sync::Arc, time::Duration};
 
@@ -14,26 +14,26 @@ use crate::{
 
 /// The debug sequence implementation for the ESP32C6.
 #[derive(Debug)]
-pub struct ESP32C6 {
+pub struct ESP32C61 {
     inner: EspFlashSizeDetector,
 }
 
-impl ESP32C6 {
+impl ESP32C61 {
     /// Creates a new debug sequence handle for the ESP32C6.
     pub fn create() -> Arc<dyn RiscvDebugSequence> {
         Arc::new(Self {
             inner: EspFlashSizeDetector {
                 stack_pointer: 0x40850000,
-                load_address: 0x40810000,
+                load_address: 0, // Unused for RISC-V
                 spiflash_peripheral: 0x6000_3000,
                 efuse_get_spiconfig_fn: None,
-                attach_fn: 0x4000_01DC,
+                attach_fn: 0x4000_0280,
             },
         })
     }
 }
 
-impl RiscvDebugSequence for ESP32C6 {
+impl RiscvDebugSequence for ESP32C61 {
     fn on_connect(&self, interface: &mut RiscvCommunicationInterface) -> Result<(), crate::Error> {
         tracing::info!("Disabling esp32c6 watchdogs...");
         // disable super wdt
