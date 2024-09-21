@@ -27,7 +27,7 @@ impl ESP32C61 {
                 load_address: 0, // Unused for RISC-V
                 spiflash_peripheral: 0x6000_3000,
                 efuse_get_spiconfig_fn: None,
-                attach_fn: 0x4000_0280,
+                attach_fn: 0x4000_01f0,
             },
         })
     }
