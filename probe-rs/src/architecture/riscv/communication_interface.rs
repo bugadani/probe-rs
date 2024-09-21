@@ -924,6 +924,15 @@ impl<'state> RiscvCommunicationInterface<'state> {
         }
     }
 
+    /// Returns the capacity of the program buffer.
+    pub fn program_buffer_capacity(&self) -> usize {
+        if self.state.implicit_ebreak {
+            self.state.progbuf_size as usize
+        } else {
+            self.state.progbuf_size as usize - 1
+        }
+    }
+
     pub(crate) fn schedule_setup_program_buffer(&mut self, data: &[u32]) -> Result<(), RiscvError> {
         let required_len = if self.state.implicit_ebreak {
             data.len()
