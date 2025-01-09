@@ -11,19 +11,38 @@ use std::{ffi::OsString, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::Colorize;
+use figment::providers::{Data, Format as _, Json, Toml, Yaml};
+use figment::Figment;
 use itertools::Itertools;
 use probe_rs::flashing::{BinOptions, Format, FormatKind, IdfOptions};
 use probe_rs::{probe::list::Lister, Target};
 use report::Report;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, UtcOffset};
 
+#[cfg(feature = "remote")]
+use crate::cmd::remote::RemoteSession;
+use crate::cmd::remote::{ClientInterface, LocalSession};
 use crate::util::logging::setup_logging;
 use crate::util::parse_u32;
 use crate::util::parse_u64;
 
 const MAX_LOG_FILES: usize = 20;
+
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServerUser {
+    pub name: String,
+    pub token: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Config {
+    #[cfg(feature = "remote")]
+    pub server_users: Vec<ServerUser>,
+}
 
 #[derive(clap::Parser)]
 #[clap(
@@ -52,8 +71,74 @@ struct Cli {
         default_missing_value = "./report.zip"
     )]
     report: Option<PathBuf>,
+
+    /// Remote host to connect to
+    #[cfg(feature = "remote")]
+    #[arg(
+        long,
+        global = true,
+        env = "PROBE_RS_REMOTE_HOST",
+        help_heading = "REMOTE CONFIGURATION"
+    )]
+    host: Option<String>,
+
+    /// Authentication token for remote connections
+    #[cfg(feature = "remote")]
+    #[arg(
+        long,
+        global = true,
+        env = "PROBE_RS_REMOTE_TOKEN",
+        help_heading = "REMOTE CONFIGURATION"
+    )]
+    token: Option<String>,
+
     #[clap(subcommand)]
     subcommand: Subcommand,
+}
+
+impl Cli {
+    async fn run(
+        self,
+        iface: impl ClientInterface,
+        _config: Config,
+        utc_offset: UtcOffset,
+    ) -> Result<()> {
+        let lister = Lister::new();
+        match self.subcommand {
+            Subcommand::DapServer { .. } => unreachable!(),
+            #[cfg(feature = "remote")]
+            Subcommand::Serve(cmd) => cmd.run(_config).await,
+            Subcommand::List(cmd) => cmd.run(iface).await,
+            Subcommand::Info(cmd) => cmd.run(iface).await,
+            Subcommand::Gdb(cmd) => cmd.run(&lister),
+            Subcommand::Reset(cmd) => cmd.run(iface).await,
+            Subcommand::Debug(cmd) => cmd.run(&lister),
+            Subcommand::Download(cmd) => cmd.run(&lister),
+            Subcommand::Run(cmd) => cmd.run(&lister, true, utc_offset),
+            Subcommand::Attach(cmd) => cmd.run(&lister, utc_offset),
+            Subcommand::Verify(cmd) => cmd.run(&lister),
+            Subcommand::Erase(cmd) => cmd.run(&lister),
+            Subcommand::Trace(cmd) => cmd.run(&lister),
+            Subcommand::Itm(cmd) => cmd.run(&lister),
+            Subcommand::Chip(cmd) => cmd.run(iface).await,
+            Subcommand::Benchmark(cmd) => cmd.run(&lister),
+            Subcommand::Profile(cmd) => cmd.run(&lister),
+            Subcommand::Read(cmd) => cmd.run(iface).await,
+            Subcommand::Write(cmd) => cmd.run(iface).await,
+            Subcommand::Complete(cmd) => cmd.run(&lister),
+            Subcommand::Mi(cmd) => cmd.run(),
+        }
+    }
+
+    fn elf(&self) -> Option<PathBuf> {
+        match self.subcommand {
+            Subcommand::Download(ref cmd) => Some(cmd.path.clone()),
+            Subcommand::Run(ref cmd) => Some(cmd.shared_options.path.clone()),
+            Subcommand::Attach(ref cmd) => Some(cmd.run.shared_options.path.clone()),
+            Subcommand::Verify(ref cmd) => Some(cmd.path.clone()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(clap::Subcommand)]
@@ -93,14 +178,34 @@ enum Subcommand {
     Benchmark(cmd::benchmark::Cmd),
     /// Profile on-target runtime performance of target ELF program
     Profile(cmd::profile::ProfileCmd),
+    /// Start a server that accepts remote connections
+    #[cfg(feature = "remote")]
+    Serve(cmd::remote::server::Cmd),
     Read(cmd::read::Cmd),
     Write(cmd::write::Cmd),
     Complete(cmd::complete::Cmd),
     Mi(cmd::mi::Cmd),
 }
 
+impl Subcommand {
+    #[cfg(feature = "remote")]
+    fn is_remote_cmd(&self) -> bool {
+        // Commands that are implemented via a series of RPC calls.
+        // TODO: refactor other commands
+        matches!(
+            self,
+            Self::List(_)
+                | Self::Read(_)
+                | Self::Write(_)
+                | Self::Reset(_)
+                | Self::Chip(_)
+                | Self::Info(_)
+        )
+    }
+}
+
 /// Shared options for core selection, shared between commands
-#[derive(clap::Parser)]
+#[derive(clap::Parser, Serialize, Deserialize)]
 pub(crate) struct CoreOptions {
     #[clap(long, default_value = "0")]
     core: usize,
@@ -252,7 +357,8 @@ fn multicall_check<'list>(args: &'list [OsString], want: &str) -> Option<&'list 
     None
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Determine the local offset as early as possible to avoid potential
     // issues with multiple threads and getting the offset.
     // FIXME: we should probably let the user know if we can't determine the offset. However,
@@ -260,6 +366,8 @@ fn main() -> Result<()> {
     let utc_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
 
     let args: Vec<_> = std::env::args_os().collect();
+
+    // Special-case `cargo-embed` and `cargo-flash`.
     if let Some(args) = multicall_check(&args, "cargo-flash") {
         cmd::cargo_flash::main(args);
         return Ok(());
@@ -269,24 +377,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(format_arg_pos) = args.iter().position(|arg| arg == "--format") {
-        if let Some(format_arg) = args.get(format_arg_pos + 1) {
-            if let Some(format_arg) = format_arg.to_str() {
-                if FormatKind::from_str(format_arg).is_ok() {
-                    anyhow::bail!("--format has been renamed to --binary-format. Please use --binary-format {0} instead of --format {0}", format_arg);
-                }
-            }
-        }
-    }
+    reject_format_arg(&args)?;
+
+    let config = load_config().context("Failed to load configuration.")?;
 
     // Parse the commandline options.
     let matches = Cli::parse_from(args);
 
-    // Setup the probe lister, list all probes normally
-    let lister = Lister::new();
-
-    let log_path = if let Some(location) = matches.log_file {
-        Some(location)
+    let log_path = if let Some(ref location) = matches.log_file {
+        Some(location.clone())
     } else if matches.log_to_folder || matches.report.is_some() {
         // We always log if we create a report.
         let location =
@@ -305,48 +404,50 @@ fn main() -> Result<()> {
     // the DAP server has special logging requirements. Run it before initializing logging,
     // so it can do its own special init.
     if let Subcommand::DapServer(cmd) = matches.subcommand {
+        let lister = Lister::new();
         return cmd::dap_server::run(cmd, &lister, utc_offset, log_path);
     }
 
     let _logger_guard = setup_logging(log_path, None);
 
-    let mut elf = None;
-    let result = match matches.subcommand {
-        Subcommand::DapServer { .. } => unreachable!(), // handled above.
-        Subcommand::List(cmd) => cmd.run(&lister),
-        Subcommand::Info(cmd) => cmd.run(&lister),
-        Subcommand::Gdb(cmd) => cmd.run(&lister),
-        Subcommand::Reset(cmd) => cmd.run(&lister),
-        Subcommand::Debug(cmd) => cmd.run(&lister),
-        Subcommand::Download(cmd) => {
-            elf = Some(cmd.path.clone());
-            cmd.run(&lister)
-        }
-        Subcommand::Run(cmd) => {
-            elf = Some(cmd.shared_options.path.clone());
-            cmd.run(&lister, true, utc_offset)
-        }
-        Subcommand::Attach(cmd) => {
-            elf = Some(cmd.run.shared_options.path.clone());
-            cmd.run(&lister, utc_offset)
-        }
-        Subcommand::Verify(cmd) => {
-            elf = Some(cmd.path.clone());
-            cmd.run(&lister)
-        }
-        Subcommand::Erase(cmd) => cmd.run(&lister),
-        Subcommand::Trace(cmd) => cmd.run(&lister),
-        Subcommand::Itm(cmd) => cmd.run(&lister),
-        Subcommand::Chip(cmd) => cmd.run(),
-        Subcommand::Benchmark(cmd) => cmd.run(&lister),
-        Subcommand::Profile(cmd) => cmd.run(&lister),
-        Subcommand::Read(cmd) => cmd.run(&lister),
-        Subcommand::Write(cmd) => cmd.run(&lister),
-        Subcommand::Complete(cmd) => cmd.run(&lister),
-        Subcommand::Mi(cmd) => cmd.run(),
-    };
+    let elf = matches.elf();
+    let report_path = matches.report.clone();
 
-    compile_report(result, matches.report, elf, log_path)
+    #[cfg(feature = "remote")]
+    if let Some(host) = matches.host.as_deref() {
+        let handle = cmd::remote::client::connect(host, matches.token.clone()).await?;
+
+        // Run the command remotely.
+
+        anyhow::ensure!(
+            matches.subcommand.is_remote_cmd(),
+            "The subcommand is not supported in remote mode."
+        );
+
+        let session = RemoteSession::new(handle);
+
+        matches.run(session, config, utc_offset).await?;
+        // TODO: handle the report
+        return Ok(());
+    }
+
+    // Run the command locally.
+    let result = matches.run(LocalSession::new(), config, utc_offset).await;
+    compile_report(result, report_path, elf, log_path)
+}
+
+fn reject_format_arg(args: &[OsString]) -> anyhow::Result<()> {
+    if let Some(format_arg_pos) = args.iter().position(|arg| arg == "--format") {
+        if let Some(format_arg) = args.get(format_arg_pos + 1) {
+            if let Some(format_arg) = format_arg.to_str() {
+                if FormatKind::from_str(format_arg).is_ok() {
+                    anyhow::bail!("--format has been renamed to --binary-format. Please use --binary-format {0} instead of --format {0}", format_arg);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn compile_report(
@@ -391,6 +492,33 @@ fn compile_report(
     eprintln!("{base}?labels=bug&title={title}&body={body}");
 
     Ok(())
+}
+
+fn load_config() -> anyhow::Result<Config> {
+    // Paths to search for the configuration file.
+    let mut paths = vec![PathBuf::from(".")];
+    if let Some(home) = directories::UserDirs::new().map(|user| user.home_dir().to_path_buf()) {
+        paths.push(home);
+    }
+
+    // Files to search for, without extension.
+    let files = [".probe-rs"];
+
+    let default_config = serde_json::to_string_pretty(&Config::default()).unwrap();
+    let mut figment = Figment::from(Data::<Json>::string(&default_config));
+    for path in paths {
+        for file in files {
+            figment = figment
+                .merge(Toml::file(path.join(format!("{file}.toml"))))
+                .merge(Json::file(path.join(format!("{file}.json"))))
+                .merge(Yaml::file(path.join(format!("{file}.yaml"))))
+                .merge(Yaml::file(path.join(format!("{file}.yml"))));
+        }
+    }
+
+    let config = figment.extract::<Config>()?;
+
+    Ok(config)
 }
 
 #[cfg(test)]

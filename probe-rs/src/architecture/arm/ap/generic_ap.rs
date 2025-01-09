@@ -2,8 +2,10 @@
 
 use crate::architecture::arm::communication_interface::RegisterParseError;
 
+use serde::{Deserialize, Serialize};
+
 /// Describes the class of an access port defined in the [`ARM Debug Interface v5.2`](https://developer.arm.com/documentation/ihi0031/f/?lang=en) specification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ApClass {
     /// This describes a custom AP that is vendor defined and not defined by ARM
     #[default]
@@ -30,7 +32,7 @@ impl ApClass {
 /// You can find the details in the table C1-2 on page C1-146.
 /// The different types correspond to the different access/memory buses of ARM cores.
 #[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ApType {
     /// This is the most basic AP that is included in most MCUs and uses SWD or JTAG as an access bus.
     #[default]
@@ -75,6 +77,7 @@ define_ap_register!(
     /// an AP.
     ///
     /// It has to be present on every AP.
+    #[derive(Serialize, Deserialize)]
     name: IDR,
     address: 0x0FC,
     fields: [

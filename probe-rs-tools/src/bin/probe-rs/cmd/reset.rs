@@ -1,6 +1,8 @@
-use probe_rs::probe::list::Lister;
-
-use crate::{util::common_options::ProbeOptions, CoreOptions};
+use crate::{
+    cmd::remote::ClientInterface,
+    util::{cli, common_options::ProbeOptions},
+    CoreOptions,
+};
 
 #[derive(clap::Parser)]
 pub struct Cmd {
@@ -12,10 +14,11 @@ pub struct Cmd {
 }
 
 impl Cmd {
-    pub fn run(self, lister: &Lister) -> anyhow::Result<()> {
-        let (mut session, _probe_options) = self.common.simple_attach(lister)?;
+    pub async fn run(self, mut iface: impl ClientInterface) -> anyhow::Result<()> {
+        let mut session = cli::attach_probe(&mut iface, self.common, false).await?;
+        let mut core = session.core(self.shared.core);
 
-        session.core(self.shared.core)?.reset()?;
+        core.reset().await?;
 
         Ok(())
     }

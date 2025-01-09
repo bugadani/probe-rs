@@ -1,7 +1,6 @@
-use probe_rs::{probe::list::Lister, MemoryInterface};
-
+use crate::cmd::remote::ClientInterface;
 use crate::util::common_options::{ProbeOptions, ReadWriteBitWidth, ReadWriteOptions};
-use crate::util::parse_u64;
+use crate::util::{cli, parse_u64};
 use crate::CoreOptions;
 
 /// Write to target memory address
@@ -28,42 +27,57 @@ pub struct Cmd {
     values: Vec<u64>,
 }
 
+fn ensure_data_in_range(data: &[u64], width: ReadWriteBitWidth) -> anyhow::Result<()> {
+    let max = match width {
+        ReadWriteBitWidth::B8 => u8::MAX as u64,
+        ReadWriteBitWidth::B16 => u16::MAX as u64,
+        ReadWriteBitWidth::B32 => u32::MAX as u64,
+        ReadWriteBitWidth::B64 => u64::MAX,
+    };
+    if let Some(big) = data.iter().find(|&&v| v > max) {
+        anyhow::bail!(
+            "{} in {:?} is too large for an {} bit write.",
+            big,
+            data,
+            width as u8,
+        );
+    }
+
+    Ok(())
+}
+
 impl Cmd {
-    pub fn run(self, lister: &Lister) -> anyhow::Result<()> {
-        let (mut session, _probe_options) = self.probe_options.simple_attach(lister)?;
-        let mut core = session.core(self.shared.core)?;
+    pub async fn run(self, mut iface: impl ClientInterface) -> anyhow::Result<()> {
+        ensure_data_in_range(&self.values, self.read_write_options.width)?;
+
+        let mut session = cli::attach_probe(&mut iface, self.probe_options, false).await?;
+        let mut core = session.core(self.shared.core);
 
         match self.read_write_options.width {
             ReadWriteBitWidth::B8 => {
-                let mut bvalues = Vec::new();
-                for val in &self.values {
-                    if val > &(u8::MAX as u64) {
-                        return Err(anyhow::anyhow!(
-                            "{} in {:?} is too large for an 8 bit write.",
-                            val,
-                            self.values,
-                        ));
-                    }
-                    bvalues.push(*val as u8);
-                }
-                core.write_8(self.read_write_options.address, &bvalues)?;
+                core.write_memory::<u8>(
+                    self.read_write_options.address,
+                    self.values.iter().map(|v| *v as u8).collect(),
+                )
+                .await?;
+            }
+            ReadWriteBitWidth::B16 => {
+                core.write_memory::<u16>(
+                    self.read_write_options.address,
+                    self.values.iter().map(|v| *v as u16).collect(),
+                )
+                .await?;
             }
             ReadWriteBitWidth::B32 => {
-                let mut bvalues = Vec::new();
-                for val in &self.values {
-                    if val > &(u32::MAX as u64) {
-                        return Err(anyhow::anyhow!(
-                            "{} in {:?} is too large for a 32 bit write.",
-                            val,
-                            self.values,
-                        ));
-                    }
-                    bvalues.push(*val as u32);
-                }
-                core.write_32(self.read_write_options.address, &bvalues)?;
+                core.write_memory::<u32>(
+                    self.read_write_options.address,
+                    self.values.iter().map(|v| *v as u32).collect(),
+                )
+                .await?;
             }
             ReadWriteBitWidth::B64 => {
-                core.write_64(self.read_write_options.address, &self.values)?;
+                core.write_memory::<u64>(self.read_write_options.address, self.values)
+                    .await?;
             }
         }
 

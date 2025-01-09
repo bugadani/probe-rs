@@ -8,6 +8,7 @@ use super::{
 };
 use bitfield::bitfield;
 use jep106::JEP106Code;
+use serde::{Deserialize, Serialize};
 
 use crate::probe::DebugProbeError;
 use std::fmt::Display;
@@ -637,7 +638,7 @@ impl Register for BASEPTR1 {
 }
 
 /// The ID of a debug port. Can be used to detect and select devices in a multidrop setup.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct DebugPortId {
     /// The revision of the debug port (implementation defined). This is what the designer of the debug port chooses.
     pub revision: u8,
@@ -708,7 +709,7 @@ impl DpRegister for RdBuff {
 }
 
 /// Specifies if pushed-find operations are implemented or not.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MinDpSupport {
     /// Pushed-find operations are **not** implemented.
     NotImplemented,
@@ -727,7 +728,7 @@ impl From<bool> for MinDpSupport {
 }
 
 /// The version of the debug port.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum DebugPortVersion {
     /// Version 0 (not common)
     DPv0,

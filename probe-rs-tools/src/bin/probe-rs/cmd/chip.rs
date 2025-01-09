@@ -1,5 +1,9 @@
+use std::io::Write;
+
 use bytesize::ByteSize;
 use probe_rs::config::MemoryRegion;
+
+use crate::cmd::remote::ClientInterface;
 
 #[derive(clap::Parser)]
 pub struct Cmd {
@@ -22,24 +26,28 @@ enum Subcommand {
 }
 
 impl Cmd {
-    pub fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self, mut iface: impl ClientInterface) -> anyhow::Result<()> {
         let output = std::io::stdout().lock();
 
         match self.subcommand {
-            Subcommand::List => print_families(output),
-            Subcommand::Info { name } => print_chip_info(output, &name),
+            Subcommand::List => print_families(&mut iface, output).await,
+            Subcommand::Info { name } => print_chip_info(&mut iface, output, &name).await,
         }
     }
 }
 
 /// Print all the available families and their contained chips to the
 /// commandline.
-pub fn print_families(mut output: impl std::io::Write) -> anyhow::Result<()> {
+pub async fn print_families(
+    iface: &mut impl ClientInterface,
+    mut output: impl Write,
+) -> anyhow::Result<()> {
     writeln!(output, "Available chips:")?;
-    for family in probe_rs::config::families() {
+    let families = iface.list_chip_families().await?;
+    for family in families {
         writeln!(output, "{}", &family.name)?;
         writeln!(output, "    Variants:")?;
-        for variant in family.variants() {
+        for variant in family.variants {
             writeln!(output, "        {}", variant.name)?;
         }
     }
@@ -48,9 +56,13 @@ pub fn print_families(mut output: impl std::io::Write) -> anyhow::Result<()> {
 
 /// Print all the available families and their contained chips to the
 /// commandline.
-pub fn print_chip_info(mut output: impl std::io::Write, name: &str) -> anyhow::Result<()> {
+pub async fn print_chip_info(
+    iface: &mut impl ClientInterface,
+    mut output: impl Write,
+    name: &str,
+) -> anyhow::Result<()> {
     writeln!(output, "{}", name)?;
-    let target = probe_rs::config::get_target_by_name(name)?;
+    let target = iface.chip_info(name).await?;
     writeln!(output, "Cores ({}):", target.cores.len())?;
     for core in target.cores {
         writeln!(
@@ -78,10 +90,15 @@ pub fn print_chip_info(mut output: impl std::io::Write, name: &str) -> anyhow::R
     Ok(())
 }
 
-#[test]
-fn single_chip_output() {
+#[cfg(test)]
+#[tokio::test]
+async fn single_chip_output() {
     let mut buff = Vec::new();
-    print_chip_info(&mut buff, "nrf52840_xxaa").unwrap();
+    let mut iface = crate::cmd::remote::LocalSession::new();
+
+    print_chip_info(&mut iface, &mut buff, "nrf52840_xxaa")
+        .await
+        .unwrap();
 
     // output should be valid utf8
     let output = String::from_utf8(buff).unwrap();
@@ -89,10 +106,15 @@ fn single_chip_output() {
     insta::assert_snapshot!(output);
 }
 
-#[test]
-fn multiple_chip_output() {
+#[cfg(test)]
+#[tokio::test]
+async fn multiple_chip_output() {
     let mut buff = Vec::new();
-    let error = print_chip_info(&mut buff, "nrf52").unwrap_err();
+
+    let mut iface = crate::cmd::remote::LocalSession::new();
+    let error = print_chip_info(&mut iface, &mut buff, "nrf52")
+        .await
+        .unwrap_err();
 
     insta::assert_snapshot!(error.to_string());
 }

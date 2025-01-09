@@ -344,7 +344,7 @@ impl RiscvDebugInterfaceState {
 }
 
 /// A single-use factory for creating RISC-V communication interfaces and their states.
-pub trait RiscvInterfaceBuilder<'probe> {
+pub trait RiscvInterfaceBuilder<'probe>: Send {
     /// Creates a new RISC-V communication interface state object.
     ///
     /// The state object needs to be stored separately from the communication interface

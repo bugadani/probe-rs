@@ -1,11 +1,11 @@
-use probe_rs::probe::list::Lister;
+use crate::cmd::remote::ClientInterface;
 
 #[derive(clap::Parser)]
 pub struct Cmd {}
 
 impl Cmd {
-    pub fn run(self, lister: &Lister) -> anyhow::Result<()> {
-        let probes = lister.list_all();
+    pub async fn run(self, mut iface: impl ClientInterface) -> anyhow::Result<()> {
+        let probes = iface.list_probes().await?;
 
         if !probes.is_empty() {
             println!("The following debug probes were found:");
