@@ -38,7 +38,7 @@ impl RemoteFunction for Attach {
                 if self.resume_target {
                     session.resume_all_cores()?;
                 }
-                let session_id = ctx.set_session(session);
+                let session_id = ctx.set_session(session, common_options.dry_run());
                 Ok(AttachResult::Success(session_id))
             }
             Err(OperationError::MultipleProbesFound { list }) => Ok(AttachResult::MultipleProbes(

@@ -145,7 +145,7 @@ impl ProbeOptions {
 }
 
 /// Common options and logic when interfacing with a [Probe] which already did all pre operation preparation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LoadedProbeOptions(ProbeOptions);
 
 impl LoadedProbeOptions {

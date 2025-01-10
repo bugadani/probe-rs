@@ -7,6 +7,7 @@ use crate::cmd::remote::{LocalSession, SessionId};
 
 pub mod attach;
 pub mod chip;
+pub mod flash;
 pub mod info;
 pub mod list_probes;
 pub mod read_memory;
@@ -48,16 +49,29 @@ pub(super) enum RemoteFunctions {
     ChipInfo(chip::ChipInfo),
     LoadChipFamilies(chip::LoadChipFamilies),
     Info(info::Info),
+    Flash(flash::Flash),
 }
 
-pub trait EmitterFn {
-    async fn call(&mut self, args: Vec<u8>) -> anyhow::Result<()>;
+pub trait EmitterFn: Send {
+    fn call(
+        &mut self,
+        args: Vec<u8>,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
 }
 
-impl<F: FnMut(Vec<u8>)> EmitterFn for F {
+impl<F: FnMut(Vec<u8>) + Send> EmitterFn for F {
     async fn call(&mut self, args: Vec<u8>) -> anyhow::Result<()> {
         self(args);
         Ok(())
+    }
+}
+
+pub struct Emitter<F>(F);
+
+impl<F: EmitterFn> Emitter<F> {
+    pub async fn emit(&mut self, data: impl Serialize) -> anyhow::Result<()> {
+        let data = postcard::to_stdvec(&data)?;
+        self.0.call(data).await
     }
 }
 
@@ -76,16 +90,24 @@ impl<'a, F: EmitterFn> Context<'a, F> {
         self.emitter.call(data).await
     }
 
-    pub fn set_session(&mut self, session: Session) -> SessionId {
-        self.iface.set_session(session)
+    pub fn set_session(&mut self, session: Session, dry_run: bool) -> SessionId {
+        self.iface.set_session(session, dry_run)
     }
 
     pub fn session(&mut self, sid: SessionId) -> &mut Session {
         self.iface.session(sid)
     }
 
+    pub fn dry_run(&self, sid: SessionId) -> bool {
+        self.iface.dry_run(sid)
+    }
+
     pub fn lister(&self) -> Lister {
         self.iface.lister()
+    }
+
+    pub fn split(self) -> (&'a mut LocalSession, Emitter<F>) {
+        (self.iface, Emitter(self.emitter))
     }
 }
 
@@ -109,6 +131,7 @@ impl RemoteFunctions {
             RemoteFunctions::ChipInfo(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::LoadChipFamilies(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::Info(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::Flash(func) => postcard::to_stdvec(&func.run(ctx).await?),
         };
 
         result.map_err(|e| e.into())

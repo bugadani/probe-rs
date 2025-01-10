@@ -113,7 +113,7 @@ impl Cli {
             Subcommand::Gdb(cmd) => cmd.run(&lister),
             Subcommand::Reset(cmd) => cmd.run(iface).await,
             Subcommand::Debug(cmd) => cmd.run(&lister),
-            Subcommand::Download(cmd) => cmd.run(&lister),
+            Subcommand::Download(cmd) => cmd.run(iface).await,
             Subcommand::Run(cmd) => cmd.run(&lister, true, utc_offset),
             Subcommand::Attach(cmd) => cmd.run(&lister, utc_offset),
             Subcommand::Verify(cmd) => cmd.run(&lister),
@@ -200,6 +200,7 @@ impl Subcommand {
                 | Self::Reset(_)
                 | Self::Chip(_)
                 | Self::Info(_)
+                | Self::Download(_)
         )
     }
 }

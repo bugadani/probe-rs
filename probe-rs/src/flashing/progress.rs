@@ -1,6 +1,8 @@
 use super::FlashLayout;
 use std::{sync::Arc, time::Duration};
 
+use serde::{Deserialize, Serialize};
+
 /// A structure to manage the flashing procedure progress reporting.
 ///
 /// This struct stores a handler closure which will be called every time an event happens during the flashing process.
@@ -136,7 +138,7 @@ impl FlashProgress {
 ///
 /// If an error occurs in any stage, one of the `Failed*` event will be returned,
 /// and no further events will be returned.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ProgressEvent {
     /// The flash layout has been built and the flashing procedure was initialized.
     Initialized {

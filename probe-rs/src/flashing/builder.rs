@@ -6,8 +6,10 @@ use probe_rs_target::{MemoryRange, NvmRegion, PageInfo};
 
 use super::{FlashAlgorithm, FlashError, FlashVisualizer};
 
+use serde::{Deserialize, Serialize};
+
 /// The description of a page in flash.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashPage {
     pub(super) address: u64,
     pub(super) data: Vec<u8>,
@@ -53,7 +55,7 @@ impl FlashPage {
 }
 
 /// The description of a sector in flash.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct FlashSector {
     pub(crate) address: u64,
     pub(crate) size: u64,
@@ -73,7 +75,7 @@ impl FlashSector {
 
 /// A struct to hold all the information about one region
 /// in the flash that is erased during flashing and has to be restored to its original value afterwards.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct FlashFill {
     address: u64,
     size: u64,
@@ -98,7 +100,7 @@ impl FlashFill {
 }
 
 /// The built layout of the data in flash.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashLayout {
     pub(crate) sectors: Vec<FlashSector>,
     pub(crate) pages: Vec<FlashPage>,
@@ -147,7 +149,7 @@ impl FlashLayout {
 }
 
 /// A block of data that is to be written to flash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashDataBlockSpan {
     address: u64,
     size: u64,

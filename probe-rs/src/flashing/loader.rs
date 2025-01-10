@@ -22,6 +22,8 @@ use crate::memory::MemoryInterface;
 use crate::session::Session;
 use crate::Target;
 
+use serde::{Deserialize, Serialize};
+
 /// Helper trait for object safety.
 pub trait ImageReader: Read + Seek {}
 impl<T> ImageReader for T where T: Read + Seek {}
@@ -293,7 +295,7 @@ impl ImageLoader for IdfLoader {
 }
 
 /// Current boot information
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub enum BootInfo {
     /// Loaded executable has a vector table in RAM
     FromRam {

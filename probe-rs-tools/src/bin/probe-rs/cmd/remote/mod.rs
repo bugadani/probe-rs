@@ -4,15 +4,18 @@ use std::path::PathBuf;
 use std::path::Path;
 
 use probe_rs::{
+    flashing::ProgressEvent,
     probe::{list::Lister, WireProtocol},
     Session,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     cmd::remote::functions::{
         attach::{Attach, AttachResult},
         chip::{ChipData, ChipFamily},
+        flash::{DownloadOptions, Flash, FlashResult},
         info::{Info, InfoEvent},
         list_probes::{DebugProbeEntry, ListProbes},
         read_memory::ReadMemory,
@@ -22,6 +25,7 @@ use crate::{
         Context, NoMessage, RemoteFunction, RemoteFunctions, Word,
     },
     util::common_options::ProbeOptions,
+    FormatOptions,
 };
 
 #[cfg(feature = "remote")]
@@ -141,6 +145,26 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
             iface: self.iface,
         }
     }
+
+    pub async fn flash(
+        &mut self,
+        path: PathBuf,
+        format: FormatOptions,
+        options: DownloadOptions,
+        on_msg: impl FnMut(ProgressEvent) + Send,
+    ) -> anyhow::Result<FlashResult> {
+        self.iface
+            .run_call_streaming(
+                Flash {
+                    sessid: self.sessid,
+                    path,
+                    format,
+                    options,
+                },
+                on_msg,
+            )
+            .await
+    }
 }
 
 pub struct CoreInterface<'a, T: ClientInterface> {
@@ -201,20 +225,29 @@ pub struct SessionId(());
 /// Run functions locally.
 pub struct LocalSession {
     session: Option<Session>,
+    dry_run: bool,
 }
 
 impl LocalSession {
     pub fn new() -> Self {
-        Self { session: None }
+        Self {
+            session: None,
+            dry_run: false,
+        }
     }
 
-    pub fn set_session(&mut self, session: Session) -> SessionId {
+    pub fn set_session(&mut self, session: Session, dry_run: bool) -> SessionId {
         self.session = Some(session);
+        self.dry_run = dry_run;
         SessionId(())
     }
 
     pub fn session(&mut self, _sid: SessionId) -> &mut Session {
         self.session.as_mut().unwrap()
+    }
+
+    pub fn dry_run(&self, _sid: SessionId) -> bool {
+        self.dry_run
     }
 
     pub fn lister(&self) -> Lister {
@@ -282,4 +315,40 @@ impl Client for RemoteSession {
             })
             .await
     }
+}
+
+/// Runs the blocking closure on a separate thread, with option for emitting events to the client.
+pub async fn run_blocking_streaming<R, M, F>(
+    ctx: Context<'_, impl functions::EmitterFn>,
+    f: F,
+) -> anyhow::Result<R>
+where
+    M: Serialize + Send + 'static,
+    R: Send + 'static,
+    F: FnOnce(&mut LocalSession, UnboundedSender<M>) -> anyhow::Result<R> + Send + 'static,
+{
+    let (iface, mut emitter) = ctx.split();
+    let mut moved_iface = std::mem::replace(iface, LocalSession::new());
+
+    // Create channel for events.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<M>();
+
+    // Run the blocking function on a separate thread. Note that we can't stop this thread.
+    let worker = tokio::task::spawn_blocking({
+        move || {
+            let rv = f(&mut moved_iface, tx);
+            (moved_iface, rv)
+        }
+    });
+
+    // Catch events and emit them to the client.
+    while let Some(event) = rx.recv().await {
+        emitter.emit(event).await?;
+    }
+
+    let (moved_iface, rv) = worker.await?;
+
+    *iface = moved_iface;
+
+    rv
 }

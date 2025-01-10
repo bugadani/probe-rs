@@ -1,8 +1,24 @@
 //! CLI-specific building blocks.
 
+use std::{path::Path, time::Instant};
+
+use colored::Colorize;
+use probe_rs::flashing::{FlashLayout, ProgressEvent};
+
 use crate::{
-    cmd::remote::{functions::attach::AttachResult, ClientInterface, SessionInterface},
-    util::common_options::ProbeOptions,
+    cmd::remote::{
+        functions::{
+            attach::AttachResult,
+            flash::{DownloadOptions, FlashResult},
+        },
+        ClientInterface, SessionInterface,
+    },
+    util::{
+        common_options::{BinaryDownloadOptions, ProbeOptions},
+        flash::CliProgressBars,
+        logging,
+    },
+    FormatOptions,
 };
 
 pub async fn attach_probe(
@@ -67,4 +83,60 @@ pub async fn attach_probe(
             }
         }
     }
+}
+
+pub async fn flash(
+    session: &mut SessionInterface<'_, impl ClientInterface>,
+    path: &Path,
+    chip_erase: bool,
+    format: FormatOptions,
+    download_options: BinaryDownloadOptions,
+) -> anyhow::Result<FlashResult> {
+    // Start timer.
+    let flash_timer = Instant::now();
+
+    let flash_layout_output_path = download_options.flash_layout_output_path.clone();
+    let pb = if download_options.disable_progressbars {
+        None
+    } else {
+        Some(CliProgressBars::new())
+    };
+
+    let options = DownloadOptions {
+        keep_unwritten_bytes: download_options.restore_unwritten,
+        do_chip_erase: chip_erase,
+        skip_erase: false,
+        preverify: download_options.preverify,
+        verify: download_options.verify,
+        disable_double_buffering: download_options.disable_double_buffering,
+    };
+
+    let result = session
+        .flash(path.to_path_buf(), format, options, move |event| {
+            if let Some(ref path) = flash_layout_output_path {
+                if let ProgressEvent::Initialized { ref phases, .. } = event {
+                    let mut flash_layout = FlashLayout::default();
+                    for phase_layout in phases {
+                        flash_layout.merge_from(phase_layout.clone());
+                    }
+
+                    // Visualise flash layout to file if requested.
+                    let visualizer = flash_layout.visualize();
+                    _ = visualizer.write_svg(path);
+                }
+            }
+
+            if let Some(ref pb) = pb {
+                pb.handle(event);
+            }
+        })
+        .await?;
+
+    logging::eprintln(format!(
+        "     {} in {:.02}s",
+        "Finished".green().bold(),
+        flash_timer.elapsed().as_secs_f32(),
+    ));
+
+    Ok(result)
 }
