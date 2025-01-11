@@ -21,10 +21,11 @@ use axum_extra::{
     headers::{self, authorization},
     TypedHeader,
 };
-use futures_util::{stream::SplitSink, SinkExt as _, StreamExt as _};
+use futures_util::{future::pending, stream::SplitSink, SinkExt as _, StreamExt as _};
 use probe_rs::probe::list::Lister;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
+use tokio_util::sync::CancellationToken;
 
 use std::{fmt::Write, io::Write as _, sync::Arc};
 
@@ -169,7 +170,9 @@ async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
                 postcard::from_bytes::<ClientMessage>(&msg).expect("Failed to deserialize message");
             match msg {
                 ClientMessage::TempFile(data) => handle.save_temp_file(data).await.unwrap(),
+                ClientMessage::CancelRpc => panic!("Received unexpected cancel message"),
                 ClientMessage::Rpc(function) => {
+                    tracing::info!("Running RPC function");
                     struct RpcEmitter<'a>(&'a mut ServerConnection);
                     impl EmitterFn for RpcEmitter<'_> {
                         async fn call(&mut self, msg: Vec<u8>) -> anyhow::Result<()> {
@@ -178,13 +181,48 @@ async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
                         }
                     }
 
-                    let ctx = Context::new(&mut session, RpcEmitter(&mut handle));
+                    let token = CancellationToken::new();
 
-                    let response = match function.run(ctx).await {
-                        Ok(r) => ServerMessage::RpcResult(r),
-                        Err(e) => ServerMessage::Error(format!("{:?}", e)),
+                    let run_rpc = async {
+                        let ctx =
+                            Context::new(&mut session, RpcEmitter(&mut handle), token.clone());
+                        let response = match function.run(ctx).await {
+                            Ok(r) => {
+                                tracing::debug!("Sending result: {} bytes", r.len());
+                                ServerMessage::RpcResult(r)
+                            }
+                            Err(e) => ServerMessage::Error(format!("{:?}", e)),
+                        };
+                        handle.send_message(response).await.unwrap();
                     };
-                    handle.send_message(response).await.unwrap();
+
+                    let read_cancel_message = async {
+                        let Some(Ok(msg)) = reader.next().await else {
+                            return;
+                        };
+
+                        // We only expect cancel messages here, other messages will
+                        // panic - but we still want to cancel the RPC.
+                        token.cancel();
+                        let ws::Message::Binary(msg) = msg else {
+                            return;
+                        };
+
+                        match postcard::from_bytes::<ClientMessage>(&msg)
+                            .expect("Failed to deserialize message")
+                        {
+                            ClientMessage::CancelRpc => tracing::info!("RPC cancelled by client"),
+                            _ => panic!("Unexpected message"),
+                        }
+
+                        // Make sure the RPC future is polled to completion
+                        pending().await
+                    };
+
+                    tokio::select! {
+                        _ = run_rpc => {}
+                        _ = read_cancel_message => {}
+                    }
                 }
             }
         }

@@ -1,5 +1,6 @@
 use probe_rs::{probe::list::Lister, MemoryInterface, Session};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "remote")]
 use crate::cmd::remote::RemoteSession;
@@ -14,15 +15,16 @@ pub mod monitor;
 pub mod read_memory;
 pub mod reset;
 pub mod resume;
+pub mod stack_trace;
 pub mod test;
 pub mod write_memory;
 
 #[derive(Serialize, Deserialize)]
 pub(super) enum NoMessage {}
 
-pub(super) trait RemoteFunction: Serialize + Into<RemoteFunctions> {
-    type Result: DeserializeOwned;
-    type Message: DeserializeOwned;
+pub(super) trait RemoteFunction: Serialize + Into<RemoteFunctions> + Send {
+    type Result: DeserializeOwned + Send;
+    type Message: DeserializeOwned + Send;
 
     #[cfg(feature = "remote")]
     async fn prepare_remote(&mut self, _iface: &mut RemoteSession) -> anyhow::Result<()> {
@@ -55,6 +57,7 @@ pub(super) enum RemoteFunctions {
     Monitor(monitor::Monitor),
     ListTests(test::ListTests),
     RunTest(test::RunTest),
+    StackTrace(stack_trace::TakeStackTrace),
 }
 
 pub trait EmitterFn: Send {
@@ -83,11 +86,16 @@ impl<F: EmitterFn> Emitter<F> {
 pub struct Context<'a, F> {
     iface: &'a mut LocalSession,
     emitter: F,
+    token: CancellationToken,
 }
 
 impl<'a, F: EmitterFn> Context<'a, F> {
-    pub fn new(iface: &'a mut LocalSession, emitter: F) -> Self {
-        Self { iface, emitter }
+    pub fn new(iface: &'a mut LocalSession, emitter: F, token: CancellationToken) -> Self {
+        Self {
+            iface,
+            emitter,
+            token,
+        }
     }
 
     pub async fn emit(&mut self, data: impl Serialize) -> anyhow::Result<()> {
@@ -111,8 +119,8 @@ impl<'a, F: EmitterFn> Context<'a, F> {
         self.iface.lister()
     }
 
-    pub fn split(self) -> (&'a mut LocalSession, Emitter<F>) {
-        (self.iface, Emitter(self.emitter))
+    pub fn split(self) -> (&'a mut LocalSession, Emitter<F>, CancellationToken) {
+        (self.iface, Emitter(self.emitter), self.token)
     }
 }
 
@@ -140,13 +148,14 @@ impl RemoteFunctions {
             RemoteFunctions::Monitor(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::ListTests(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::RunTest(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::StackTrace(func) => postcard::to_stdvec(&func.run(ctx).await?),
         };
 
         result.map_err(|e| e.into())
     }
 }
 
-pub trait Word: Copy + Default {
+pub trait Word: Copy + Default + Send {
     fn read(
         core: &mut impl MemoryInterface,
         address: u64,

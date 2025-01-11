@@ -23,6 +23,7 @@ use probe_rs::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "remote")]
 use crate::cmd::remote::RemoteSession;
@@ -93,16 +94,19 @@ impl super::RemoteFunction for Monitor {
         run_blocking_streaming(
             ctx,
             move |iface: &mut LocalSession,
-                  tx: UnboundedSender<MonitorEvent>|
+                  tx: UnboundedSender<MonitorEvent>,
+                  cancellation_token: CancellationToken|
                   -> anyhow::Result<()> {
                 let session = iface.session(self.sessid);
                 let mut semihosting_sink = MonitorEventHandler::new(tx.clone());
-                let mut rtt_sink = RttStreamer::new(tx, MonitorEvent::RttOutput);
+                let mut rtt_sink =
+                    RttStreamer::new(tx, cancellation_token.clone(), MonitorEvent::RttOutput);
                 let core_id = rtt_client.core_id();
 
                 let mut run_loop = RunLoop {
                     core_id,
                     rtt_client,
+                    cancellation_token,
                 };
 
                 let monitor_mode = if session.core(core_id)?.core_halted()? {
@@ -196,13 +200,19 @@ pub struct RttStreamer<E> {
     tx: UnboundedSender<E>,
     transform: fn(String) -> E,
     buffer: String,
+    cancellation_token: CancellationToken,
 }
 
 impl<E> RttStreamer<E> {
-    pub fn new(tx: UnboundedSender<E>, transform: fn(String) -> E) -> Self {
+    pub fn new(
+        tx: UnboundedSender<E>,
+        cancellation_token: CancellationToken,
+        transform: fn(String) -> E,
+    ) -> Self {
         Self {
             tx,
             transform,
+            cancellation_token,
             buffer: String::new(),
         }
     }
@@ -210,12 +220,17 @@ impl<E> RttStreamer<E> {
 
 impl<E> Write for RttStreamer<E> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        if self.cancellation_token.is_cancelled() {
+            return Ok(());
+        }
         self.buffer.push_str(s);
 
         // Send whole lines
         while let Some(pos) = self.buffer.find('\n') {
             let line = self.buffer.drain(..pos + 1).collect();
-            self.tx.send((self.transform)(line)).unwrap();
+            self.tx
+                .send((self.transform)(line))
+                .map_err(|_| std::fmt::Error)?;
         }
 
         Ok(())

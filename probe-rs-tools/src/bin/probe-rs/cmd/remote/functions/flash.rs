@@ -6,6 +6,7 @@ use probe_rs::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cmd::remote::{
@@ -87,7 +88,8 @@ impl RemoteFunction for Flash {
         run_blocking_streaming(
             ctx,
             move |iface: &mut LocalSession,
-                  tx: UnboundedSender<ProgressEvent>|
+                  tx: UnboundedSender<ProgressEvent>,
+                  _token: CancellationToken|
                   -> anyhow::Result<FlashResult> {
                 let session = iface.session(self.sessid);
 

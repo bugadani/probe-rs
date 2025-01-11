@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{future::Future, marker::PhantomData, path::PathBuf, pin::Pin};
 
 #[cfg(feature = "remote")]
 use std::path::Path;
@@ -9,7 +9,8 @@ use probe_rs::{
     Session,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::{runtime::Handle, sync::mpsc::UnboundedSender};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     cmd::remote::functions::{
@@ -22,6 +23,7 @@ use crate::{
         read_memory::ReadMemory,
         reset::ResetCore,
         resume::ResumeAllCores,
+        stack_trace::{StackTraces, TakeStackTrace},
         test::{ListTests, RunTest, Test, TestResult, Tests},
         write_memory::WriteMemory,
         Context, NoMessage, RemoteFunction, RemoteFunctions, Word,
@@ -40,6 +42,7 @@ pub mod server;
 enum ClientMessage {
     TempFile(Vec<u8>),
     Rpc(RemoteFunctions),
+    CancelRpc,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -209,6 +212,15 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
             })
             .await
     }
+
+    pub async fn stack_trace(&mut self, path: PathBuf) -> anyhow::Result<StackTraces> {
+        self.iface
+            .run_call(TakeStackTrace {
+                sessid: self.sessid,
+                path,
+            })
+            .await
+    }
 }
 
 pub struct CoreInterface<'a, T: ClientInterface> {
@@ -309,14 +321,60 @@ impl Client for LocalSession {
         F: RemoteFunction,
         CB: FnMut(F::Message) + Send,
     {
-        let ctx = Context::new(self, move |msg: Vec<u8>| {
-            match postcard::from_bytes(&msg) {
-                Ok(msg) => on_msg(msg),
-                Err(err) => tracing::error!("Failed to parse message: {err}"),
-            };
-        });
+        // F's implementation may be blocking. To allow it to complete in a semi-graceful manner,
+        // we pass a cancellation token that we trigger when the future is dropped.
+        // Dropping the future will block until the inner operation is finished.
+        let token = CancellationToken::new();
 
-        func.run(ctx).await
+        struct CompleteCancelledBlocking<Func, Fut>
+        where
+            Func: RemoteFunction,
+            Fut: Future<Output = anyhow::Result<Func::Result>>,
+        {
+            token: CancellationToken,
+            future: Option<Pin<Box<Fut>>>,
+            marker: PhantomData<Func>,
+        }
+
+        impl<Func, Fut> Drop for CompleteCancelledBlocking<Func, Fut>
+        where
+            Func: RemoteFunction,
+            Fut: Future<Output = anyhow::Result<Func::Result>>,
+        {
+            fn drop(&mut self) {
+                // Cancel the operation.
+                self.token.cancel();
+
+                // Wait for the task to finish.
+                if let Some(handle) = self.future.take() {
+                    tokio::task::block_in_place(|| Handle::current().block_on(handle).unwrap());
+                }
+            }
+        }
+
+        let ctx = Context::new(
+            self,
+            move |msg: Vec<u8>| {
+                match postcard::from_bytes(&msg) {
+                    Ok(msg) => on_msg(msg),
+                    Err(err) => tracing::error!("Failed to parse message: {err}"),
+                };
+            },
+            token.clone(),
+        );
+
+        let mut completer = CompleteCancelledBlocking {
+            token,
+            future: Some(Box::pin(async { func.run(ctx).await })),
+            marker: PhantomData::<F>,
+        };
+
+        let ret = completer.future.as_mut().unwrap().await;
+
+        // Prevent the Drop impl from resuming the completed future.
+        std::mem::forget(completer);
+
+        ret
     }
 }
 
@@ -369,9 +427,11 @@ pub async fn run_blocking_streaming<R, M, F>(
 where
     M: Serialize + Send + 'static,
     R: Send + 'static,
-    F: FnOnce(&mut LocalSession, UnboundedSender<M>) -> anyhow::Result<R> + Send + 'static,
+    F: FnOnce(&mut LocalSession, UnboundedSender<M>, CancellationToken) -> anyhow::Result<R>
+        + Send
+        + 'static,
 {
-    let (iface, mut emitter) = ctx.split();
+    let (iface, mut emitter, token) = ctx.split();
     let mut moved_iface = std::mem::replace(iface, LocalSession::new());
 
     // Create channel for events.
@@ -379,15 +439,26 @@ where
 
     // Run the blocking function on a separate thread. Note that we can't stop this thread.
     let worker = tokio::task::spawn_blocking({
+        let token = token.clone();
         move || {
-            let rv = f(&mut moved_iface, tx);
+            let rv = f(&mut moved_iface, tx, token);
             (moved_iface, rv)
         }
     });
 
-    // Catch events and emit them to the client.
-    while let Some(event) = rx.recv().await {
-        emitter.emit(event).await?;
+    let emit_messages = async {
+        // Catch events and emit them to the client.
+        while let Some(event) = rx.recv().await {
+            emitter.emit(event).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+
+    // If the token is cancelled, the message loop will be dropped and the channel closed.
+    // This will cause the worker to panic when trying to send a message, effectively aborting it.
+    tokio::select! {
+        _ = token.cancelled() => {}
+        _ = emit_messages => {}
     }
 
     let (moved_iface, rv) = worker.await?;

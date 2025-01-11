@@ -5,6 +5,7 @@ use probe_rs::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::sync::CancellationToken;
 
 use crate::cmd::{
     remote::{
@@ -59,6 +60,7 @@ where
 pub enum TestResult {
     Success,
     Failed(String, Option<String>),
+    Cancelled,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -103,15 +105,18 @@ impl super::RemoteFunction for ListTests {
         run_blocking_streaming(
             ctx,
             move |iface: &mut LocalSession,
-                  tx: UnboundedSender<TestEvent>|
+                  tx: UnboundedSender<TestEvent>,
+                  cancellation_token: CancellationToken|
                   -> anyhow::Result<Tests> {
                 let session = iface.session(self.sessid);
                 let mut list_handler = ListEventHandler::new();
-                let mut rtt_sink = RttStreamer::new(tx, TestEvent::RttOutput);
+                let mut rtt_sink =
+                    RttStreamer::new(tx, cancellation_token.clone(), TestEvent::RttOutput);
 
                 let mut run_loop = RunLoop {
                     core_id,
                     rtt_client,
+                    cancellation_token,
                 };
 
                 match run_loop.run_until(
@@ -126,6 +131,10 @@ impl super::RemoteFunction for ListTests {
                     ReturnReason::Timeout => {
                         anyhow::bail!("The target did not respond with test list until timeout.")
                     }
+                    ReturnReason::Cancelled => Ok(Tests {
+                        version: 1,
+                        tests: vec![],
+                    }),
                 }
             },
         )
@@ -159,7 +168,8 @@ impl super::RemoteFunction for RunTest {
         run_blocking_streaming(
             ctx,
             move |iface: &mut LocalSession,
-                  tx: UnboundedSender<TestEvent>|
+                  tx: UnboundedSender<TestEvent>,
+                  cancellation_token: CancellationToken|
                   -> anyhow::Result<TestResult> {
                 let timeout = self.test.timeout.map(|t| Duration::from_secs(t as u64));
                 let timeout = timeout.unwrap_or(Duration::from_secs(60));
@@ -172,11 +182,13 @@ impl super::RemoteFunction for RunTest {
 
                 let expected_outcome = self.test.expected_outcome;
                 let mut run_handler = RunEventHandler::new(self.test);
-                let mut rtt_sink = RttStreamer::new(tx.clone(), TestEvent::RttOutput);
+                let mut rtt_sink =
+                    RttStreamer::new(tx.clone(), cancellation_token.clone(), TestEvent::RttOutput);
 
                 let mut run_loop = RunLoop {
                     core_id: 0,
                     rtt_client,
+                    cancellation_token,
                 };
 
                 match run_loop.run_until(
@@ -214,6 +226,7 @@ impl super::RemoteFunction for RunTest {
                             stack_trace,
                         ))
                     }
+                    ReturnReason::Cancelled => Ok(TestResult::Cancelled),
                 }
             },
         )

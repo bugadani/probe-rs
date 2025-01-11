@@ -107,7 +107,9 @@ probe-rs-target = { workspace = true }
 probe-rs-debug = { version = "0.25.0", path = "../probe-rs-debug" }
 
 # Server-only
+async-scoped = { version = "0.9", features = ["use-tokio"] }
 tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7"
 futures-util = { version = "0.3", optional = true }
 hyper-util = { version = "0.1.1", features = ["client-legacy"], optional = true }
 tokio-tungstenite = { version = "0.26", optional = true }

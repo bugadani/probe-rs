@@ -1,3 +1,5 @@
+use tokio_util::sync::CancellationToken;
+
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -205,6 +207,8 @@ impl Cmd {
                     },
                     ..Arguments::default()
                 },
+                self.shared_options.always_print_stacktrace,
+                &self.shared_options.path,
             )
             .await
         } else {
@@ -221,6 +225,7 @@ impl Cmd {
                         rtt_scan_memory: self.shared_options.rtt_scan_memory,
                     },
                 },
+                self.shared_options.always_print_stacktrace,
             )
             .await
         }
@@ -281,6 +286,7 @@ fn detect_run_mode(cmd: &Cmd) -> anyhow::Result<RunMode> {
 pub struct RunLoop {
     pub core_id: usize,
     pub rtt_client: RttClient,
+    pub cancellation_token: CancellationToken,
 }
 
 #[derive(PartialEq, Debug)]
@@ -289,6 +295,8 @@ pub enum ReturnReason<R> {
     Predicate(R),
     /// Timeout elapsed
     Timeout,
+    /// Cancelled
+    Cancelled,
 }
 
 impl RunLoop {
@@ -394,6 +402,8 @@ impl RunLoop {
                 if start.elapsed() >= timeout {
                     return Ok(ReturnReason::Timeout);
                 }
+            } else if self.cancellation_token.is_cancelled() {
+                return Ok(ReturnReason::Cancelled);
             }
 
             // Poll RTT with a frequency of 10 Hz if we do not receive any new data.

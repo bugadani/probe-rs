@@ -27,6 +27,7 @@ impl Cmd {
                     rtt_scan_memory: self.run.shared_options.rtt_scan_memory,
                 },
             },
+            self.run.shared_options.always_print_stacktrace,
         )
         .await?;
 
