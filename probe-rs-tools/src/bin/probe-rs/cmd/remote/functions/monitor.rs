@@ -155,7 +155,7 @@ impl From<Monitor> for RemoteFunctions {
     }
 }
 
-async fn create_rtt_client(
+pub async fn create_rtt_client(
     session: &mut Session,
     path: &Path,
     log_options: &LogOptions,

@@ -1,12 +1,15 @@
 use std::{cell::Cell, path::PathBuf, rc::Rc};
 
-use probe_rs::flashing::{BootInfo, FileDownloadError, FlashLayout, FlashProgress, ProgressEvent};
+use probe_rs::{
+    flashing::{BootInfo, FileDownloadError, FlashLayout, FlashProgress, ProgressEvent},
+    rtt::ScanRegion,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     cmd::remote::{
-        functions::{Context, EmitterFn, RemoteFunction, RemoteFunctions},
+        functions::{monitor::LogOptions, Context, EmitterFn, RemoteFunction, RemoteFunctions},
         run_blocking_streaming, LocalSession, SessionId,
     },
     util::flash::build_loader,
@@ -73,8 +76,20 @@ impl RemoteFunction for Flash {
         Ok(())
     }
 
-    async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<FlashResult> {
+    async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<FlashResult> {
         let dry_run = ctx.dry_run(self.sessid);
+
+        let session = ctx.session(self.sessid);
+        let mut rtt_client = super::monitor::create_rtt_client(
+            session,
+            &self.path,
+            &LogOptions {
+                no_location: false,
+                log_format: None,
+                rtt_scan_memory: false,
+            },
+        )
+        .await?;
 
         run_blocking_streaming(
             ctx,
@@ -85,6 +100,19 @@ impl RemoteFunction for Flash {
 
                 // build loader
                 let loader = build_loader(session, &self.path, self.format, None)?;
+
+                // When using RTT with a program in flash, the RTT header will be moved to RAM on
+                // startup, so clearing it before startup is ok. However, if we're downloading to the
+                // header's final address in RAM, then it's not relocated on startup and we should not
+                // clear it. This impacts static RTT headers, like used in defmt_rtt.
+                let should_clear_rtt_header = if let ScanRegion::Exact(address) =
+                    rtt_client.scan_region
+                {
+                    tracing::debug!("RTT ScanRegion::Exact address is within region to be flashed");
+                    !loader.has_data_for_address(address)
+                } else {
+                    true
+                };
 
                 let flash_layout = Rc::new(Cell::new(vec![]));
 
@@ -113,10 +141,18 @@ impl RemoteFunction for Flash {
                     .commit(session, options)
                     .map_err(FileDownloadError::Flash)?;
 
-                // TODO: clear RTT control block if needed
+                let boot_info = loader.boot_info();
+
+                if should_clear_rtt_header {
+                    // We ended up resetting the MCU, throw away old RTT data and prevent
+                    // printing warnings when it initialises.
+                    let mut core = session.core(rtt_client.core_id())?;
+                    rtt_client.clear_control_block(&mut core)?;
+                    tracing::debug!("Cleared RTT header");
+                }
 
                 Ok::<_, anyhow::Error>(FlashResult {
-                    boot_info: loader.boot_info(),
+                    boot_info,
                     flash_layout: flash_layout.take(),
                 })
             },
