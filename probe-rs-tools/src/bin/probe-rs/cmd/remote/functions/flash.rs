@@ -80,16 +80,9 @@ impl RemoteFunction for Flash {
         let dry_run = ctx.dry_run(self.sessid);
 
         let session = ctx.session(self.sessid);
-        let mut rtt_client = super::monitor::create_rtt_client(
-            session,
-            &self.path,
-            &LogOptions {
-                no_location: false,
-                log_format: None,
-                rtt_scan_memory: false,
-            },
-        )
-        .await?;
+        let mut rtt_client =
+            super::monitor::create_rtt_client(session, Some(&self.path), &LogOptions::default())
+                .await?;
 
         run_blocking_streaming(
             ctx,

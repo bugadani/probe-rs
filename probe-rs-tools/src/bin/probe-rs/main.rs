@@ -97,12 +97,7 @@ struct Cli {
 }
 
 impl Cli {
-    async fn run(
-        self,
-        iface: impl ClientInterface,
-        _config: Config,
-        utc_offset: UtcOffset,
-    ) -> Result<()> {
+    async fn run(self, iface: impl ClientInterface, _config: Config) -> Result<()> {
         let lister = Lister::new();
         match self.subcommand {
             Subcommand::DapServer { .. } => unreachable!(),
@@ -114,7 +109,7 @@ impl Cli {
             Subcommand::Reset(cmd) => cmd.run(iface).await,
             Subcommand::Debug(cmd) => cmd.run(&lister),
             Subcommand::Download(cmd) => cmd.run(iface).await,
-            Subcommand::Run(cmd) => cmd.run(&lister, true, utc_offset),
+            Subcommand::Run(cmd) => cmd.run(iface).await,
             Subcommand::Attach(cmd) => cmd.run(iface).await,
             Subcommand::Verify(cmd) => cmd.run(&lister),
             Subcommand::Erase(cmd) => cmd.run(&lister),
@@ -202,6 +197,7 @@ impl Subcommand {
                 | Self::Info(_)
                 | Self::Download(_)
                 | Self::Attach(_)
+                | Self::Run(_)
         )
     }
 }
@@ -428,13 +424,13 @@ async fn main() -> Result<()> {
 
         let session = RemoteSession::new(handle);
 
-        matches.run(session, config, utc_offset).await?;
+        matches.run(session, config).await?;
         // TODO: handle the report
         return Ok(());
     }
 
     // Run the command locally.
-    let result = matches.run(LocalSession::new(), config, utc_offset).await;
+    let result = matches.run(LocalSession::new(), config).await;
     compile_report(result, report_path, elf, log_path)
 }
 

@@ -1,9 +1,11 @@
 //! CLI-specific building blocks.
 
-use std::{path::Path, time::Instant};
+use std::{path::Path, sync::Arc, time::Instant};
 
 use colored::Colorize;
-use probe_rs::flashing::{FlashLayout, ProgressEvent};
+use libtest_mimic::{Failed, Trial};
+use probe_rs::flashing::{BootInfo, FlashLayout, ProgressEvent};
+use tokio::{runtime::Handle, sync::Mutex};
 
 use crate::{
     cmd::remote::{
@@ -11,8 +13,9 @@ use crate::{
             attach::AttachResult,
             flash::{DownloadOptions, FlashResult},
             monitor::{MonitorEvent, MonitorMode, MonitorOptions, SemihostingOutput},
+            test::TestResult,
         },
-        ClientInterface, SessionInterface,
+        ClientInterface, SessionId, SessionInterface,
     },
     util::{
         common_options::{BinaryDownloadOptions, ProbeOptions},
@@ -166,4 +169,62 @@ pub async fn monitor(
             },
         )
         .await
+}
+
+pub async fn test(
+    mut ctx: impl ClientInterface,
+    sessid: SessionId,
+    boot_info: BootInfo,
+    libtest_args: libtest_mimic::Arguments,
+) -> anyhow::Result<()> {
+    tracing::info!("libtest args {:?}", libtest_args);
+
+    let mut session = SessionInterface::new(&mut ctx, sessid);
+    let tests = session.list_tests(boot_info).await?;
+
+    let shared_context = Arc::new(Mutex::new(ctx));
+
+    let tests = tests
+        .tests
+        .into_iter()
+        .map(|t| {
+            let shared_context = shared_context.clone();
+            let name = t.name.clone();
+            let ignored = t.ignored;
+
+            Trial::test(name, move || {
+                let mut ctx = shared_context.blocking_lock();
+                tokio::task::block_in_place(move || {
+                    let mut session = SessionInterface::new(&mut *ctx, sessid);
+                    let outcome = Handle::current().block_on(async { session.run_test(t).await });
+
+                    match outcome {
+                        Ok(TestResult::Success) => Ok(()),
+                        Ok(TestResult::Failed(message, stack_trace)) => {
+                            if let Some(stack_trace) = stack_trace {
+                                eprintln!("Stack trace:\n{}", stack_trace);
+                            }
+                            Err(Failed::from(message))
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {:?}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                })
+            })
+            .with_ignored_flag(ignored)
+        })
+        .collect::<Vec<_>>();
+
+    tokio::task::spawn_blocking(move || {
+        if libtest_mimic::run(&libtest_args, tests).has_failed() {
+            anyhow::bail!("Some tests failed");
+        }
+
+        Ok(())
+    })
+    .await??;
+
+    Ok(())
 }

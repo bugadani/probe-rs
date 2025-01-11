@@ -14,6 +14,7 @@ pub mod monitor;
 pub mod read_memory;
 pub mod reset;
 pub mod resume;
+pub mod test;
 pub mod write_memory;
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +53,8 @@ pub(super) enum RemoteFunctions {
     Info(info::Info),
     Flash(flash::Flash),
     Monitor(monitor::Monitor),
+    ListTests(test::ListTests),
+    RunTest(test::RunTest),
 }
 
 pub trait EmitterFn: Send {
@@ -135,6 +138,8 @@ impl RemoteFunctions {
             RemoteFunctions::Info(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::Flash(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::Monitor(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::ListTests(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::RunTest(func) => postcard::to_stdvec(&func.run(ctx).await?),
         };
 
         result.map_err(|e| e.into())

@@ -1,5 +1,5 @@
 use std::{
-    io::Write,
+    fmt::Write,
     num::NonZeroU32,
     path::{Path, PathBuf},
     time::Duration,
@@ -11,7 +11,7 @@ use crate::{
             functions::{Context, EmitterFn, RemoteFunctions},
             run_blocking_streaming, LocalSession, SessionId,
         },
-        run::{OutputStream, RunLoop},
+        run::RunLoop,
     },
     util::rtt::{client::RttClient, RttChannelConfig, RttConfig},
 };
@@ -48,7 +48,7 @@ pub struct MonitorOptions {
     pub log: LogOptions,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct LogOptions {
     /// Suppress filename and line number information from the rtt log
     pub no_location: bool,
@@ -88,7 +88,7 @@ impl super::RemoteFunction for Monitor {
         let session = ctx.session(self.sessid);
 
         // For normal run mode, we expect the RTT header to be cleared if necessary by the flashing process.
-        let rtt_client = create_rtt_client(session, &self.path, &self.options.log).await?;
+        let rtt_client = create_rtt_client(session, Some(&self.path), &self.options.log).await?;
 
         run_blocking_streaming(
             ctx,
@@ -97,13 +97,11 @@ impl super::RemoteFunction for Monitor {
                   -> anyhow::Result<()> {
                 let session = iface.session(self.sessid);
                 let mut semihosting_sink = MonitorEventHandler::new(tx.clone());
-                let rtt_sink = Box::new(RttStreamer::new(tx, MonitorEvent::RttOutput));
+                let mut rtt_sink = RttStreamer::new(tx, MonitorEvent::RttOutput);
                 let core_id = rtt_client.core_id();
 
                 let mut run_loop = RunLoop {
                     core_id,
-                    path: self.path,
-                    always_print_stacktrace: false, // impl as a separate function
                     rtt_client,
                 };
 
@@ -137,7 +135,7 @@ impl super::RemoteFunction for Monitor {
                     &mut core,
                     self.options.catch_hardfault,
                     self.options.catch_reset,
-                    OutputStream::Writer(rtt_sink),
+                    &mut rtt_sink,
                     None,
                     |halt_reason, core| semihosting_sink.handle_halt(halt_reason, core),
                 )?;
@@ -157,7 +155,7 @@ impl From<Monitor> for RemoteFunctions {
 
 pub async fn create_rtt_client(
     session: &mut Session,
-    path: &Path,
+    path: Option<&Path>,
     log_options: &LogOptions,
 ) -> anyhow::Result<RttClient> {
     let rtt_scan_regions = match log_options.rtt_scan_memory {
@@ -174,10 +172,14 @@ pub async fn create_rtt_client(
     });
 
     //let format = self.options.format_options.to_format_kind(session.target());
-    let format = FormatKind::from_optional(session.target().default_format.as_deref())
-        .expect("Failed to parse a default binary format. This shouldn't happen.");
-    let elf = if matches!(format, FormatKind::Elf | FormatKind::Idf) {
-        Some(tokio::fs::read(path).await?)
+    let elf = if let Some(path) = path {
+        let format = FormatKind::from_optional(session.target().default_format.as_deref())
+            .expect("Failed to parse a default binary format. This shouldn't happen.");
+        if matches!(format, FormatKind::Elf | FormatKind::Idf) {
+            Some(tokio::fs::read(path).await?)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -207,8 +209,8 @@ impl<E> RttStreamer<E> {
 }
 
 impl<E> Write for RttStreamer<E> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.buffer.push_str(&String::from_utf8_lossy(buf));
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.buffer.push_str(s);
 
         // Send whole lines
         while let Some(pos) = self.buffer.find('\n') {
@@ -216,12 +218,6 @@ impl<E> Write for RttStreamer<E> {
             self.tx.send((self.transform)(line)).unwrap();
         }
 
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let str = std::mem::take(&mut self.buffer);
-        self.tx.send((self.transform)(str)).unwrap();
         Ok(())
     }
 }

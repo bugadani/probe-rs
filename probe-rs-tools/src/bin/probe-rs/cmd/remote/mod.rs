@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::path::Path;
 
 use probe_rs::{
-    flashing::ProgressEvent,
+    flashing::{BootInfo, ProgressEvent},
     probe::{list::Lister, WireProtocol},
     Session,
 };
@@ -22,6 +22,7 @@ use crate::{
         read_memory::ReadMemory,
         reset::ResetCore,
         resume::ResumeAllCores,
+        test::{ListTests, RunTest, Test, TestResult, Tests},
         write_memory::WriteMemory,
         Context, NoMessage, RemoteFunction, RemoteFunctions, Word,
     },
@@ -50,7 +51,7 @@ enum ServerMessage {
 }
 
 /// The client handle used to execute remote functions.
-trait Client: Sized {
+trait Client: Sized + Send + 'static {
     async fn run_call<F: RemoteFunction<Message = NoMessage>>(
         &mut self,
         func: F,
@@ -131,6 +132,10 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
         Self { sessid, iface }
     }
 
+    pub fn into_session_id(self) -> SessionId {
+        self.sessid
+    }
+
     pub async fn resume_all_cores(&mut self) -> anyhow::Result<()> {
         self.iface
             .run_call(ResumeAllCores {
@@ -184,6 +189,24 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
                 },
                 on_msg,
             )
+            .await
+    }
+
+    pub async fn list_tests(&mut self, boot_info: BootInfo) -> anyhow::Result<Tests> {
+        self.iface
+            .run_call(ListTests {
+                sessid: self.sessid,
+                boot_info,
+            })
+            .await
+    }
+
+    pub async fn run_test(&mut self, test: Test) -> anyhow::Result<TestResult> {
+        self.iface
+            .run_call(RunTest {
+                sessid: self.sessid,
+                test,
+            })
             .await
     }
 }
