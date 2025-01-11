@@ -18,6 +18,7 @@ use crate::{
         flash::{DownloadOptions, Flash, FlashResult},
         info::{Info, InfoEvent},
         list_probes::{DebugProbeEntry, ListProbes},
+        monitor::{Monitor, MonitorEvent, MonitorMode, MonitorOptions},
         read_memory::ReadMemory,
         reset::ResetCore,
         resume::ResumeAllCores,
@@ -159,6 +160,26 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
                     sessid: self.sessid,
                     path,
                     format,
+                    options,
+                },
+                on_msg,
+            )
+            .await
+    }
+
+    pub async fn monitor(
+        &mut self,
+        mode: MonitorMode,
+        path: PathBuf,
+        options: MonitorOptions,
+        on_msg: impl FnMut(MonitorEvent) + Send,
+    ) -> anyhow::Result<()> {
+        self.iface
+            .run_call_streaming(
+                Monitor {
+                    sessid: self.sessid,
+                    mode,
+                    path,
                     options,
                 },
                 on_msg,

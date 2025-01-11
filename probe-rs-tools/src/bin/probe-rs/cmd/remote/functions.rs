@@ -10,6 +10,7 @@ pub mod chip;
 pub mod flash;
 pub mod info;
 pub mod list_probes;
+pub mod monitor;
 pub mod read_memory;
 pub mod reset;
 pub mod resume;
@@ -50,6 +51,7 @@ pub(super) enum RemoteFunctions {
     LoadChipFamilies(chip::LoadChipFamilies),
     Info(info::Info),
     Flash(flash::Flash),
+    Monitor(monitor::Monitor),
 }
 
 pub trait EmitterFn: Send {
@@ -132,6 +134,7 @@ impl RemoteFunctions {
             RemoteFunctions::LoadChipFamilies(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::Info(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::Flash(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::Monitor(func) => postcard::to_stdvec(&func.run(ctx).await?),
         };
 
         result.map_err(|e| e.into())

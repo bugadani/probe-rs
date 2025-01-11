@@ -115,7 +115,7 @@ impl Cli {
             Subcommand::Debug(cmd) => cmd.run(&lister),
             Subcommand::Download(cmd) => cmd.run(iface).await,
             Subcommand::Run(cmd) => cmd.run(&lister, true, utc_offset),
-            Subcommand::Attach(cmd) => cmd.run(&lister, utc_offset),
+            Subcommand::Attach(cmd) => cmd.run(iface).await,
             Subcommand::Verify(cmd) => cmd.run(&lister),
             Subcommand::Erase(cmd) => cmd.run(&lister),
             Subcommand::Trace(cmd) => cmd.run(&lister),
@@ -201,6 +201,7 @@ impl Subcommand {
                 | Self::Chip(_)
                 | Self::Info(_)
                 | Self::Download(_)
+                | Self::Attach(_)
         )
     }
 }

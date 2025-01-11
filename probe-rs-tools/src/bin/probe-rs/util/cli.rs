@@ -10,6 +10,7 @@ use crate::{
         functions::{
             attach::AttachResult,
             flash::{DownloadOptions, FlashResult},
+            monitor::{MonitorEvent, MonitorMode, MonitorOptions, SemihostingOutput},
         },
         ClientInterface, SessionInterface,
     },
@@ -139,4 +140,30 @@ pub async fn flash(
     ));
 
     Ok(result)
+}
+
+pub async fn monitor(
+    session: &mut SessionInterface<'_, impl ClientInterface>,
+    mode: MonitorMode,
+    path: &Path,
+    options: MonitorOptions,
+) -> anyhow::Result<()> {
+    // TODO: catch ctrl+c, exit gracefully and handle always-print-stacktrace
+
+    session
+        .monitor(
+            mode,
+            path.to_path_buf(),
+            options,
+            move |event| match event {
+                MonitorEvent::RttOutput(str) => print!("{}", str),
+                MonitorEvent::SemihostingOutput(SemihostingOutput::StdOut(str)) => {
+                    print!("{}", str)
+                }
+                MonitorEvent::SemihostingOutput(SemihostingOutput::StdErr(str)) => {
+                    eprint!("{}", str)
+                }
+            },
+        )
+        .await
 }

@@ -113,6 +113,8 @@ impl RemoteFunction for Flash {
                     .commit(session, options)
                     .map_err(FileDownloadError::Flash)?;
 
+                // TODO: clear RTT control block if needed
+
                 Ok::<_, anyhow::Error>(FlashResult {
                     boot_info: loader.boot_info(),
                     flash_layout: flash_layout.take(),

@@ -256,15 +256,15 @@ fn elf_contains_test(path: &Path) -> anyhow::Result<bool> {
     Ok(contains)
 }
 
-struct RunLoop {
-    core_id: usize,
-    path: PathBuf,
-    always_print_stacktrace: bool,
-    rtt_client: RttClient,
+pub struct RunLoop {
+    pub core_id: usize,
+    pub path: PathBuf,
+    pub always_print_stacktrace: bool,
+    pub rtt_client: RttClient,
 }
 
 #[derive(PartialEq, Debug)]
-enum ReturnReason<R> {
+pub enum ReturnReason<R> {
     /// The user pressed CTRL +C
     User,
     /// The predicate requested a return
@@ -274,9 +274,10 @@ enum ReturnReason<R> {
 }
 
 /// The output stream to print RTT and Stack Traces to
-enum OutputStream {
+pub enum OutputStream {
     Stdout,
     Stderr,
+    Writer(Box<dyn Write>),
 }
 
 impl RunLoop {
@@ -288,7 +289,7 @@ impl RunLoop {
     /// * If the predicate returns `Err(e)` the run loop will return `Err(e)`.
     ///
     /// The function will also return on timeout with `Ok(ReturnReason::Timeout)` or if the user presses CTRL + C with `Ok(ReturnReason::User)`.
-    fn run_until<F, R>(
+    pub fn run_until<F, R>(
         &mut self,
         core: &mut Core,
         catch_hardfault: bool,
@@ -340,7 +341,7 @@ impl RunLoop {
     fn do_run_until<F, R>(
         &mut self,
         core: &mut Core,
-        output_stream: OutputStream,
+        mut output_stream: OutputStream,
         timeout: Option<Duration>,
         start: Instant,
         predicate: &mut F,
@@ -362,6 +363,7 @@ impl RunLoop {
                 stderr = std::io::stderr();
                 &mut stderr
             }
+            OutputStream::Writer(ref mut cb) => cb,
         };
 
         let return_reason = loop {
