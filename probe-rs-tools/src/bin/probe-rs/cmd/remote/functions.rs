@@ -102,6 +102,10 @@ impl<'a, F: EmitterFn> Context<'a, F> {
         }
     }
 
+    pub fn is_local(&self) -> bool {
+        self.iface.is_local
+    }
+
     pub async fn emit(&mut self, data: impl Serialize) -> anyhow::Result<()> {
         let data = postcard::to_stdvec(&data)?;
         self.emitter.call(data).await

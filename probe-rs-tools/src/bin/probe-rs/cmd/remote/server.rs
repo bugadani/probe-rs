@@ -172,7 +172,7 @@ async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
         websocket: writer,
         temp_files: vec![],
     };
-    let mut session = LocalSession::new();
+    let mut session = LocalSession::new_server();
 
     while let Some(Ok(msg)) = reader.next().await {
         if let ws::Message::Binary(msg) = msg {

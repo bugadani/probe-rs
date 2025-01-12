@@ -430,7 +430,7 @@ async fn main() -> Result<()> {
     }
 
     // Run the command locally.
-    let result = matches.run(LocalSession::new(), config).await;
+    let result = matches.run(LocalSession::new_local(), config).await;
     compile_report(result, report_path, elf, log_path)
 }
 

@@ -94,7 +94,7 @@ pub async fn print_chip_info(
 #[tokio::test]
 async fn single_chip_output() {
     let mut buff = Vec::new();
-    let mut iface = crate::cmd::remote::LocalSession::new();
+    let mut iface = crate::cmd::remote::LocalSession::new_local();
 
     print_chip_info(&mut iface, &mut buff, "nrf52840_xxaa")
         .await
@@ -111,7 +111,7 @@ async fn single_chip_output() {
 async fn multiple_chip_output() {
     let mut buff = Vec::new();
 
-    let mut iface = crate::cmd::remote::LocalSession::new();
+    let mut iface = crate::cmd::remote::LocalSession::new_local();
     let error = print_chip_info(&mut iface, &mut buff, "nrf52")
         .await
         .unwrap_err();

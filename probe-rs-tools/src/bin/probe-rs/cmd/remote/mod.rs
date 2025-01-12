@@ -343,14 +343,24 @@ impl<T> Key<T> {
 pub struct LocalSession {
     dry_run: bool,
     object_storage: HashMap<u64, Arc<Mutex<dyn Any + Send>>>,
+    is_local: bool,
 }
 
 impl LocalSession {
-    pub fn new() -> Self {
+    pub fn new(is_local: bool) -> Self {
         Self {
             dry_run: false,
             object_storage: HashMap::new(),
+            is_local,
         }
+    }
+
+    pub fn new_local() -> Self {
+        Self::new(true)
+    }
+
+    pub fn new_server() -> Self {
+        Self::new(false)
     }
 
     pub fn store_object<T: Any + Send>(&mut self, obj: T) -> Key<T> {
@@ -519,7 +529,7 @@ where
         + 'static,
 {
     let (iface, mut emitter, token) = ctx.split();
-    let mut moved_iface = std::mem::replace(iface, LocalSession::new());
+    let mut moved_iface = std::mem::replace(iface, LocalSession::new(iface.is_local));
 
     // Create channel for events.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<M>();

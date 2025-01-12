@@ -104,14 +104,17 @@ impl super::RemoteFunction for LoadChipFamilies {
     type Message = super::NoMessage;
     type Result = ();
 
-    async fn run(self, _ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
-        // TODO: this can only be done safely if we have separate registries per connection.
-        // for family in self.families {
-        //     probe_rs::config::add_target_family(family)?;
-        // }
-        // Ok(())
+    async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            ctx.is_local(),
+            "Loading chip families is not supported in the remote interface yet."
+        );
 
-        anyhow::bail!("Loading chip families is not supported in the remote interface yet.");
+        // TODO: this can only be done safely if we have separate registries per connection.
+        for family in self.families {
+            probe_rs::config::add_target_family(family)?;
+        }
+        Ok(())
     }
 }
 
