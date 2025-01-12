@@ -21,7 +21,11 @@ use axum_extra::{
     headers::{self, authorization},
     TypedHeader,
 };
-use futures_util::{future::pending, stream::SplitSink, SinkExt as _, StreamExt as _};
+use futures_util::{
+    future::pending,
+    stream::{SplitSink, SplitStream},
+    SinkExt as _, StreamExt as _,
+};
 use probe_rs::probe::list::Lister;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
@@ -112,6 +116,11 @@ pub struct ServerConnection {
 impl ServerConnection {
     async fn send_message(&mut self, msg: ServerMessage) -> anyhow::Result<()> {
         let msg = postcard::to_stdvec(&msg).context("Failed to serialize message")?;
+        self.websocket
+            .send(ws::Message::Binary(
+                (msg.len() as u64).to_le_bytes().to_vec(),
+            ))
+            .await?;
         self.websocket.send(ws::Message::Binary(msg)).await?;
 
         Ok(())
@@ -157,7 +166,8 @@ async fn ws_handler(
 
 /// Actual websocket statemachine (one will be spawned per connection)
 async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
-    let (writer, mut reader) = socket.split();
+    let (writer, reader) = socket.split();
+    let mut reader = MessageReader::new(reader);
     let mut handle = ServerConnection {
         websocket: writer,
         temp_files: vec![],
@@ -166,6 +176,7 @@ async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
 
     while let Some(Ok(msg)) = reader.next().await {
         if let ws::Message::Binary(msg) = msg {
+            tracing::debug!("Received message: {} bytes", msg.len());
             let msg =
                 postcard::from_bytes::<ClientMessage>(&msg).expect("Failed to deserialize message");
             match msg {
@@ -226,5 +237,51 @@ async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
                 }
             }
         }
+    }
+}
+
+struct MessageReader {
+    reader: SplitStream<WebSocket>,
+}
+
+impl MessageReader {
+    fn new(reader: SplitStream<WebSocket>) -> Self {
+        Self { reader }
+    }
+}
+
+impl MessageReader {
+    async fn next(&mut self) -> Option<anyhow::Result<ws::Message>> {
+        // Read the length of the message
+        let mut data = Vec::with_capacity(128);
+
+        while data.len() < 8 {
+            match self.reader.next().await {
+                Some(Ok(ws::Message::Binary(msg))) => data.extend_from_slice(&msg),
+                Some(Ok(other)) if data.is_empty() => return Some(Ok(other)),
+                Some(Ok(other)) => {
+                    return Some(Err(anyhow::anyhow!("Unexpected message: {:?}", other)));
+                }
+                Some(Err(err)) => return Some(Err(err.into())),
+                None => return None,
+            };
+        }
+
+        let len = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        data.drain(..8);
+
+        // Read the message
+        while data.len() < len as usize {
+            match self.reader.next().await {
+                Some(Ok(ws::Message::Binary(msg))) => data.extend_from_slice(&msg),
+                Some(Ok(other)) => {
+                    return Some(Err(anyhow::anyhow!("Unexpected message: {:?}", other)));
+                }
+                Some(Err(err)) => return Some(Err(err.into())),
+                None => return None,
+            };
+        }
+
+        Some(Ok(ws::Message::Binary(data)))
     }
 }

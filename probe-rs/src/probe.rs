@@ -899,7 +899,7 @@ pub enum DebugProbeSelectorParseError {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 // We need this so that serde will first convert from the string `VID:PID:<Serial>` to a struct before deserializing.
-#[serde(try_from = "String")]
+#[serde(try_from = "String", into = "String")]
 pub struct DebugProbeSelector {
     /// The the USB vendor id of the debug probe to be used.
     pub vendor_id: u16,
@@ -969,6 +969,12 @@ impl std::str::FromStr for DebugProbeSelector {
     type Err = DebugProbeSelectorParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
+    }
+}
+
+impl From<DebugProbeSelector> for String {
+    fn from(selector: DebugProbeSelector) -> Self {
+        selector.to_string()
     }
 }
 

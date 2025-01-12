@@ -48,24 +48,86 @@ impl ClientConnection {
         let data = tokio::fs::read(&src_path)
             .await
             .context("Failed to read file")?;
+        tracing::debug!("Uploading {} ({} bytes)", src_path.display(), data.len());
 
-        let msg = ClientMessage::TempFile(data);
-        let msg = postcard::to_stdvec(&msg).context("Failed to serialize client message")?;
-        self.websocket.send(Message::Binary(msg.into())).await?;
+        self.send_message(ClientMessage::TempFile(data)).await?;
 
-        let Some(Ok(Message::Binary(msg))) = self.websocket.next().await else {
+        let Some(Ok(ServerMessage::TempFileOpened(path))) = self.read_server_message().await else {
             anyhow::bail!("Server did not return a file path");
         };
 
-        let msg = postcard::from_bytes::<ServerMessage>(&msg)
-            .context("Failed to parse server message")?;
-        let ServerMessage::TempFileOpened(path) = msg else {
-            anyhow::bail!("Command unexpectedly returned {msg:?}");
-        };
-
+        tracing::debug!("Uploaded file to {}", path.display());
         self.uploaded_files.insert(src_path, path.clone());
 
         Ok(path)
+    }
+
+    async fn send_message(&mut self, msg: ClientMessage) -> anyhow::Result<()> {
+        let msg = postcard::to_stdvec(&msg).context("Failed to serialize message")?;
+
+        // Send message length first
+        self.websocket
+            .send(Message::Binary(
+                (msg.len() as u64).to_le_bytes().to_vec().into(),
+            ))
+            .await
+            .context("Failed to send message length")?;
+
+        // Send message
+        self.websocket
+            .send(Message::Binary(msg.into()))
+            .await
+            .context("Failed to send message")
+    }
+
+    async fn read_message(&mut self) -> Option<anyhow::Result<Message>> {
+        // Read the length of the message
+        let mut data = Vec::with_capacity(128);
+
+        while data.len() < 8 {
+            match self.websocket.next().await {
+                Some(Ok(Message::Binary(msg))) => data.extend_from_slice(&msg),
+                Some(Ok(Message::Close(_))) => return None,
+                Some(Ok(other)) if data.is_empty() => return Some(Ok(other)),
+                Some(Ok(other)) => {
+                    return Some(Err(anyhow::anyhow!("Unexpected message: {:?}", other)));
+                }
+                Some(Err(err)) => return Some(Err(err.into())),
+                None => return None,
+            };
+        }
+
+        let len = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        data.drain(..8);
+
+        // Read the message
+        while data.len() < len as usize {
+            match self.websocket.next().await {
+                Some(Ok(Message::Binary(msg))) => data.extend_from_slice(&msg),
+                Some(Ok(Message::Close(_))) => return None,
+                Some(Ok(other)) => {
+                    return Some(Err(anyhow::anyhow!("Unexpected message: {:?}", other)));
+                }
+                Some(Err(err)) => return Some(Err(err.into())),
+                None => return None,
+            };
+        }
+
+        Some(Ok(Message::Binary(data.into())))
+    }
+
+    async fn read_server_message(&mut self) -> Option<anyhow::Result<ServerMessage>> {
+        match self.read_message().await? {
+            Ok(Message::Binary(msg)) => {
+                tracing::debug!("Received message: {} bytes", msg.len());
+                Some(
+                    postcard::from_bytes::<ServerMessage>(&msg)
+                        .context("Failed to parse client message"),
+                )
+            }
+            Ok(Message::Close(_)) => None,
+            msg => Some(Err(anyhow::anyhow!("Server unexpectedly sent {msg:?}"))),
+        }
     }
 
     pub(super) async fn run_call<F, CB>(
@@ -77,7 +139,7 @@ impl ClientConnection {
         F: RemoteFunction,
         CB: FnMut(Vec<u8>),
     {
-        struct WebsocketGuard<'a>(&'a mut WebSocketStream<MaybeTlsStream<TcpStream>>);
+        struct WebsocketGuard<'a>(&'a mut ClientConnection);
 
         impl WebsocketGuard<'_> {
             fn defuse(self) {
@@ -89,25 +151,15 @@ impl ClientConnection {
             fn drop(&mut self) {
                 async_scoped::TokioScope::scope_and_block(|s| {
                     s.spawn(async {
-                        let msg = postcard::to_stdvec(&ClientMessage::CancelRpc)
-                            .expect("Failed to serialize client message");
-                        self.0.send(Message::Binary(msg.into())).await?;
+                        self.0.send_message(ClientMessage::CancelRpc).await?;
 
                         // We'll still have to wait for the server to acknowledge the cancel
-                        while let Some(Ok(msg)) = self.0.next().await {
+                        while let Some(Ok(msg)) = self.0.read_server_message().await {
                             match msg {
-                                Message::Binary(msg) => {
-                                    let msg = postcard::from_bytes::<ServerMessage>(&msg)
-                                        .expect("Failed to parse server message");
-                                    match msg {
-                                        ServerMessage::RpcResult(_) => return Ok(()),
-                                        ServerMessage::RpcMessage(_) => {}
-                                        ServerMessage::Error(msg) => anyhow::bail!("{msg}"),
-                                        msg => panic!("Command unexpectedly returned {msg:?}"),
-                                    }
-                                }
-                                Message::Close(_) => {}
-                                msg => panic!("Server unexpectedly sent {msg:?}"),
+                                ServerMessage::RpcResult(_) => return Ok(()),
+                                ServerMessage::RpcMessage(_) => {}
+                                ServerMessage::Error(msg) => anyhow::bail!("{msg}"),
+                                msg => panic!("Command unexpectedly returned {msg:?}"),
                             }
                         }
 
@@ -117,36 +169,32 @@ impl ClientConnection {
             }
         }
 
-        let websocket_guard = WebsocketGuard(&mut self.websocket);
+        let websocket_guard = WebsocketGuard(self);
 
-        let msg = ClientMessage::Rpc(f.into());
-        let msg = postcard::to_stdvec(&msg).context("Failed to serialize client message")?;
+        websocket_guard
+            .0
+            .send_message(ClientMessage::Rpc(f.into()))
+            .await?;
 
-        websocket_guard.0.send(Message::Binary(msg.into())).await?;
-
-        while let Some(Ok(msg)) = websocket_guard.0.next().await {
+        while let Some(Ok(msg)) = websocket_guard.0.read_server_message().await {
             match msg {
-                Message::Binary(msg) => {
-                    let msg = postcard::from_bytes::<ServerMessage>(&msg)
-                        .context("Failed to parse server message")?;
-                    match msg {
-                        ServerMessage::RpcResult(msg) => {
-                            // We don't want to cancel the RPC anymore (in case deserialization fails)
-                            websocket_guard.defuse();
+                ServerMessage::RpcResult(msg) => {
+                    // We don't want to cancel the RPC anymore (in case deserialization fails)
+                    websocket_guard.defuse();
 
-                            tracing::debug!("Received RPC result: {} bytes", msg.len());
+                    tracing::debug!("Received RPC result: {} bytes", msg.len());
 
-                            let msg = postcard::from_bytes::<F::Result>(&msg)
-                                .context("Failed to parse RPC response")?;
-                            return Ok(msg);
-                        }
-                        ServerMessage::RpcMessage(msg) => on_message(msg),
-                        ServerMessage::Error(msg) => anyhow::bail!("{msg}"),
-                        msg => panic!("Command unexpectedly returned {msg:?}"),
-                    }
+                    let msg = postcard::from_bytes::<F::Result>(&msg)
+                        .context("Failed to parse RPC response")?;
+                    return Ok(msg);
                 }
-                Message::Close(_) => {}
-                msg => panic!("Server unexpectedly sent {msg:?}"),
+                ServerMessage::RpcMessage(msg) => on_message(msg),
+                ServerMessage::Error(msg) => {
+                    // We don't need to cancel the RPC if the server returns an error
+                    websocket_guard.defuse();
+                    anyhow::bail!("{msg}")
+                }
+                msg => panic!("Command unexpectedly returned {msg:?}"),
             }
         }
 
