@@ -117,6 +117,7 @@ impl ServerConnection {
     }
 
     async fn save_temp_file(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
+        // TODO: avoid temp files?
         let mut file = NamedTempFile::new().context("Failed to write temporary file")?;
 
         file.as_file_mut()

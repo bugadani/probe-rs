@@ -17,6 +17,7 @@ use tokio_tungstenite::{
 };
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -30,30 +31,41 @@ use crate::cmd::remote::functions::RemoteFunction;
 pub struct ClientConnection {
     websocket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     is_localhost: bool,
+    uploaded_files: HashMap<PathBuf, PathBuf>,
 }
 
 impl ClientConnection {
-    pub async fn upload_file(&mut self, path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
-        let path = path.as_ref();
+    pub async fn upload_file(&mut self, src_path: &Path) -> anyhow::Result<PathBuf> {
+        let src_path = src_path.canonicalize()?;
         if self.is_localhost {
-            return Ok(path.to_path_buf());
+            return Ok(src_path);
         }
 
-        let data = tokio::fs::read(path).await.context("Failed to read file")?;
+        if let Some(path) = self.uploaded_files.get(&src_path) {
+            return Ok(path.clone());
+        }
+
+        let data = tokio::fs::read(&src_path)
+            .await
+            .context("Failed to read file")?;
+
         let msg = ClientMessage::TempFile(data);
         let msg = postcard::to_stdvec(&msg).context("Failed to serialize client message")?;
         self.websocket.send(Message::Binary(msg.into())).await?;
 
-        if let Some(Ok(Message::Binary(msg))) = self.websocket.next().await {
-            let msg = postcard::from_bytes::<ServerMessage>(&msg)
-                .context("Failed to parse server message")?;
-            match msg {
-                ServerMessage::TempFileOpened(path) => return Ok(path),
-                msg => panic!("Command unexpectedly returned {msg:?}"),
-            }
-        }
+        let Some(Ok(Message::Binary(msg))) = self.websocket.next().await else {
+            anyhow::bail!("Server did not return a file path");
+        };
 
-        anyhow::bail!("Server did not return a file path")
+        let msg = postcard::from_bytes::<ServerMessage>(&msg)
+            .context("Failed to parse server message")?;
+        let ServerMessage::TempFileOpened(path) = msg else {
+            anyhow::bail!("Command unexpectedly returned {msg:?}");
+        };
+
+        self.uploaded_files.insert(src_path, path.clone());
+
+        Ok(path)
     }
 
     pub(super) async fn run_call<F, CB>(
@@ -117,5 +129,6 @@ pub async fn connect(host: &str, token: Option<String>) -> anyhow::Result<Client
     Ok(ClientConnection {
         websocket: ws_stream,
         is_localhost,
+        uploaded_files: HashMap::new(),
     })
 }

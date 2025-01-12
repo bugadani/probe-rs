@@ -256,7 +256,7 @@ impl RemoteSession {
     }
 
     pub async fn upload_file(&mut self, path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
-        self.client.upload_file(path).await
+        self.client.upload_file(path.as_ref()).await
     }
 }
 
