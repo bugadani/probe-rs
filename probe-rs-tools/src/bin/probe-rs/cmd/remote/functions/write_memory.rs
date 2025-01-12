@@ -1,12 +1,13 @@
 use crate::cmd::remote::{
     functions::{Context, EmitterFn, RemoteFunctions, Word},
-    SessionId,
+    Key,
 };
+use probe_rs::Session;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct WriteMemory<W: Word> {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
     pub core: usize,
     pub address: u64,
     pub data: Vec<W>,
@@ -21,7 +22,7 @@ where
     type Result = ();
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
-        let session = ctx.session(self.sessid);
+        let mut session = ctx.session(self.sessid).await;
         let mut core = session.core(self.core).unwrap();
         W::write(&mut core, self.address, &self.data)?;
         Ok(())

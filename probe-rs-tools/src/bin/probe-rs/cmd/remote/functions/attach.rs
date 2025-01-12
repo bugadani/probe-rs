@@ -1,3 +1,4 @@
+use probe_rs::Session;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -5,14 +6,14 @@ use crate::{
         functions::{
             list_probes::DebugProbeEntry, Context, EmitterFn, RemoteFunction, RemoteFunctions,
         },
-        SessionId,
+        Key,
     },
     util::common_options::{OperationError, ProbeOptions},
 };
 
 #[derive(Serialize, Deserialize)]
 pub enum AttachResult {
-    Success(SessionId),
+    Success(Key<Session>),
     MultipleProbes(Vec<DebugProbeEntry>),
 }
 

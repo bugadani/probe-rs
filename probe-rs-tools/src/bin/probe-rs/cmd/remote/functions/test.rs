@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use probe_rs::{
-    flashing::BootInfo, semihosting::SemihostingCommand, BreakpointCause, Core, HaltReason,
+    flashing::BootInfo, semihosting::SemihostingCommand, BreakpointCause, Core, HaltReason, Session,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
@@ -15,7 +15,7 @@ use crate::cmd::{
             },
             Context, EmitterFn, RemoteFunctions,
         },
-        run_blocking_streaming, LocalSession, SessionId,
+        run_blocking_streaming, Key, LocalSession,
     },
     run::{print_stacktrace, ReturnReason, RunLoop},
 };
@@ -71,7 +71,7 @@ pub enum TestEvent {
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct ListTests {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
     pub boot_info: BootInfo,
 }
 
@@ -80,27 +80,11 @@ impl super::RemoteFunction for ListTests {
     type Result = Tests;
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<Tests> {
-        let session = ctx.session(self.sessid);
-
         // TODO: add an RPC function to create RTT client and return a handle to it
-        let rtt_client = create_rtt_client(session, None, &LogOptions::default()).await?;
-
-        let core_id = rtt_client.core_id();
-
-        match self.boot_info {
-            BootInfo::FromRam {
-                vector_table_addr, ..
-            } => {
-                // core should be already reset and halt by this point.
-                session.prepare_running_on_ram(vector_table_addr)?;
-            }
-            BootInfo::Other => {
-                // reset the core to leave it in a consistent state after flashing
-                session
-                    .core(core_id)?
-                    .reset_and_halt(Duration::from_millis(100))?;
-            }
-        }
+        let rtt_client = {
+            let mut session = ctx.session(self.sessid).await;
+            create_rtt_client(&mut session, None, &LogOptions::default()).await?
+        };
 
         run_blocking_streaming(
             ctx,
@@ -108,10 +92,11 @@ impl super::RemoteFunction for ListTests {
                   tx: UnboundedSender<TestEvent>,
                   cancellation_token: CancellationToken|
                   -> anyhow::Result<Tests> {
-                let session = iface.session(self.sessid);
+                let mut session = iface.session_blocking(self.sessid);
                 let mut list_handler = ListEventHandler::new();
                 let mut rtt_sink =
                     RttStreamer::new(tx, cancellation_token.clone(), TestEvent::RttOutput);
+                let core_id = rtt_client.core_id();
 
                 let mut run_loop = RunLoop {
                     core_id,
@@ -119,8 +104,24 @@ impl super::RemoteFunction for ListTests {
                     cancellation_token,
                 };
 
+                match self.boot_info {
+                    BootInfo::FromRam {
+                        vector_table_addr, ..
+                    } => {
+                        // core should be already reset and halt by this point.
+                        session.prepare_running_on_ram(vector_table_addr)?;
+                    }
+                    BootInfo::Other => {
+                        // reset the core to leave it in a consistent state after flashing
+                        session
+                            .core(core_id)?
+                            .reset_and_halt(Duration::from_millis(100))?;
+                    }
+                }
+
+                let mut core = session.core(0)?;
                 match run_loop.run_until(
-                    &mut session.core(0)?,
+                    &mut core,
                     true,
                     true,
                     &mut rtt_sink,
@@ -150,7 +151,7 @@ impl From<ListTests> for RemoteFunctions {
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct RunTest {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
     pub test: Test,
 }
 
@@ -159,11 +160,13 @@ impl super::RemoteFunction for RunTest {
     type Result = TestResult;
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<TestResult> {
-        let session = ctx.session(self.sessid);
         tracing::info!("Running test {}", self.test.name);
 
         // TODO: add an RPC function to create RTT client and return a handle to it
-        let rtt_client = create_rtt_client(session, None, &LogOptions::default()).await?;
+        let rtt_client = {
+            let mut session = ctx.session(self.sessid).await;
+            create_rtt_client(&mut session, None, &LogOptions::default()).await?
+        };
 
         run_blocking_streaming(
             ctx,
@@ -174,7 +177,7 @@ impl super::RemoteFunction for RunTest {
                 let timeout = self.test.timeout.map(|t| Duration::from_secs(t as u64));
                 let timeout = timeout.unwrap_or(Duration::from_secs(60));
 
-                let session = iface.session(self.sessid);
+                let mut session = iface.session_blocking(self.sessid);
 
                 let mut core = session.core(0)?;
                 core.reset_and_halt(Duration::from_millis(100))

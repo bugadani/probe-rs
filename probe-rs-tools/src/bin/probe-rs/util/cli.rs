@@ -4,7 +4,10 @@ use std::{path::Path, sync::Arc, time::Instant};
 
 use colored::Colorize;
 use libtest_mimic::{Failed, Trial};
-use probe_rs::flashing::{BootInfo, FlashLayout, ProgressEvent};
+use probe_rs::{
+    flashing::{BootInfo, FlashLayout, ProgressEvent},
+    Session,
+};
 use tokio::{runtime::Handle, sync::Mutex};
 
 use crate::{
@@ -16,7 +19,7 @@ use crate::{
             stack_trace::StackTrace,
             test::TestResult,
         },
-        ClientInterface, SessionId, SessionInterface,
+        ClientInterface, Key, SessionInterface,
     },
     util::{
         common_options::{BinaryDownloadOptions, ProbeOptions},
@@ -184,7 +187,7 @@ pub async fn monitor(
 
 pub async fn test(
     ctx: impl ClientInterface,
-    sessid: SessionId,
+    sessid: Key<Session>,
     boot_info: BootInfo,
     libtest_args: libtest_mimic::Arguments,
     print_stack_trace: bool,

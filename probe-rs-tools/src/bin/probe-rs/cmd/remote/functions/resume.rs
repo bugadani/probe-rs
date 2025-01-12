@@ -1,12 +1,13 @@
 use crate::cmd::remote::{
     functions::{Context, EmitterFn, RemoteFunctions},
-    SessionId,
+    Key,
 };
+use probe_rs::Session;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct ResumeAllCores {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
 }
 
 impl super::RemoteFunction for ResumeAllCores {
@@ -14,7 +15,7 @@ impl super::RemoteFunction for ResumeAllCores {
     type Result = ();
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
-        ctx.session(self.sessid).resume_all_cores()?;
+        ctx.session(self.sessid).await.resume_all_cores()?;
         Ok(())
     }
 }

@@ -9,7 +9,7 @@ use crate::{
     cmd::{
         remote::{
             functions::{Context, EmitterFn, RemoteFunctions},
-            run_blocking_streaming, LocalSession, SessionId,
+            run_blocking_streaming, Key, LocalSession,
         },
         run::RunLoop,
     },
@@ -66,7 +66,7 @@ pub struct LogOptions {
 /// Monitor in normal run mode.
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct Monitor {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
     pub mode: MonitorMode,
     /// The path to the ELF file to flash and run.
     pub path: PathBuf,
@@ -86,10 +86,12 @@ impl super::RemoteFunction for Monitor {
     }
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
-        let session = ctx.session(self.sessid);
+        let rtt_client = {
+            let mut session = ctx.session(self.sessid).await;
 
-        // For normal run mode, we expect the RTT header to be cleared if necessary by the flashing process.
-        let rtt_client = create_rtt_client(session, Some(&self.path), &self.options.log).await?;
+            // For normal run mode, we expect the RTT header to be cleared if necessary by the flashing process.
+            create_rtt_client(&mut session, Some(&self.path), &self.options.log).await?
+        };
 
         run_blocking_streaming(
             ctx,
@@ -97,14 +99,14 @@ impl super::RemoteFunction for Monitor {
                   tx: UnboundedSender<MonitorEvent>,
                   cancellation_token: CancellationToken|
                   -> anyhow::Result<()> {
-                let session = iface.session(self.sessid);
+                let mut session = iface.session_blocking(self.sessid);
                 let mut semihosting_sink = MonitorEventHandler::new(tx.clone());
                 let mut rtt_sink =
                     RttStreamer::new(tx, cancellation_token.clone(), MonitorEvent::RttOutput);
                 let core_id = rtt_client.core_id();
 
                 let mut run_loop = RunLoop {
-                    core_id,
+                    core_id: rtt_client.core_id(),
                     rtt_client,
                     cancellation_token,
                 };

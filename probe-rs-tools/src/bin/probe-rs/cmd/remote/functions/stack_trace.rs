@@ -2,8 +2,9 @@ use std::{fmt::Write as _, path::PathBuf};
 
 use crate::cmd::remote::{
     functions::{Context, EmitterFn, RemoteFunctions},
-    SessionId,
+    Key,
 };
+use probe_rs::Session;
 use probe_rs_debug::{exception_handler_for_core, DebugInfo, DebugRegisters};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +25,7 @@ pub struct StackTraces {
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct TakeStackTrace {
     pub path: PathBuf,
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
 }
 
 impl super::RemoteFunction for TakeStackTrace {
@@ -38,11 +39,11 @@ impl super::RemoteFunction for TakeStackTrace {
     }
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<StackTraces> {
+        let mut session = ctx.session(self.sessid).await;
+
         let Some(debug_info) = DebugInfo::from_file(&self.path).ok() else {
             anyhow::bail!("No debug info found.");
         };
-
-        let session = ctx.session(self.sessid);
 
         session
             .halted_access(|session| {

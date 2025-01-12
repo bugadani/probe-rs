@@ -2,13 +2,14 @@ use std::marker::PhantomData;
 
 use crate::cmd::remote::{
     functions::{Context, EmitterFn, RemoteFunctions, Word},
-    SessionId,
+    Key,
 };
+use probe_rs::Session;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct ReadMemory<T: Word> {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
     pub core: usize,
     pub address: u64,
     pub count: usize,
@@ -24,7 +25,7 @@ where
     type Result = Vec<W>;
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<Vec<W>> {
-        let session = ctx.session(self.sessid);
+        let mut session = ctx.session(self.sessid).await;
         let mut core = session.core(self.core)?;
 
         let mut words = vec![W::default(); self.count];

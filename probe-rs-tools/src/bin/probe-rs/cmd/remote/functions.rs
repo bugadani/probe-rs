@@ -1,10 +1,12 @@
+use std::{any::Any, ops::DerefMut};
+
 use probe_rs::{probe::list::Lister, MemoryInterface, Session};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "remote")]
 use crate::cmd::remote::RemoteSession;
-use crate::cmd::remote::{LocalSession, SessionId};
+use crate::cmd::remote::{Key, LocalSession};
 
 pub mod attach;
 pub mod chip;
@@ -103,15 +105,19 @@ impl<'a, F: EmitterFn> Context<'a, F> {
         self.emitter.call(data).await
     }
 
-    pub fn set_session(&mut self, session: Session, dry_run: bool) -> SessionId {
+    pub async fn object_mut<T: Any + Send>(&self, key: Key<T>) -> impl DerefMut<Target = T> + Send {
+        self.iface.object_mut(key).await
+    }
+
+    pub fn set_session(&mut self, session: Session, dry_run: bool) -> Key<Session> {
         self.iface.set_session(session, dry_run)
     }
 
-    pub fn session(&mut self, sid: SessionId) -> &mut Session {
-        self.iface.session(sid)
+    pub async fn session(&mut self, sid: Key<Session>) -> impl DerefMut<Target = Session> + Send {
+        self.object_mut(sid).await
     }
 
-    pub fn dry_run(&self, sid: SessionId) -> bool {
+    pub fn dry_run(&self, sid: Key<Session>) -> bool {
         self.iface.dry_run(sid)
     }
 

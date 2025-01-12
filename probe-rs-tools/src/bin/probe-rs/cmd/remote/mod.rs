@@ -1,4 +1,16 @@
-use std::{future::Future, marker::PhantomData, path::PathBuf, pin::Pin};
+use std::{
+    any::Any,
+    collections::HashMap,
+    future::Future,
+    marker::PhantomData,
+    ops::DerefMut,
+    path::PathBuf,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 #[cfg(feature = "remote")]
 use std::path::Path;
@@ -9,7 +21,10 @@ use probe_rs::{
     Session,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tokio::{runtime::Handle, sync::mpsc::UnboundedSender};
+use tokio::{
+    runtime::Handle,
+    sync::{mpsc::UnboundedSender, Mutex},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -126,16 +141,16 @@ pub trait ClientInterface: Client {
 }
 
 pub struct SessionInterface<'a, T: ClientInterface> {
-    sessid: SessionId,
+    sessid: Key<Session>,
     iface: &'a mut T,
 }
 
 impl<'a, T: ClientInterface> SessionInterface<'a, T> {
-    pub fn new(iface: &'a mut T, sessid: SessionId) -> Self {
+    pub fn new(iface: &'a mut T, sessid: Key<Session>) -> Self {
         Self { sessid, iface }
     }
 
-    pub fn into_session_id(self) -> SessionId {
+    pub fn into_session_id(self) -> Key<Session> {
         self.sessid
     }
 
@@ -224,7 +239,7 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
 }
 
 pub struct CoreInterface<'a, T: ClientInterface> {
-    sessid: SessionId,
+    sessid: Key<Session>,
     core: usize,
     iface: &'a mut T,
 }
@@ -275,34 +290,81 @@ impl<T: ClientInterface> CoreInterface<'_, T> {
 
 impl<T> ClientInterface for T where T: Client {}
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
-pub struct SessionId(());
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Hash)]
+pub struct Key<T> {
+    key: u64,
+    marker: PhantomData<T>,
+}
+
+impl<T> Clone for Key<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Key<T> {}
+
+impl<T> Key<T> {
+    fn new() -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        Self {
+            key: COUNTER.fetch_add(1, Ordering::Relaxed),
+            marker: PhantomData,
+        }
+    }
+}
 
 /// Run functions locally.
 pub struct LocalSession {
-    session: Option<Session>,
     dry_run: bool,
+    object_storage: HashMap<u64, Arc<Mutex<dyn Any + Send>>>,
 }
 
 impl LocalSession {
     pub fn new() -> Self {
         Self {
-            session: None,
             dry_run: false,
+            object_storage: HashMap::new(),
         }
     }
 
-    pub fn set_session(&mut self, session: Session, dry_run: bool) -> SessionId {
-        self.session = Some(session);
+    pub fn store_object<T: Any + Send>(&mut self, obj: T) -> Key<T> {
+        let key = Key::new();
+        self.object_storage
+            .insert(key.key, Arc::new(Mutex::new(obj)));
+        key
+    }
+
+    pub async fn object_mut<T: Any + Send>(&self, key: Key<T>) -> impl DerefMut<Target = T> + Send {
+        let obj = self.object_storage.get(&key.key).unwrap();
+        let guard = obj.clone().lock_owned().await;
+        tokio::sync::OwnedMutexGuard::map(guard, |e: &mut (dyn Any + Send)| {
+            e.downcast_mut::<T>().unwrap()
+        })
+    }
+
+    pub fn object_mut_blocking<T: Any + Send>(
+        &self,
+        key: Key<T>,
+    ) -> impl DerefMut<Target = T> + Send {
+        let obj = self.object_storage.get(&key.key).unwrap();
+        let guard = obj.clone().blocking_lock_owned();
+        tokio::sync::OwnedMutexGuard::map(guard, |e: &mut (dyn Any + Send)| {
+            e.downcast_mut::<T>().unwrap()
+        })
+    }
+
+    pub fn set_session(&mut self, session: Session, dry_run: bool) -> Key<Session> {
+        let key = self.store_object(session);
         self.dry_run = dry_run;
-        SessionId(())
+        key
     }
 
-    pub fn session(&mut self, _sid: SessionId) -> &mut Session {
-        self.session.as_mut().unwrap()
+    pub fn session_blocking(&self, sid: Key<Session>) -> impl DerefMut<Target = Session> + Send {
+        self.object_mut_blocking(sid)
     }
 
-    pub fn dry_run(&self, _sid: SessionId) -> bool {
+    pub fn dry_run(&self, _sid: Key<Session>) -> bool {
         self.dry_run
     }
 

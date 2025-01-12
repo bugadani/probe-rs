@@ -3,6 +3,7 @@ use std::{cell::Cell, path::PathBuf, rc::Rc};
 use probe_rs::{
     flashing::{BootInfo, FileDownloadError, FlashLayout, FlashProgress, ProgressEvent},
     rtt::ScanRegion,
+    Session,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
@@ -11,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     cmd::remote::{
         functions::{monitor::LogOptions, Context, EmitterFn, RemoteFunction, RemoteFunctions},
-        run_blocking_streaming, LocalSession, SessionId,
+        run_blocking_streaming, Key, LocalSession,
     },
     util::flash::build_loader,
     FormatOptions,
@@ -19,6 +20,8 @@ use crate::{
 
 #[cfg(feature = "remote")]
 use crate::cmd::remote::RemoteSession;
+
+use super::monitor::create_rtt_client;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct DownloadOptions {
@@ -46,7 +49,7 @@ pub struct DownloadOptions {
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::cmd::remote) struct Flash {
-    pub sessid: SessionId,
+    pub sessid: Key<Session>,
     pub path: PathBuf,
     pub format: FormatOptions,
     pub options: DownloadOptions,
@@ -80,10 +83,10 @@ impl RemoteFunction for Flash {
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<FlashResult> {
         let dry_run = ctx.dry_run(self.sessid);
 
-        let session = ctx.session(self.sessid);
-        let mut rtt_client =
-            super::monitor::create_rtt_client(session, Some(&self.path), &LogOptions::default())
-                .await?;
+        let mut rtt_client = {
+            let mut session = ctx.session(self.sessid).await;
+            create_rtt_client(&mut session, Some(&self.path), &LogOptions::default()).await?
+        };
 
         run_blocking_streaming(
             ctx,
@@ -91,10 +94,10 @@ impl RemoteFunction for Flash {
                   tx: UnboundedSender<ProgressEvent>,
                   _token: CancellationToken|
                   -> anyhow::Result<FlashResult> {
-                let session = iface.session(self.sessid);
+                let mut session = iface.session_blocking(self.sessid);
 
                 // build loader
-                let loader = build_loader(session, &self.path, self.format, None)?;
+                let loader = build_loader(&mut session, &self.path, self.format, None)?;
 
                 // When using RTT with a program in flash, the RTT header will be moved to RAM on
                 // startup, so clearing it before startup is ok. However, if we're downloading to the
@@ -133,7 +136,7 @@ impl RemoteFunction for Flash {
 
                 // run flash download
                 loader
-                    .commit(session, options)
+                    .commit(&mut session, options)
                     .map_err(FileDownloadError::Flash)?;
 
                 let boot_info = loader.boot_info();
