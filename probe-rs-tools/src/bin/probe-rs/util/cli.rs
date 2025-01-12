@@ -214,31 +214,30 @@ pub async fn test(
                 let shared_context = shared_context.clone();
                 let name = t.name.clone();
                 let ignored = t.ignored;
+                let path = path.to_path_buf();
 
                 Trial::test(name, move || {
                     let mut ctx = shared_context.blocking_lock();
                     tokio::task::block_in_place(move || {
                         let mut session = SessionInterface::new(&mut *ctx, sessid);
-                        let outcome = Handle::current()
-                            .block_on(async { session.run_test(t, rtt_client).await });
-
-                        match outcome {
-                            Ok(TestResult::Success) => Ok(()),
-                            Ok(TestResult::Cancelled) => {
-                                eprintln!("Cancelled");
-                                std::process::exit(1);
-                            }
-                            Ok(TestResult::Failed(message, stack_trace)) => {
-                                if let Some(stack_trace) = stack_trace {
-                                    eprintln!("Stack trace:\n{}", stack_trace);
+                        Handle::current().block_on(async {
+                            match session.run_test(t, rtt_client).await {
+                                Ok(TestResult::Success) => Ok(()),
+                                Ok(TestResult::Cancelled) => {
+                                    eprintln!("Cancelled");
+                                    std::process::exit(1);
                                 }
-                                Err(Failed::from(message))
+                                Ok(TestResult::Failed(message)) => {
+                                    display_stack_trace(&mut session, &path).await?;
+
+                                    Err(Failed::from(message))
+                                }
+                                Err(e) => {
+                                    eprintln!("Error: {:?}", e);
+                                    std::process::exit(1);
+                                }
                             }
-                            Err(e) => {
-                                eprintln!("Error: {:?}", e);
-                                std::process::exit(1);
-                            }
-                        }
+                        })
                     })
                 })
                 .with_ignored_flag(ignored)

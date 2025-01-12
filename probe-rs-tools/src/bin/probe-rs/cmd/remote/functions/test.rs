@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use probe_rs::{
     flashing::BootInfo, semihosting::SemihostingCommand, BreakpointCause, Core, HaltReason, Session,
@@ -16,7 +16,7 @@ use crate::{
             },
             run_blocking_streaming, Key, LocalSession,
         },
-        run::{print_stacktrace, ReturnReason, RunLoop},
+        run::{ReturnReason, RunLoop},
     },
     util::rtt::client::RttClient,
 };
@@ -60,7 +60,7 @@ where
 #[derive(Serialize, Deserialize)]
 pub enum TestResult {
     Success,
-    Failed(String, Option<String>),
+    Failed(String),
     Cancelled,
 }
 
@@ -204,33 +204,17 @@ impl super::RemoteFunction for RunTest {
                     Some(timeout),
                     |halt_reason, core| run_handler.handle_halt(halt_reason, core),
                 )? {
-                    ReturnReason::Timeout => Ok(TestResult::Failed(
-                        format!("Test timed out after {:?}", timeout),
-                        None,
-                    )),
-                    ReturnReason::Predicate(outcome) => {
-                        if outcome == expected_outcome {
-                            return Ok(TestResult::Success);
-                        }
-
-                        let stack_trace = if outcome == TestOutcome::Panic {
-                            let mut stacktrace = String::new();
-                            // TODO: pass the path to the binary (or the binary itself)
-                            print_stacktrace(&mut core, Path::new(""), &mut stacktrace)?;
-
-                            Some(stacktrace)
-                        } else {
-                            None
-                        };
-
-                        Ok(TestResult::Failed(
-                            format!(
-                                "Test should {:?} but it did {:?}",
-                                expected_outcome, outcome
-                            ),
-                            stack_trace,
-                        ))
+                    ReturnReason::Timeout => Ok(TestResult::Failed(format!(
+                        "Test timed out after {:?}",
+                        timeout
+                    ))),
+                    ReturnReason::Predicate(outcome) if outcome == expected_outcome => {
+                        Ok(TestResult::Success)
                     }
+                    ReturnReason::Predicate(outcome) => Ok(TestResult::Failed(format!(
+                        "Test should {:?} but it did {:?}",
+                        expected_outcome, outcome
+                    ))),
                     ReturnReason::Cancelled => Ok(TestResult::Cancelled),
                 }
             },

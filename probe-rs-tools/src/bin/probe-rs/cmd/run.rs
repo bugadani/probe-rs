@@ -6,10 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use probe_rs::{
-    rtt::Error as RttError, Core, CoreInterface, Error, HaltReason, VectorCatchCondition,
-};
-use probe_rs_debug::{exception_handler_for_core, DebugInfo, DebugRegisters};
+use probe_rs::{rtt::Error as RttError, Core, Error, HaltReason, VectorCatchCondition};
 
 use crate::cmd::remote::functions::monitor::{MonitorMode, MonitorOptions};
 use crate::cmd::remote::functions::rtt_client::LogOptions;
@@ -437,64 +434,6 @@ impl RunLoop<'_> {
             }
         }
     }
-}
-
-/// Prints the stacktrace of the current execution state.
-pub fn print_stacktrace<S: Write + ?Sized>(
-    core: &mut impl CoreInterface,
-    path: &Path,
-    output_stream: &mut S,
-) -> Result<(), anyhow::Error> {
-    let Some(debug_info) = DebugInfo::from_file(path).ok() else {
-        tracing::error!("No debug info found.");
-        return Ok(());
-    };
-    let initial_registers = DebugRegisters::from_core(core);
-    let exception_interface = exception_handler_for_core(core.core_type());
-    let instruction_set = core.instruction_set().ok();
-    let stack_frames = debug_info
-        .unwind(
-            core,
-            initial_registers,
-            exception_interface.as_ref(),
-            instruction_set,
-        )
-        .unwrap();
-    for (i, frame) in stack_frames.iter().enumerate() {
-        write!(
-            output_stream,
-            "Frame {}: {} @ {}",
-            i, frame.function_name, frame.pc
-        )?;
-
-        if frame.is_inlined {
-            write!(output_stream, " inline")?;
-        }
-        writeln!(output_stream)?;
-
-        let Some(location) = &frame.source_location else {
-            continue;
-        };
-
-        write!(output_stream, "       ")?;
-
-        write!(output_stream, "{}", location.path.to_path().display())?;
-
-        if let Some(line) = location.line {
-            write!(output_stream, ":{line}")?;
-
-            if let Some(col) = location.column {
-                let col = match col {
-                    probe_rs_debug::ColumnType::LeftEdge => 1,
-                    probe_rs_debug::ColumnType::Column(c) => c,
-                };
-                write!(output_stream, ":{col}")?;
-            }
-        }
-
-        writeln!(output_stream)?;
-    }
-    Ok(())
 }
 
 /// Poll RTT and print the received buffer.
