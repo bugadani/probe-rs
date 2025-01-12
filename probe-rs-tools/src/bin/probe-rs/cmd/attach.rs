@@ -1,4 +1,5 @@
-use crate::cmd::remote::functions::monitor::{LogOptions, MonitorMode, MonitorOptions};
+use crate::cmd::remote::functions::monitor::{MonitorMode, MonitorOptions};
+use crate::cmd::remote::functions::rtt_client::LogOptions;
 use crate::cmd::remote::ClientInterface;
 use crate::util::cli;
 
@@ -14,6 +15,17 @@ impl Cmd {
         let mut session =
             cli::attach_probe(&mut iface, self.run.shared_options.probe_options, true).await?;
 
+        let rtt = session
+            .create_rtt_client(
+                Some(self.run.shared_options.path.clone()),
+                LogOptions {
+                    no_location: self.run.shared_options.no_location,
+                    log_format: self.run.shared_options.log_format,
+                    rtt_scan_memory: self.run.shared_options.rtt_scan_memory,
+                },
+            )
+            .await?;
+
         cli::monitor(
             &mut session,
             MonitorMode::AttachToRunning,
@@ -21,11 +33,7 @@ impl Cmd {
             MonitorOptions {
                 catch_reset: self.run.run_options.catch_reset,
                 catch_hardfault: self.run.run_options.catch_hardfault,
-                log: LogOptions {
-                    no_location: self.run.shared_options.no_location,
-                    log_format: self.run.shared_options.log_format,
-                    rtt_scan_memory: self.run.shared_options.rtt_scan_memory,
-                },
+                rtt_client: Some(rtt),
             },
             self.run.shared_options.always_print_stacktrace,
         )

@@ -11,7 +11,8 @@ use probe_rs::{
 };
 use probe_rs_debug::{exception_handler_for_core, DebugInfo, DebugRegisters};
 
-use crate::cmd::remote::functions::monitor::{LogOptions, MonitorMode, MonitorOptions};
+use crate::cmd::remote::functions::monitor::{MonitorMode, MonitorOptions};
+use crate::cmd::remote::functions::rtt_client::LogOptions;
 use crate::cmd::remote::ClientInterface;
 use crate::util::cli;
 use crate::util::common_options::{BinaryDownloadOptions, ProbeOptions};
@@ -174,6 +175,17 @@ impl Cmd {
         let mut session =
             cli::attach_probe(&mut iface, self.shared_options.probe_options, true).await?;
 
+        let rtt_client = session
+            .create_rtt_client(
+                Some(self.shared_options.path.clone()),
+                LogOptions {
+                    no_location: self.shared_options.no_location,
+                    log_format: self.shared_options.log_format,
+                    rtt_scan_memory: self.shared_options.rtt_scan_memory,
+                },
+            )
+            .await?;
+
         // Flash firmware
         let flash_result = cli::flash(
             &mut session,
@@ -181,6 +193,7 @@ impl Cmd {
             self.shared_options.chip_erase,
             self.shared_options.format_options,
             self.shared_options.download_options,
+            Some(rtt_client),
         )
         .await?;
 
@@ -209,6 +222,7 @@ impl Cmd {
                 },
                 self.shared_options.always_print_stacktrace,
                 &self.shared_options.path,
+                Some(rtt_client),
             )
             .await
         } else {
@@ -219,11 +233,7 @@ impl Cmd {
                 MonitorOptions {
                     catch_reset: self.run_options.catch_reset,
                     catch_hardfault: self.run_options.catch_hardfault,
-                    log: LogOptions {
-                        no_location: self.shared_options.no_location,
-                        log_format: self.shared_options.log_format,
-                        rtt_scan_memory: self.shared_options.rtt_scan_memory,
-                    },
+                    rtt_client: Some(rtt_client),
                 },
                 self.shared_options.always_print_stacktrace,
             )
@@ -283,9 +293,9 @@ fn detect_run_mode(cmd: &Cmd) -> anyhow::Result<RunMode> {
     }
 }
 
-pub struct RunLoop {
+pub struct RunLoop<'a> {
     pub core_id: usize,
-    pub rtt_client: RttClient,
+    pub rtt_client: Option<&'a mut RttClient>,
     pub cancellation_token: CancellationToken,
 }
 
@@ -299,7 +309,7 @@ pub enum ReturnReason<R> {
     Cancelled,
 }
 
-impl RunLoop {
+impl RunLoop<'_> {
     /// Attaches to RTT and runs the core until it halts.
     ///
     /// Upon halt the predicate is invoked with the halt reason:
@@ -347,11 +357,13 @@ impl RunLoop {
         let result = self.do_run_until(core, output_stream, timeout, start, &mut predicate);
 
         // Always clean up after RTT but don't overwrite the original result.
-        let cleanup_result = self.rtt_client.clean_up(core);
+        if let Some(ref mut rtt_client) = self.rtt_client {
+            let cleanup_result = rtt_client.clean_up(core);
 
-        if result.is_ok() {
-            // If the result is Ok, we return the potential error during cleanup.
-            cleanup_result?;
+            if result.is_ok() {
+                // If the result is Ok, we return the potential error during cleanup.
+                cleanup_result?;
+            }
         }
 
         result
@@ -394,7 +406,11 @@ impl RunLoop {
                 }
             }
 
-            let had_rtt_data = poll_rtt(&mut self.rtt_client, core, output_stream)?;
+            let had_rtt_data = if let Some(ref mut rtt_client) = self.rtt_client {
+                poll_rtt(rtt_client, core, output_stream)?
+            } else {
+                false
+            };
 
             if let Some(reason) = return_reason {
                 return reason;

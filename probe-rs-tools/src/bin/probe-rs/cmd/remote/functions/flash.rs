@@ -11,17 +11,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cmd::remote::{
-        functions::{monitor::LogOptions, Context, EmitterFn, RemoteFunction, RemoteFunctions},
+        functions::{Context, EmitterFn, RemoteFunction, RemoteFunctions},
         run_blocking_streaming, Key, LocalSession,
     },
-    util::flash::build_loader,
+    util::{flash::build_loader, rtt::client::RttClient},
     FormatOptions,
 };
 
 #[cfg(feature = "remote")]
 use crate::cmd::remote::RemoteSession;
-
-use super::monitor::create_rtt_client;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct DownloadOptions {
@@ -53,6 +51,7 @@ pub(in crate::cmd::remote) struct Flash {
     pub path: PathBuf,
     pub format: FormatOptions,
     pub options: DownloadOptions,
+    pub rtt_client: Option<Key<RttClient>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -80,13 +79,8 @@ impl RemoteFunction for Flash {
         Ok(())
     }
 
-    async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<FlashResult> {
+    async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<FlashResult> {
         let dry_run = ctx.dry_run(self.sessid);
-
-        let mut rtt_client = {
-            let mut session = ctx.session(self.sessid).await;
-            create_rtt_client(&mut session, Some(&self.path), &LogOptions::default()).await?
-        };
 
         run_blocking_streaming(
             ctx,
@@ -96,6 +90,10 @@ impl RemoteFunction for Flash {
                   -> anyhow::Result<FlashResult> {
                 let mut session = iface.session_blocking(self.sessid);
 
+                let mut rtt_client = self
+                    .rtt_client
+                    .map(|rtt_client| iface.object_mut_blocking(rtt_client));
+
                 // build loader
                 let loader = build_loader(&mut session, &self.path, self.format, None)?;
 
@@ -103,13 +101,17 @@ impl RemoteFunction for Flash {
                 // startup, so clearing it before startup is ok. However, if we're downloading to the
                 // header's final address in RAM, then it's not relocated on startup and we should not
                 // clear it. This impacts static RTT headers, like used in defmt_rtt.
-                let should_clear_rtt_header = if let ScanRegion::Exact(address) =
-                    rtt_client.scan_region
-                {
-                    tracing::debug!("RTT ScanRegion::Exact address is within region to be flashed");
-                    !loader.has_data_for_address(address)
+                let should_clear_rtt_header = if let Some(rtt_client) = rtt_client.as_ref() {
+                    if let ScanRegion::Exact(address) = rtt_client.scan_region {
+                        tracing::debug!(
+                            "RTT ScanRegion::Exact address is within region to be flashed"
+                        );
+                        !loader.has_data_for_address(address)
+                    } else {
+                        true
+                    }
                 } else {
-                    true
+                    false
                 };
 
                 let flash_layout = Rc::new(Cell::new(vec![]));
@@ -141,12 +143,14 @@ impl RemoteFunction for Flash {
 
                 let boot_info = loader.boot_info();
 
-                if should_clear_rtt_header {
-                    // We ended up resetting the MCU, throw away old RTT data and prevent
-                    // printing warnings when it initialises.
-                    let mut core = session.core(rtt_client.core_id())?;
-                    rtt_client.clear_control_block(&mut core)?;
-                    tracing::debug!("Cleared RTT header");
+                if let Some(rtt_client) = rtt_client.as_mut() {
+                    if should_clear_rtt_header {
+                        // We ended up resetting the MCU, throw away old RTT data and prevent
+                        // printing warnings when it initialises.
+                        let mut core = session.core(rtt_client.core_id())?;
+                        rtt_client.clear_control_block(&mut core)?;
+                        tracing::debug!("Cleared RTT header");
+                    }
                 }
 
                 Ok::<_, anyhow::Error>(FlashResult {

@@ -17,6 +17,7 @@ pub mod monitor;
 pub mod read_memory;
 pub mod reset;
 pub mod resume;
+pub mod rtt_client;
 pub mod stack_trace;
 pub mod test;
 pub mod write_memory;
@@ -60,6 +61,7 @@ pub(super) enum RemoteFunctions {
     ListTests(test::ListTests),
     RunTest(test::RunTest),
     StackTrace(stack_trace::TakeStackTrace),
+    CreateRttClient(rtt_client::CreateRttClient),
 }
 
 pub trait EmitterFn: Send {
@@ -109,6 +111,10 @@ impl<'a, F: EmitterFn> Context<'a, F> {
         self.iface.object_mut(key).await
     }
 
+    pub fn store_object<T: Any + Send>(&mut self, obj: T) -> Key<T> {
+        self.iface.store_object(obj)
+    }
+
     pub fn set_session(&mut self, session: Session, dry_run: bool) -> Key<Session> {
         self.iface.set_session(session, dry_run)
     }
@@ -155,6 +161,7 @@ impl RemoteFunctions {
             RemoteFunctions::ListTests(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::RunTest(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::StackTrace(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::CreateRttClient(func) => postcard::to_stdvec(&func.run(ctx).await?),
         };
 
         result.map_err(|e| e.into())

@@ -38,12 +38,13 @@ use crate::{
         read_memory::ReadMemory,
         reset::ResetCore,
         resume::ResumeAllCores,
+        rtt_client::{CreateRttClient, LogOptions},
         stack_trace::{StackTraces, TakeStackTrace},
         test::{ListTests, RunTest, Test, TestResult, Tests},
         write_memory::WriteMemory,
         Context, NoMessage, RemoteFunction, RemoteFunctions, Word,
     },
-    util::common_options::ProbeOptions,
+    util::{common_options::ProbeOptions, rtt::client::RttClient},
     FormatOptions,
 };
 
@@ -175,6 +176,7 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
         path: PathBuf,
         format: FormatOptions,
         options: DownloadOptions,
+        rtt_client: Option<Key<RttClient>>,
         on_msg: impl FnMut(ProgressEvent) + Send,
     ) -> anyhow::Result<FlashResult> {
         self.iface
@@ -184,6 +186,7 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
                     path,
                     format,
                     options,
+                    rtt_client,
                 },
                 on_msg,
             )
@@ -193,7 +196,6 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
     pub async fn monitor(
         &mut self,
         mode: MonitorMode,
-        path: PathBuf,
         options: MonitorOptions,
         on_msg: impl FnMut(MonitorEvent) + Send,
     ) -> anyhow::Result<()> {
@@ -202,7 +204,6 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
                 Monitor {
                     sessid: self.sessid,
                     mode,
-                    path,
                     options,
                 },
                 on_msg,
@@ -210,20 +211,44 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
             .await
     }
 
-    pub async fn list_tests(&mut self, boot_info: BootInfo) -> anyhow::Result<Tests> {
+    pub async fn list_tests(
+        &mut self,
+        boot_info: BootInfo,
+        rtt_client: Option<Key<RttClient>>,
+    ) -> anyhow::Result<Tests> {
         self.iface
             .run_call(ListTests {
                 sessid: self.sessid,
                 boot_info,
+                rtt_client,
             })
             .await
     }
 
-    pub async fn run_test(&mut self, test: Test) -> anyhow::Result<TestResult> {
+    pub async fn run_test(
+        &mut self,
+        test: Test,
+        rtt_client: Option<Key<RttClient>>,
+    ) -> anyhow::Result<TestResult> {
         self.iface
             .run_call(RunTest {
                 sessid: self.sessid,
                 test,
+                rtt_client,
+            })
+            .await
+    }
+
+    pub async fn create_rtt_client(
+        &mut self,
+        path: Option<PathBuf>,
+        log_options: LogOptions,
+    ) -> anyhow::Result<Key<RttClient>> {
+        self.iface
+            .run_call(CreateRttClient {
+                sessid: self.sessid,
+                path,
+                log_options,
             })
             .await
     }

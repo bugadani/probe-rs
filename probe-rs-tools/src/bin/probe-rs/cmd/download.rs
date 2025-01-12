@@ -35,6 +35,7 @@ impl Cmd {
             self.chip_erase,
             self.format_options,
             self.download_options,
+            None,
         )
         .await?;
 

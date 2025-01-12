@@ -1,9 +1,4 @@
-use std::{
-    fmt::Write,
-    num::NonZeroU32,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{fmt::Write, num::NonZeroU32, time::Duration};
 
 use crate::{
     cmd::{
@@ -13,20 +8,14 @@ use crate::{
         },
         run::RunLoop,
     },
-    util::rtt::{client::RttClient, RttChannelConfig, RttConfig},
+    util::rtt::client::RttClient,
 };
 use probe_rs::{
-    flashing::{BootInfo, FormatKind},
-    rtt::ScanRegion,
-    semihosting::SemihostingCommand,
-    BreakpointCause, Core, HaltReason, Session,
+    flashing::BootInfo, semihosting::SemihostingCommand, BreakpointCause, Core, HaltReason, Session,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
-
-#[cfg(feature = "remote")]
-use crate::cmd::remote::RemoteSession;
 
 #[derive(Serialize, Deserialize)]
 pub enum MonitorMode {
@@ -46,21 +35,8 @@ pub struct MonitorOptions {
     pub catch_reset: bool,
     /// Enable hardfault vector catch if its supported on the target.
     pub catch_hardfault: bool,
-    pub log: LogOptions,
-}
-
-#[derive(Default, Debug, Serialize, Deserialize)]
-pub struct LogOptions {
-    /// Suppress filename and line number information from the rtt log
-    pub no_location: bool,
-
-    /// The format string to use when printing defmt encoded log messages from the target.
-    ///
-    /// See https://defmt.ferrous-systems.com/custom-log-output
-    pub log_format: Option<String>,
-
-    /// Scan the memory to find the RTT control block
-    pub rtt_scan_memory: bool,
+    /// RTT client if used.
+    pub rtt_client: Option<Key<RttClient>>,
 }
 
 /// Monitor in normal run mode.
@@ -68,8 +44,6 @@ pub struct LogOptions {
 pub(in crate::cmd::remote) struct Monitor {
     pub sessid: Key<Session>,
     pub mode: MonitorMode,
-    /// The path to the ELF file to flash and run.
-    pub path: PathBuf,
     pub options: MonitorOptions,
 }
 
@@ -77,22 +51,7 @@ impl super::RemoteFunction for Monitor {
     type Message = MonitorEvent;
     type Result = ();
 
-    #[cfg(feature = "remote")]
-    async fn prepare_remote(&mut self, iface: &mut RemoteSession) -> anyhow::Result<()> {
-        // TODO: avoid temp files
-        self.path = iface.upload_file(&self.path).await?;
-
-        Ok(())
-    }
-
-    async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
-        let rtt_client = {
-            let mut session = ctx.session(self.sessid).await;
-
-            // For normal run mode, we expect the RTT header to be cleared if necessary by the flashing process.
-            create_rtt_client(&mut session, Some(&self.path), &self.options.log).await?
-        };
-
+    async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<()> {
         run_blocking_streaming(
             ctx,
             move |iface: &mut LocalSession,
@@ -103,11 +62,17 @@ impl super::RemoteFunction for Monitor {
                 let mut semihosting_sink = MonitorEventHandler::new(tx.clone());
                 let mut rtt_sink =
                     RttStreamer::new(tx, cancellation_token.clone(), MonitorEvent::RttOutput);
-                let core_id = rtt_client.core_id();
+
+                let mut rtt_client = self
+                    .options
+                    .rtt_client
+                    .map(|rtt_client| iface.object_mut_blocking(rtt_client));
+
+                let core_id = rtt_client.as_ref().map(|rtt| rtt.core_id()).unwrap_or(0);
 
                 let mut run_loop = RunLoop {
-                    core_id: rtt_client.core_id(),
-                    rtt_client,
+                    core_id,
+                    rtt_client: rtt_client.as_deref_mut(),
                     cancellation_token,
                 };
 
@@ -157,45 +122,6 @@ impl From<Monitor> for RemoteFunctions {
     fn from(func: Monitor) -> Self {
         RemoteFunctions::Monitor(func)
     }
-}
-
-pub async fn create_rtt_client(
-    session: &mut Session,
-    path: Option<&Path>,
-    log_options: &LogOptions,
-) -> anyhow::Result<RttClient> {
-    let rtt_scan_regions = match log_options.rtt_scan_memory {
-        true => session.target().rtt_scan_regions.clone(),
-        false => ScanRegion::Ranges(vec![]),
-    };
-
-    let mut rtt_config = RttConfig::default();
-    rtt_config.channels.push(RttChannelConfig {
-        channel_number: Some(0),
-        show_location: !log_options.no_location,
-        log_format: log_options.log_format.clone(),
-        ..Default::default()
-    });
-
-    //let format = self.options.format_options.to_format_kind(session.target());
-    let elf = if let Some(path) = path {
-        let format = FormatKind::from_optional(session.target().default_format.as_deref())
-            .expect("Failed to parse a default binary format. This shouldn't happen.");
-        if matches!(format, FormatKind::Elf | FormatKind::Idf) {
-            Some(tokio::fs::read(path).await?)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Ok(RttClient::new(
-        elf.as_deref(),
-        session.target(),
-        rtt_config,
-        rtt_scan_regions,
-    )?)
 }
 
 pub struct RttStreamer<E> {

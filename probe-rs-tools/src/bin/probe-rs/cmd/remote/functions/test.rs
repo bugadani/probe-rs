@@ -7,17 +7,18 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
-use crate::cmd::{
-    remote::{
-        functions::{
-            monitor::{
-                create_rtt_client, LogOptions, RttStreamer, SemihostingOutput, SemihostingReader,
+use crate::{
+    cmd::{
+        remote::{
+            functions::{
+                monitor::{RttStreamer, SemihostingOutput, SemihostingReader},
+                Context, EmitterFn, RemoteFunctions,
             },
-            Context, EmitterFn, RemoteFunctions,
+            run_blocking_streaming, Key, LocalSession,
         },
-        run_blocking_streaming, Key, LocalSession,
+        run::{print_stacktrace, ReturnReason, RunLoop},
     },
-    run::{print_stacktrace, ReturnReason, RunLoop},
+    util::rtt::client::RttClient,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,19 +74,15 @@ pub enum TestEvent {
 pub(in crate::cmd::remote) struct ListTests {
     pub sessid: Key<Session>,
     pub boot_info: BootInfo,
+    /// RTT client if used.
+    pub rtt_client: Option<Key<RttClient>>,
 }
 
 impl super::RemoteFunction for ListTests {
     type Message = super::NoMessage;
     type Result = Tests;
 
-    async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<Tests> {
-        // TODO: add an RPC function to create RTT client and return a handle to it
-        let rtt_client = {
-            let mut session = ctx.session(self.sessid).await;
-            create_rtt_client(&mut session, None, &LogOptions::default()).await?
-        };
-
+    async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<Tests> {
         run_blocking_streaming(
             ctx,
             move |iface: &mut LocalSession,
@@ -96,11 +93,16 @@ impl super::RemoteFunction for ListTests {
                 let mut list_handler = ListEventHandler::new();
                 let mut rtt_sink =
                     RttStreamer::new(tx, cancellation_token.clone(), TestEvent::RttOutput);
-                let core_id = rtt_client.core_id();
+
+                let mut rtt_client = self
+                    .rtt_client
+                    .map(|rtt_client| iface.object_mut_blocking(rtt_client));
+
+                let core_id = rtt_client.as_ref().map(|rtt| rtt.core_id()).unwrap_or(0);
 
                 let mut run_loop = RunLoop {
                     core_id,
-                    rtt_client,
+                    rtt_client: rtt_client.as_deref_mut(),
                     cancellation_token,
                 };
 
@@ -153,20 +155,16 @@ impl From<ListTests> for RemoteFunctions {
 pub(in crate::cmd::remote) struct RunTest {
     pub sessid: Key<Session>,
     pub test: Test,
+    /// RTT client if used.
+    pub rtt_client: Option<Key<RttClient>>,
 }
 
 impl super::RemoteFunction for RunTest {
     type Message = super::NoMessage;
     type Result = TestResult;
 
-    async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<TestResult> {
+    async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<TestResult> {
         tracing::info!("Running test {}", self.test.name);
-
-        // TODO: add an RPC function to create RTT client and return a handle to it
-        let rtt_client = {
-            let mut session = ctx.session(self.sessid).await;
-            create_rtt_client(&mut session, None, &LogOptions::default()).await?
-        };
 
         run_blocking_streaming(
             ctx,
@@ -179,9 +177,13 @@ impl super::RemoteFunction for RunTest {
 
                 let mut session = iface.session_blocking(self.sessid);
 
-                let mut core = session.core(0)?;
-                core.reset_and_halt(Duration::from_millis(100))
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                let mut rtt_client = self
+                    .rtt_client
+                    .map(|rtt_client| iface.object_mut_blocking(rtt_client));
+
+                let core_id = rtt_client.as_ref().map(|rtt| rtt.core_id()).unwrap_or(0);
+                let mut core = session.core(core_id)?;
+                core.reset_and_halt(Duration::from_millis(100))?;
 
                 let expected_outcome = self.test.expected_outcome;
                 let mut run_handler = RunEventHandler::new(self.test);
@@ -189,8 +191,8 @@ impl super::RemoteFunction for RunTest {
                     RttStreamer::new(tx.clone(), cancellation_token.clone(), TestEvent::RttOutput);
 
                 let mut run_loop = RunLoop {
-                    core_id: 0,
-                    rtt_client,
+                    core_id,
+                    rtt_client: rtt_client.as_deref_mut(),
                     cancellation_token,
                 };
 

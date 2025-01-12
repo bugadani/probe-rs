@@ -25,6 +25,7 @@ use crate::{
         common_options::{BinaryDownloadOptions, ProbeOptions},
         flash::CliProgressBars,
         logging,
+        rtt::client::RttClient,
     },
     FormatOptions,
 };
@@ -99,6 +100,7 @@ pub async fn flash(
     chip_erase: bool,
     format: FormatOptions,
     download_options: BinaryDownloadOptions,
+    rtt_client: Option<Key<RttClient>>,
 ) -> anyhow::Result<FlashResult> {
     // Start timer.
     let flash_timer = Instant::now();
@@ -120,24 +122,30 @@ pub async fn flash(
     };
 
     let result = session
-        .flash(path.to_path_buf(), format, options, move |event| {
-            if let Some(ref path) = flash_layout_output_path {
-                if let ProgressEvent::Initialized { ref phases, .. } = event {
-                    let mut flash_layout = FlashLayout::default();
-                    for phase_layout in phases {
-                        flash_layout.merge_from(phase_layout.clone());
+        .flash(
+            path.to_path_buf(),
+            format,
+            options,
+            rtt_client,
+            move |event| {
+                if let Some(ref path) = flash_layout_output_path {
+                    if let ProgressEvent::Initialized { ref phases, .. } = event {
+                        let mut flash_layout = FlashLayout::default();
+                        for phase_layout in phases {
+                            flash_layout.merge_from(phase_layout.clone());
+                        }
+
+                        // Visualise flash layout to file if requested.
+                        let visualizer = flash_layout.visualize();
+                        _ = visualizer.write_svg(path);
                     }
-
-                    // Visualise flash layout to file if requested.
-                    let visualizer = flash_layout.visualize();
-                    _ = visualizer.write_svg(path);
                 }
-            }
 
-            if let Some(ref pb) = pb {
-                pb.handle(event);
-            }
-        })
+                if let Some(ref pb) = pb {
+                    pb.handle(event);
+                }
+            },
+        )
         .await?;
 
     logging::eprintln(format!(
@@ -156,20 +164,15 @@ pub async fn monitor(
     options: MonitorOptions,
     print_stack_trace: bool,
 ) -> anyhow::Result<()> {
-    let monitor = session.monitor(
-        mode,
-        path.to_path_buf(),
-        options,
-        move |event| match event {
-            MonitorEvent::RttOutput(str) => print!("{}", str),
-            MonitorEvent::SemihostingOutput(SemihostingOutput::StdOut(str)) => {
-                print!("{}", str)
-            }
-            MonitorEvent::SemihostingOutput(SemihostingOutput::StdErr(str)) => {
-                eprint!("{}", str)
-            }
-        },
-    );
+    let monitor = session.monitor(mode, options, move |event| match event {
+        MonitorEvent::RttOutput(str) => print!("{}", str),
+        MonitorEvent::SemihostingOutput(SemihostingOutput::StdOut(str)) => {
+            print!("{}", str)
+        }
+        MonitorEvent::SemihostingOutput(SemihostingOutput::StdErr(str)) => {
+            eprint!("{}", str)
+        }
+    });
 
     tokio::select! {
         _ = monitor => Ok(()),
@@ -192,6 +195,7 @@ pub async fn test(
     libtest_args: libtest_mimic::Arguments,
     print_stack_trace: bool,
     path: &Path,
+    rtt_client: Option<Key<RttClient>>,
 ) -> anyhow::Result<()> {
     tracing::info!("libtest args {:?}", libtest_args);
 
@@ -200,7 +204,7 @@ pub async fn test(
         let tests = {
             let mut ctx = shared_context.lock().await;
             let mut session = SessionInterface::new(&mut *ctx, sessid);
-            session.list_tests(boot_info).await?
+            session.list_tests(boot_info, rtt_client).await?
         };
 
         let tests = tests
@@ -215,8 +219,8 @@ pub async fn test(
                     let mut ctx = shared_context.blocking_lock();
                     tokio::task::block_in_place(move || {
                         let mut session = SessionInterface::new(&mut *ctx, sessid);
-                        let outcome =
-                            Handle::current().block_on(async { session.run_test(t).await });
+                        let outcome = Handle::current()
+                            .block_on(async { session.run_test(t, rtt_client).await });
 
                         match outcome {
                             Ok(TestResult::Success) => Ok(()),
