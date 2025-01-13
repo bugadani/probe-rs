@@ -4,8 +4,6 @@ use probe_rs::{probe::list::Lister, MemoryInterface, Session};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "remote")]
-use crate::cmd::remote::RemoteSession;
 use crate::cmd::remote::{Key, LocalSession};
 
 pub mod attach;
@@ -30,11 +28,6 @@ pub(super) enum NoMessage {}
 pub(super) trait RemoteFunction: Serialize + Into<RemoteFunctions> + Send {
     type Result: DeserializeOwned + Send;
     type Message: DeserializeOwned + Send;
-
-    #[cfg(feature = "remote")]
-    async fn prepare_remote(&mut self, _iface: &mut RemoteSession) -> anyhow::Result<()> {
-        Ok(())
-    }
 
     async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<Self::Result>;
 }

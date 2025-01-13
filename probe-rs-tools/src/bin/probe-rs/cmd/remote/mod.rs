@@ -514,15 +514,13 @@ impl RemoteSession {
 impl Client for RemoteSession {
     async fn run_call_streaming<F, CB>(
         &mut self,
-        mut func: F,
+        func: F,
         mut on_msg: CB,
     ) -> anyhow::Result<F::Result>
     where
         F: RemoteFunction,
         CB: FnMut(F::Message) + Send,
     {
-        func.prepare_remote(self).await?;
-
         self.client
             .run_call(func, move |msg| {
                 match postcard::from_bytes(&msg) {
