@@ -4,16 +4,13 @@ use std::{
     future::Future,
     marker::PhantomData,
     ops::DerefMut,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
-
-#[cfg(feature = "remote")]
-use std::path::Path;
 
 use probe_rs::{
     flashing::{BootInfo, ProgressEvent},
@@ -56,14 +53,12 @@ pub mod server;
 
 #[derive(Serialize, Deserialize)]
 enum ClientMessage {
-    TempFile(Vec<u8>),
     Rpc(RemoteFunctions),
     CancelRpc,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 enum ServerMessage {
-    TempFileOpened(PathBuf),
     RpcResult(Vec<u8>),
     RpcMessage(Vec<u8>),
     Error(String),
@@ -82,6 +77,8 @@ trait Client: Sized + Send + 'static {
     where
         F: RemoteFunction,
         CB: FnMut(F::Message) + Send;
+
+    async fn upload_file(&mut self, src_path: &Path) -> anyhow::Result<PathBuf>;
 }
 
 #[allow(
@@ -173,12 +170,22 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
 
     pub async fn flash(
         &mut self,
-        path: PathBuf,
-        format: FormatOptions,
+        mut path: PathBuf,
+        mut format: FormatOptions,
         options: DownloadOptions,
         rtt_client: Option<Key<RttClient>>,
         on_msg: impl FnMut(ProgressEvent) + Send,
     ) -> anyhow::Result<FlashResult> {
+        path = self.iface.upload_file(&path).await?;
+
+        if let Some(ref mut idf_bootloader) = format.idf_options.idf_bootloader {
+            *idf_bootloader = self.iface.upload_file(&*idf_bootloader).await?;
+        }
+
+        if let Some(ref mut idf_partition_table) = format.idf_options.idf_partition_table {
+            *idf_partition_table = self.iface.upload_file(&*idf_partition_table).await?;
+        }
+
         self.iface
             .run_call_streaming(
                 Flash {
@@ -241,9 +248,13 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
 
     pub async fn create_rtt_client(
         &mut self,
-        path: Option<PathBuf>,
+        mut path: Option<PathBuf>,
         log_options: LogOptions,
     ) -> anyhow::Result<Key<RttClient>> {
+        if let Some(ref mut path) = path {
+            *path = self.iface.upload_file(&*path).await?;
+        }
+
         self.iface
             .run_call(CreateRttClient {
                 sessid: self.sessid,
@@ -253,7 +264,9 @@ impl<'a, T: ClientInterface> SessionInterface<'a, T> {
             .await
     }
 
-    pub async fn stack_trace(&mut self, path: PathBuf) -> anyhow::Result<StackTraces> {
+    pub async fn stack_trace(&mut self, mut path: PathBuf) -> anyhow::Result<StackTraces> {
+        path = self.iface.upload_file(&path).await?;
+
         self.iface
             .run_call(TakeStackTrace {
                 sessid: self.sessid,
@@ -359,6 +372,7 @@ impl LocalSession {
         Self::new(true)
     }
 
+    #[cfg(feature = "remote")]
     pub fn new_server() -> Self {
         Self::new(false)
     }
@@ -473,22 +487,26 @@ impl Client for LocalSession {
 
         ret
     }
+
+    async fn upload_file(&mut self, src_path: &Path) -> anyhow::Result<PathBuf> {
+        Ok(src_path.to_path_buf())
+    }
 }
 
 /// Run functions on the remote server.
 #[cfg(feature = "remote")]
 pub struct RemoteSession {
     client: client::ClientConnection,
+    uploaded_files: HashMap<PathBuf, PathBuf>,
 }
 
 #[cfg(feature = "remote")]
 impl RemoteSession {
     pub fn new(client: client::ClientConnection) -> Self {
-        Self { client }
-    }
-
-    pub async fn upload_file(&mut self, path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
-        self.client.upload_file(path.as_ref()).await
+        Self {
+            client,
+            uploaded_files: HashMap::new(),
+        }
     }
 }
 
@@ -513,6 +531,31 @@ impl Client for RemoteSession {
                 };
             })
             .await
+    }
+
+    async fn upload_file(&mut self, src_path: &Path) -> anyhow::Result<PathBuf> {
+        use anyhow::Context as _;
+
+        let src_path = src_path.canonicalize()?;
+        if self.client.is_localhost() {
+            return Ok(src_path);
+        }
+
+        if let Some(path) = self.uploaded_files.get(&src_path) {
+            return Ok(path.clone());
+        }
+
+        let data = tokio::fs::read(&src_path)
+            .await
+            .context("Failed to read file")?;
+        tracing::debug!("Uploading {} ({} bytes)", src_path.display(), data.len());
+
+        let path = self.run_call(functions::file::UploadFile { data }).await?;
+
+        tracing::debug!("Uploaded file to {}", path.display());
+        self.uploaded_files.insert(src_path, path.clone());
+
+        Ok(path)
     }
 }
 

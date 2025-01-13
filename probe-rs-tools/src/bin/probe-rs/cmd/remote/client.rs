@@ -16,11 +16,7 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::str::FromStr;
 
 use super::{ClientMessage, ServerMessage};
 use crate::cmd::remote::functions::RemoteFunction;
@@ -31,35 +27,11 @@ use crate::cmd::remote::functions::RemoteFunction;
 pub struct ClientConnection {
     websocket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     is_localhost: bool,
-    uploaded_files: HashMap<PathBuf, PathBuf>,
 }
 
 impl ClientConnection {
-    pub async fn upload_file(&mut self, src_path: &Path) -> anyhow::Result<PathBuf> {
-        let src_path = src_path.canonicalize()?;
-        if self.is_localhost {
-            return Ok(src_path);
-        }
-
-        if let Some(path) = self.uploaded_files.get(&src_path) {
-            return Ok(path.clone());
-        }
-
-        let data = tokio::fs::read(&src_path)
-            .await
-            .context("Failed to read file")?;
-        tracing::debug!("Uploading {} ({} bytes)", src_path.display(), data.len());
-
-        self.send_message(ClientMessage::TempFile(data)).await?;
-
-        let Some(Ok(ServerMessage::TempFileOpened(path))) = self.read_server_message().await else {
-            anyhow::bail!("Server did not return a file path");
-        };
-
-        tracing::debug!("Uploaded file to {}", path.display());
-        self.uploaded_files.insert(src_path, path.clone());
-
-        Ok(path)
+    pub fn is_localhost(&self) -> bool {
+        self.is_localhost
     }
 
     async fn send_message(&mut self, msg: ClientMessage) -> anyhow::Result<()> {
@@ -159,7 +131,6 @@ impl ClientConnection {
                                 ServerMessage::RpcResult(_) => return Ok(()),
                                 ServerMessage::RpcMessage(_) => {}
                                 ServerMessage::Error(msg) => anyhow::bail!("{msg}"),
-                                msg => panic!("Command unexpectedly returned {msg:?}"),
                             }
                         }
 
@@ -194,7 +165,6 @@ impl ClientConnection {
                     websocket_guard.defuse();
                     anyhow::bail!("{msg}")
                 }
-                msg => panic!("Command unexpectedly returned {msg:?}"),
             }
         }
 
@@ -224,6 +194,5 @@ pub async fn connect(host: &str, token: Option<String>) -> anyhow::Result<Client
     Ok(ClientConnection {
         websocket: ws_stream,
         is_localhost,
-        uploaded_files: HashMap::new(),
     })
 }

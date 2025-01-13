@@ -10,9 +10,6 @@ use crate::{
 use probe_rs::{flashing::FormatKind, rtt::ScanRegion, Session};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "remote")]
-use crate::cmd::remote::RemoteSession;
-
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct LogOptions {
     /// Suppress filename and line number information from the rtt log
@@ -37,14 +34,6 @@ pub(in crate::cmd::remote) struct CreateRttClient {
 impl super::RemoteFunction for CreateRttClient {
     type Message = super::NoMessage;
     type Result = Key<RttClient>;
-
-    #[cfg(feature = "remote")]
-    async fn prepare_remote(&mut self, iface: &mut RemoteSession) -> anyhow::Result<()> {
-        if let Some(ref mut path) = self.path {
-            *path = iface.upload_file(&*path).await?;
-        }
-        Ok(())
-    }
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<Key<RttClient>> {
         let client = {

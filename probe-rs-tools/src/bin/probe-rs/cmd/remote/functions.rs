@@ -10,6 +10,8 @@ use crate::cmd::remote::{Key, LocalSession};
 
 pub mod attach;
 pub mod chip;
+#[cfg(feature = "remote")]
+pub mod file;
 pub mod flash;
 pub mod info;
 pub mod list_probes;
@@ -62,6 +64,8 @@ pub(super) enum RemoteFunctions {
     RunTest(test::RunTest),
     StackTrace(stack_trace::TakeStackTrace),
     CreateRttClient(rtt_client::CreateRttClient),
+    #[cfg(feature = "remote")]
+    UploadFile(file::UploadFile),
 }
 
 pub trait EmitterFn: Send {
@@ -166,6 +170,7 @@ impl RemoteFunctions {
             RemoteFunctions::RunTest(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::StackTrace(func) => postcard::to_stdvec(&func.run(ctx).await?),
             RemoteFunctions::CreateRttClient(func) => postcard::to_stdvec(&func.run(ctx).await?),
+            RemoteFunctions::UploadFile(func) => postcard::to_stdvec(&func.run(ctx).await?),
         };
 
         result.map_err(|e| e.into())

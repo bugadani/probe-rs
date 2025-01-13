@@ -28,10 +28,9 @@ use futures_util::{
 };
 use probe_rs::probe::list::Lister;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 use tokio_util::sync::CancellationToken;
 
-use std::{fmt::Write, io::Write as _, sync::Arc};
+use std::{fmt::Write, sync::Arc};
 
 use super::{ClientMessage, ServerMessage};
 use crate::{
@@ -110,7 +109,6 @@ impl Cmd {
 
 pub struct ServerConnection {
     websocket: SplitSink<WebSocket, ws::Message>,
-    temp_files: Vec<NamedTempFile>,
 }
 
 impl ServerConnection {
@@ -124,24 +122,6 @@ impl ServerConnection {
         self.websocket.send(ws::Message::Binary(msg)).await?;
 
         Ok(())
-    }
-
-    async fn save_temp_file(&mut self, data: Vec<u8>) -> anyhow::Result<()> {
-        // TODO: avoid temp files?
-        let mut file = NamedTempFile::new().context("Failed to write temporary file")?;
-
-        file.as_file_mut()
-            .write_all(&data)
-            .context("Failed to write temporary file")?;
-
-        let path = file.path().to_path_buf();
-        tracing::info!("Saved temporary file to {}", path.display());
-        self.temp_files.push(file);
-
-        let msg = ServerMessage::TempFileOpened(path);
-        self.send_message(msg)
-            .await
-            .context("Failed to send file path")
     }
 }
 
@@ -168,10 +148,7 @@ async fn ws_handler(
 async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
     let (writer, reader) = socket.split();
     let mut reader = MessageReader::new(reader);
-    let mut handle = ServerConnection {
-        websocket: writer,
-        temp_files: vec![],
-    };
+    let mut handle = ServerConnection { websocket: writer };
     let mut session = LocalSession::new_server();
 
     while let Some(Ok(msg)) = reader.next().await {
@@ -180,7 +157,6 @@ async fn handle_socket(socket: WebSocket, _state: Arc<ServerState>) {
             let msg =
                 postcard::from_bytes::<ClientMessage>(&msg).expect("Failed to deserialize message");
             match msg {
-                ClientMessage::TempFile(data) => handle.save_temp_file(data).await.unwrap(),
                 ClientMessage::CancelRpc => panic!("Received unexpected cancel message"),
                 ClientMessage::Rpc(function) => {
                     tracing::info!("Running RPC function");

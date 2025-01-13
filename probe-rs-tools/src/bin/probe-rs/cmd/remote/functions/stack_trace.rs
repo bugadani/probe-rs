@@ -8,9 +8,6 @@ use probe_rs::Session;
 use probe_rs_debug::{exception_handler_for_core, DebugInfo, DebugRegisters};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "remote")]
-use crate::cmd::remote::RemoteSession;
-
 #[derive(Serialize, Deserialize)]
 pub struct StackTrace {
     pub core: usize,
@@ -31,12 +28,6 @@ pub(in crate::cmd::remote) struct TakeStackTrace {
 impl super::RemoteFunction for TakeStackTrace {
     type Message = super::NoMessage;
     type Result = StackTraces;
-
-    #[cfg(feature = "remote")]
-    async fn prepare_remote(&mut self, iface: &mut RemoteSession) -> anyhow::Result<()> {
-        self.path = iface.upload_file(&self.path).await?;
-        Ok(())
-    }
 
     async fn run(self, mut ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<StackTraces> {
         let mut session = ctx.session(self.sessid).await;

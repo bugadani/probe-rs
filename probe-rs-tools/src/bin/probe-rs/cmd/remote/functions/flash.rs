@@ -18,9 +18,6 @@ use crate::{
     FormatOptions,
 };
 
-#[cfg(feature = "remote")]
-use crate::cmd::remote::RemoteSession;
-
 #[derive(Serialize, Deserialize, Default)]
 pub struct DownloadOptions {
     /// If `keep_unwritten_bytes` is `true`, erased portions of the flash that are not overwritten by the ELF data
@@ -63,21 +60,6 @@ pub struct FlashResult {
 impl RemoteFunction for Flash {
     type Message = ProgressEvent;
     type Result = FlashResult;
-
-    #[cfg(feature = "remote")]
-    async fn prepare_remote(&mut self, iface: &mut RemoteSession) -> anyhow::Result<()> {
-        self.path = iface.upload_file(&self.path).await?;
-
-        if let Some(ref mut idf_bootloader) = self.format.idf_options.idf_bootloader {
-            *idf_bootloader = iface.upload_file(&*idf_bootloader).await?;
-        }
-
-        if let Some(ref mut idf_partition_table) = self.format.idf_options.idf_partition_table {
-            *idf_partition_table = iface.upload_file(&*idf_partition_table).await?;
-        }
-
-        Ok(())
-    }
 
     async fn run(self, ctx: Context<'_, impl EmitterFn>) -> anyhow::Result<FlashResult> {
         let dry_run = ctx.dry_run(self.sessid);
