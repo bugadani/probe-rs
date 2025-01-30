@@ -221,7 +221,7 @@ impl<'probe> Xdm<'probe> {
         // configure the debug module
         self.debug_control({
             let mut reg = DebugControlBits(0);
-            // We don't set enable_ocd here, it would just halt the core.
+            reg.set_enable_ocd(true);
             reg.set_break_in_en(true);
             reg.set_break_out_en(true);
             reg
