@@ -326,7 +326,27 @@ impl Flasher {
     ) -> Result<(), FlashError> {
         progress.started_filling();
 
-        let result = self.run_verify(session, progress, |active| {
+        let result = if self.flash_algorithm.pc_read.is_some() {
+            self.run_verify(session, progress, |active| {
+                for fill in layout.fills.iter() {
+                    let t = Instant::now();
+                    let page = &mut layout.pages[fill.page_index()];
+
+                    let page_offset = (fill.address() - page.address()) as usize;
+                    let page_slice = &mut page.data_mut()[page_offset..][..fill.size() as usize];
+
+                    active.read_flash(fill.address(), page_slice)?;
+
+                    progress.page_filled(fill.size(), t.elapsed());
+                }
+
+                Ok(())
+            })
+        } else {
+            // Initialize, then deinitialize the flash loader. This may execute code necessary to
+            // enable the flash chip for reading, for example on the RP2040.
+            self.run_verify(session, progress, |_| Ok(()))?;
+            let mut core = session.core(0).map_err(FlashError::Core)?;
             for fill in layout.fills.iter() {
                 let t = Instant::now();
                 let page = &mut layout.pages[fill.page_index()];
@@ -334,13 +354,14 @@ impl Flasher {
                 let page_offset = (fill.address() - page.address()) as usize;
                 let page_slice = &mut page.data_mut()[page_offset..][..fill.size() as usize];
 
-                active.read_flash(fill.address(), page_slice)?;
+                core.read(fill.address(), page_slice)
+                    .map_err(FlashError::Core)?;
 
                 progress.page_filled(fill.size(), t.elapsed());
             }
 
             Ok(())
-        });
+        };
 
         match result.is_ok() {
             true => progress.finished_filling(),
@@ -358,8 +379,9 @@ impl Flasher {
         layout: &FlashLayout,
         ignore_filled: bool,
     ) -> Result<bool, FlashError> {
-        self.run_verify(session, progress, |active| {
-            if let Some(verify) = active.flash_algorithm.pc_verify {
+        if let Some(verify) = self.flash_algorithm.pc_verify {
+            // Try to use the verify function if available.
+            self.run_verify(session, progress, |active| {
                 tracing::debug!("Verify using CMSIS function");
                 // Prefer Verify as we may use compression
                 // FIXME: avoid compressing multiple times
@@ -400,43 +422,84 @@ impl Flasher {
                         return Ok(false);
                     }
                 }
+                Ok(true)
+            })
+        } else {
+            tracing::debug!("Verify by reading back flash contents");
+
+            fn ignore_filled_data(
+                address: u64,
+                page_idx: usize,
+                data: &[u8],
+                layout: &FlashLayout,
+                read_back: &mut [u8],
+            ) {
+                // "Unfill" fill regions. These don't get flashed, so their contents are
+                // allowed to differ. We mask these bytes with default flash content here,
+                // just for the verification process.
+                for fill in layout.fills() {
+                    if fill.page_index() != page_idx {
+                        continue;
+                    }
+
+                    let fill_offset = (fill.address() - address) as usize;
+                    let fill_size = fill.size() as usize;
+
+                    let default_bytes = &data[fill_offset..][..fill_size];
+                    read_back[fill_offset..][..fill_size].copy_from_slice(default_bytes);
+                }
+            }
+
+            fn compare_read_data(address: u64, data: &[u8], read_back: &mut [u8]) -> bool {
+                if data != read_back {
+                    tracing::debug!("Verification failed for page at address {:#010x}", address);
+                    false
+                } else {
+                    true
+                }
+            }
+
+            if self.flash_algorithm.pc_read.is_some() {
+                self.run_verify(session, progress, |active| {
+                    for (idx, page) in layout.pages.iter().enumerate() {
+                        let address = page.address();
+                        let data = page.data();
+
+                        let mut read_back = vec![0; data.len()];
+                        active.read_flash(address, &mut read_back)?;
+
+                        if ignore_filled {
+                            ignore_filled_data(address, idx, data, layout, &mut read_back);
+                        }
+                        if !compare_read_data(address, data, &mut read_back) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                })
             } else {
-                tracing::debug!("Verify using manual comparison");
+                // Initialize, then deinitialize the flash loader. This may execute code necessary to
+                // enable the flash chip for reading, for example on the RP2040.
+                self.run_verify(session, progress, |_| Ok(()))?;
+                let mut core = session.core(0).map_err(FlashError::Core)?;
                 for (idx, page) in layout.pages.iter().enumerate() {
                     let address = page.address();
                     let data = page.data();
 
                     let mut read_back = vec![0; data.len()];
-                    active.read_flash(address, &mut read_back)?;
+                    core.read(address, &mut read_back)
+                        .map_err(FlashError::Core)?;
 
                     if ignore_filled {
-                        // "Unfill" fill regions. These don't get flashed, so their contents are
-                        // allowed to differ. We mask these bytes with default flash content here,
-                        // just for the verification process.
-                        for fill in layout.fills() {
-                            if fill.page_index() != idx {
-                                continue;
-                            }
-
-                            let fill_offset = (fill.address() - address) as usize;
-                            let fill_size = fill.size() as usize;
-
-                            let default_bytes = &data[fill_offset..][..fill_size];
-                            read_back[fill_offset..][..fill_size].copy_from_slice(default_bytes);
-                        }
+                        ignore_filled_data(address, idx, data, layout, &mut read_back);
                     }
-
-                    if data != read_back.as_slice() {
-                        tracing::debug!(
-                            "Verification failed for page at address {:#010x}",
-                            address
-                        );
+                    if !compare_read_data(address, data, &mut read_back) {
                         return Ok(false);
                     }
                 }
+                Ok(true)
             }
-            Ok(true)
-        })
+        }
     }
 
     /// Programs the pages given in `flash_layout` into the flash.
