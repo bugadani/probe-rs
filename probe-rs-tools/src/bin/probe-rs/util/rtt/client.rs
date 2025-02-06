@@ -68,6 +68,10 @@ impl RttClient {
                 self.last_control_block_address = None;
                 return Ok(false);
             }
+            Err(Error::ControlBlockCorrupted(error)) => {
+                tracing::debug!("RTT control block corrupted ({error})");
+                return Ok(false);
+            }
             Err(error) => return Err(error),
         };
 
