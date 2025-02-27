@@ -211,4 +211,22 @@ impl RttClient {
     pub(crate) fn core_id(&self) -> usize {
         self.core_id
     }
+
+    pub(crate) fn configure(&mut self, core: &mut Core<'_>) -> Result<(), Error> {
+        let Some(target) = self.target.as_mut() else {
+            return Ok(());
+        };
+
+        let up_channels = target.active_up_channels.as_mut_slice();
+
+        for channel in 0..up_channels.len() {
+            if let Some(config) = self.config.channel_config(channel as u32) {
+                if let Some(mode) = config.mode {
+                    up_channels[channel].change_mode(core, mode)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
