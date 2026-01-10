@@ -1881,20 +1881,28 @@ impl UnitInfo {
             )));
         }
         if pieces.len() > 1 {
+            // TODO: This can be:
+            // - a complete (const?) struct, one place per field or padding, doesn't include ZST fields
+            // - u64 variables in a pair of registers on 32-bit targets
+            // what else?
             return Ok(ExpressionResult::Location(VariableLocation::Error(
                 "<unsupported memory implementation>".to_string(),
             )));
         }
 
+        // TODO: we should return a different data type from this function:
+        // we need a structure that stores the location, and the (optional) value for each of its pieces
+
         let result = match &pieces[0].location {
             Location::Empty => {
-                // This means the value was optimized away.
+                // This means padding or the value was optimized away.
                 ExpressionResult::Location(VariableLocation::Unavailable)
             }
             Location::Address { address: 0 } => {
                 let error = "The value of this variable may have been optimized out of the debug info, by the compiler.".to_string();
                 ExpressionResult::Location(VariableLocation::Error(error))
             }
+            // TODO: What's the difference between Address and Value::Generic, if both contain an address?
             Location::Address { address } => evaluate_address(*address, memory),
             Location::Value { value } => {
                 let value = match value {
