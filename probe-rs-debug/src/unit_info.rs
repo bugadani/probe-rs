@@ -2398,6 +2398,7 @@ impl RequirementsResolver<'_> {
         }
 
         // TODO: let value_type = self.provide_base_type(base_type)?;
+        // TODO: respect target endianness
 
         match size {
             1 => {
@@ -2438,16 +2439,7 @@ impl RequirementsResolver<'_> {
         register: gimli::Register,
         base_type: UnitOffset,
     ) -> Result<gimli::Value, DebugError> {
-        let value_type = if base_type == gimli::UnitOffset(0) {
-            ValueType::Generic
-        } else {
-            // TODO: we should read this out of the debug info
-            return Err(DebugError::WarnAndContinue {
-                message: format!(
-                    "Unimplemented: Support for type {base_type:?} in `RequiresRegister`"
-                ),
-            });
-        };
+        let value_type = self.provide_base_type(base_type)?;
 
         match self
             .frame_info
@@ -2507,12 +2499,17 @@ impl RequirementsResolver<'_> {
         })
     }
 
-    fn provide_base_type(&mut self, _unit_offset: UnitOffset) -> Result<ValueType, DebugError> {
-        Err(DebugError::WarnAndContinue {
-            message: format!(
-                "Unimplemented: Expressions that require BaseType are not currently supported."
-            ),
-        })
+    fn provide_base_type(&mut self, base_type: UnitOffset) -> Result<ValueType, DebugError> {
+        if base_type == gimli::UnitOffset(0) {
+            Ok(ValueType::Generic)
+        } else {
+            // TODO: we should read this out of the debug info
+            Err(DebugError::WarnAndContinue {
+                message: format!(
+                    "Unimplemented: Support for type {base_type:?} in `RequiresRegister`"
+                ),
+            })
+        }
     }
 
     fn provide_tls(&mut self, _offset: u64) -> Result<u64, DebugError> {
