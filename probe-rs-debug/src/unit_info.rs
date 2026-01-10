@@ -1,13 +1,13 @@
 use std::ops::Range;
 
 use super::{
-    DebugError, DebugRegisters, EndianReader, SourceLocation, VariableCache, debug_info::*,
-    extract_byte_size, extract_file, extract_line, function_die::FunctionDie, variable::*,
+    DebugError, SourceLocation, VariableCache, debug_info::*, extract_byte_size, extract_file,
+    extract_line, function_die::FunctionDie, variable::*,
 };
 use crate::{language, stack_frame::StackFrameInfo};
 use gimli::{
     AttributeValue, DebugInfoOffset, DebuggingInformationEntry, EvaluationResult, Location,
-    UnitOffset,
+    UnitOffset, ValueType,
 };
 use probe_rs::MemoryInterface;
 
@@ -1873,7 +1873,13 @@ impl UnitInfo {
             ExpressionResult::Location(location)
         }
 
-        let pieces = self.expression_to_piece(memory, expression, frame_info)?;
+        let pieces = self.expression_to_piece(
+            expression,
+            RequirementsResolver {
+                memory,
+                frame_info: &frame_info,
+            },
+        )?;
 
         if pieces.is_empty() {
             return Ok(ExpressionResult::Location(VariableLocation::Error(
@@ -1946,9 +1952,8 @@ impl UnitInfo {
     /// Tries to get the result of a DWARF expression in the form of a Piece.
     pub(crate) fn expression_to_piece(
         &self,
-        memory: &mut dyn MemoryInterface,
         expression: gimli::Expression<GimliReader>,
-        frame_info: StackFrameInfo<'_>,
+        mut resolver: RequirementsResolver<'_>,
     ) -> Result<Vec<gimli::Piece<GimliReader, usize>>, DebugError> {
         let mut evaluation = expression.evaluation(self.unit.encoding());
         let mut result = evaluation.evaluate()?;
@@ -1956,29 +1961,60 @@ impl UnitInfo {
         loop {
             result = match result {
                 EvaluationResult::Complete => return Ok(evaluation.result()),
-                EvaluationResult::RequiresMemory { address, size, .. } => {
-                    read_memory(size, memory, address, &mut evaluation)?
+                EvaluationResult::RequiresMemory {
+                    address,
+                    size,
+                    space,
+                    base_type,
+                } => {
+                    let memory = resolver.provide_memory(address, size, space, base_type)?;
+                    evaluation.resume_with_memory(memory)?
                 }
                 EvaluationResult::RequiresFrameBase => {
-                    provide_frame_base(frame_info.frame_base, &mut evaluation)?
+                    let frame_base = resolver.provide_frame_base()?;
+                    evaluation.resume_with_frame_base(frame_base)?
                 }
                 EvaluationResult::RequiresRegister {
                     register,
                     base_type,
-                } => provide_register(frame_info.registers, register, base_type, &mut evaluation)?,
+                } => {
+                    let register_value = resolver.provide_register(register, base_type)?;
+                    evaluation.resume_with_register(register_value)?
+                }
                 EvaluationResult::RequiresRelocatedAddress(address_index) => {
-                    // The address_index as an offset from 0, so just pass it into the next step.
-                    evaluation.resume_with_relocated_address(address_index)?
+                    let address = resolver.provide_relocated_address(address_index)?;
+                    evaluation.resume_with_relocated_address(address)?
                 }
                 EvaluationResult::RequiresCallFrameCfa => {
-                    provide_cfa(frame_info.canonical_frame_address, &mut evaluation)?
+                    let cfa = resolver.provide_call_frame_cfa()?;
+                    evaluation.resume_with_call_frame_cfa(cfa)?
                 }
-                unimplemented_expression => {
+                EvaluationResult::RequiresTls(offset) => {
+                    let tls = resolver.provide_tls(offset)?;
+                    evaluation.resume_with_tls(tls)?
+                }
+                EvaluationResult::RequiresAtLocation(die_reference) => {
+                    let location = resolver.provide_at_location(die_reference)?;
+                    evaluation.resume_with_at_location(location)?
+                }
+                EvaluationResult::RequiresEntryValue(_expression) => {
                     return Err(DebugError::WarnAndContinue {
                         message: format!(
-                            "Unimplemented: Expressions that include {unimplemented_expression:?} are not currently supported."
+                            "Unimplemented: Expressions that require EntryValue are not currently supported."
                         ),
                     });
+                }
+                EvaluationResult::RequiresParameterRef(unit_offset) => {
+                    let parameter_ref = resolver.provide_parameter_ref(unit_offset)?;
+                    evaluation.resume_with_parameter_ref(parameter_ref)?
+                }
+                EvaluationResult::RequiresIndexedAddress { index, relocate } => {
+                    let indexed_address = resolver.provide_indexed_address(index, relocate)?;
+                    evaluation.resume_with_indexed_address(indexed_address)?
+                }
+                EvaluationResult::RequiresBaseType(unit_offset) => {
+                    let base_type = resolver.provide_base_type(unit_offset)?;
+                    evaluation.resume_with_base_type(base_type)?
                 }
             }
         }
@@ -2311,117 +2347,6 @@ fn extract_name(
     Ok(Some(name))
 }
 
-/// Gets necessary register information for the DWARF resolver.
-fn provide_register(
-    stack_frame_registers: &DebugRegisters,
-    register: gimli::Register,
-    base_type: UnitOffset,
-    evaluation: &mut gimli::Evaluation<EndianReader>,
-) -> Result<EvaluationResult<EndianReader>, DebugError> {
-    match stack_frame_registers
-        .get_register_by_dwarf_id(register.0)
-        .and_then(|reg| reg.value)
-    {
-        Some(raw_value) if base_type == gimli::UnitOffset(0) => {
-            let register_value = gimli::Value::Generic(raw_value.try_into()?);
-            Ok(evaluation.resume_with_register(register_value)?)
-        }
-        Some(_) => Err(DebugError::WarnAndContinue {
-            message: format!("Unimplemented: Support for type {base_type:?} in `RequiresRegister`"),
-        }),
-        None => Err(DebugError::WarnAndContinue {
-            message: format!(
-                "Error while calculating `Variable::memory_location`. No value for register #:{}.",
-                register.0
-            ),
-        }),
-    }
-}
-
-/// Gets necessary framebase information for the DWARF resolver.
-fn provide_frame_base(
-    frame_base: Option<u64>,
-    evaluation: &mut gimli::Evaluation<EndianReader>,
-) -> Result<EvaluationResult<EndianReader>, DebugError> {
-    let Some(frame_base) = frame_base else {
-        return Err(DebugError::WarnAndContinue {
-            message: "Cannot unwind `Variable` location without a valid frame base address.)"
-                .to_string(),
-        });
-    };
-    match evaluation.resume_with_frame_base(frame_base) {
-        Ok(evaluation_result) => Ok(evaluation_result),
-        Err(error) => Err(DebugError::WarnAndContinue {
-            message: format!("Error while calculating `Variable::memory_location`:{error}."),
-        }),
-    }
-}
-
-/// Gets necessary CFA information for the DWARF resolver.
-fn provide_cfa(
-    cfa: Option<u64>,
-    evaluation: &mut gimli::Evaluation<EndianReader>,
-) -> Result<EvaluationResult<EndianReader>, DebugError> {
-    let Some(cfa) = cfa else {
-        return Err(DebugError::WarnAndContinue {
-            message: "Cannot unwind `Variable` location without a valid canonical frame address.)"
-                .to_string(),
-        });
-    };
-    match evaluation.resume_with_call_frame_cfa(cfa) {
-        Ok(evaluation_result) => Ok(evaluation_result),
-        Err(error) => Err(DebugError::WarnAndContinue {
-            message: format!("Error while calculating `Variable::memory_location`:{error}."),
-        }),
-    }
-}
-
-/// Reads memory requested by the DWARF resolver.
-fn read_memory(
-    size: u8,
-    memory: &mut dyn MemoryInterface,
-    address: u64,
-    evaluation: &mut gimli::Evaluation<EndianReader>,
-) -> Result<EvaluationResult<EndianReader>, DebugError> {
-    /// Reads `SIZE` bytes from the memory.
-    fn read<const SIZE: usize>(
-        memory: &mut dyn MemoryInterface,
-        address: u64,
-    ) -> Result<[u8; SIZE], DebugError> {
-        let mut buff = [0u8; SIZE];
-        memory.read(address, &mut buff).map_err(|error| {
-            DebugError::WarnAndContinue {
-                message: format!("Unexpected error while reading debug expressions from target memory: {error:?}. Please report this as a bug.")
-            }
-        })?;
-        Ok(buff)
-    }
-
-    let val = match size {
-        1 => {
-            let buff = read::<1>(memory, address)?;
-            gimli::Value::U8(buff[0])
-        }
-        2 => {
-            let buff = read::<2>(memory, address)?;
-            gimli::Value::U16(u16::from_le_bytes(buff))
-        }
-        4 => {
-            let buff = read::<4>(memory, address)?;
-            gimli::Value::U32(u32::from_le_bytes(buff))
-        }
-        x => {
-            return Err(DebugError::WarnAndContinue {
-                message: format!(
-                    "Unimplemented: Requested memory with size {x}, which is not supported yet."
-                ),
-            });
-        }
-    };
-
-    Ok(evaluation.resume_with_memory(val)?)
-}
-
 pub(crate) trait RangeExt {
     fn contains(self, addr: u64) -> bool;
 }
@@ -2441,5 +2366,166 @@ impl RangeExt for &mut gimli::RngListIter<GimliReader> {
 impl RangeExt for gimli::Range {
     fn contains(self, addr: u64) -> bool {
         self.begin <= addr && addr < self.end
+    }
+}
+
+pub(crate) struct RequirementsResolver<'a> {
+    pub(crate) memory: &'a mut dyn MemoryInterface,
+    pub(crate) frame_info: &'a StackFrameInfo<'a>,
+}
+
+impl RequirementsResolver<'_> {
+    /// Reads memory requested by the DWARF resolver.
+    fn provide_memory(
+        &mut self,
+        address: u64,
+        size: u8,
+        _space: Option<u64>,
+        _base_type: UnitOffset,
+    ) -> Result<gimli::Value, DebugError> {
+        /// Reads `SIZE` bytes from the memory.
+        fn read<const SIZE: usize>(
+            memory: &mut dyn MemoryInterface,
+            address: u64,
+        ) -> Result<[u8; SIZE], DebugError> {
+            let mut buff = [0u8; SIZE];
+            memory.read(address, &mut buff).map_err(|error| {
+                DebugError::WarnAndContinue {
+                    message: format!("Unexpected error while reading debug expressions from target memory: {error:?}. Please report this as a bug.")
+                }
+            })?;
+            Ok(buff)
+        }
+
+        // TODO: let value_type = self.provide_base_type(base_type)?;
+
+        match size {
+            1 => {
+                let buff = read::<1>(self.memory, address)?;
+                Ok(gimli::Value::U8(buff[0]))
+            }
+            2 => {
+                let buff = read::<2>(self.memory, address)?;
+                Ok(gimli::Value::U16(u16::from_le_bytes(buff)))
+            }
+            4 => {
+                let buff = read::<4>(self.memory, address)?;
+                Ok(gimli::Value::U32(u32::from_le_bytes(buff)))
+            }
+            x => {
+                return Err(DebugError::WarnAndContinue {
+                    message: format!(
+                        "Unimplemented: Requested memory with size {x}, which is not supported yet."
+                    ),
+                });
+            }
+        }
+    }
+
+    /// Gets necessary framebase information for the DWARF resolver.
+    fn provide_frame_base(&mut self) -> Result<u64, DebugError> {
+        self.frame_info
+            .frame_base
+            .ok_or_else(|| DebugError::WarnAndContinue {
+                message: "Cannot unwind `Variable` location without a valid frame base address.)"
+                    .to_string(),
+            })
+    }
+
+    /// Gets necessary register information for the DWARF resolver.
+    fn provide_register(
+        &mut self,
+        register: gimli::Register,
+        base_type: UnitOffset,
+    ) -> Result<gimli::Value, DebugError> {
+        let value_type = if base_type == gimli::UnitOffset(0) {
+            ValueType::Generic
+        } else {
+            // TODO: we should read this out of the debug info
+            return Err(DebugError::WarnAndContinue {
+                message: format!(
+                    "Unimplemented: Support for type {base_type:?} in `RequiresRegister`"
+                ),
+            });
+        };
+
+        match self
+            .frame_info
+            .registers
+            .get_register_by_dwarf_id(register.0)
+            .and_then(|reg| reg.value)
+        {
+            Some(raw_value) => Ok(gimli::Value::from_u64(value_type, raw_value.try_into()?)?),
+            None => Err(DebugError::WarnAndContinue {
+                message: format!(
+                    "Error while calculating `Variable::memory_location`. No value for register #:{}.",
+                    register.0
+                ),
+            }),
+        }
+    }
+
+    /// Gets necessary CFA information for the DWARF resolver.
+    fn provide_call_frame_cfa(&mut self) -> Result<u64, DebugError> {
+        self.frame_info
+            .canonical_frame_address
+            .ok_or_else(|| DebugError::WarnAndContinue {
+                message:
+                    "Cannot unwind `Variable` location without a valid canonical frame address.)"
+                        .to_string(),
+            })
+    }
+
+    fn provide_at_location(
+        &mut self,
+        _die_reference: gimli::DieReference,
+    ) -> Result<GimliReader, DebugError> {
+        Err(DebugError::WarnAndContinue {
+            message: format!(
+                "Unimplemented: Expressions that require a value at a specific location are not currently supported."
+            ),
+        })
+    }
+
+    fn provide_parameter_ref(&mut self, _unit_offset: UnitOffset) -> Result<u64, DebugError> {
+        Err(DebugError::WarnAndContinue {
+            message: format!(
+                "Unimplemented: Expressions that require ParameterRef are not currently supported."
+            ),
+        })
+    }
+
+    fn provide_indexed_address(
+        &mut self,
+        _index: gimli::DebugAddrIndex,
+        _relocate: bool,
+    ) -> Result<u64, DebugError> {
+        Err(DebugError::WarnAndContinue {
+            message: format!(
+                "Unimplemented: Expressions that require IndexedAddress are not currently supported."
+            ),
+        })
+    }
+
+    fn provide_base_type(&mut self, _unit_offset: UnitOffset) -> Result<ValueType, DebugError> {
+        Err(DebugError::WarnAndContinue {
+            message: format!(
+                "Unimplemented: Expressions that require BaseType are not currently supported."
+            ),
+        })
+    }
+
+    fn provide_tls(&mut self, _offset: u64) -> Result<u64, DebugError> {
+        Err(DebugError::WarnAndContinue {
+            message: format!(
+                "Unimplemented: Expressions that require TLS are not currently supported."
+            ),
+        })
+    }
+
+    fn provide_relocated_address(&self, address_index: u64) -> Result<u64, DebugError> {
+        // The address_index as an offset from 0, so just pass it into the next step.
+        // FIXME?
+        Ok(address_index)
     }
 }
