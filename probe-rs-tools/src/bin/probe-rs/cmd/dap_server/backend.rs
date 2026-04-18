@@ -18,7 +18,10 @@ use probe_rs::{Core, CoreType, Error, Session, Target};
 /// a single [`Core`]) goes through this trait. The DAP code is written against
 /// `SessionData<B: DapBackend>` so it can run against either a local
 /// [`Session`] or a remote RPC-backed session implementation.
-#[allow(dead_code, reason = "halted_access/as_local_session_mut are used by upcoming RPC backend")]
+#[allow(
+    dead_code,
+    reason = "halted_access/as_local_session_mut are used by upcoming RPC backend"
+)]
 pub trait DapBackend {
     /// Return the available cores on this target.
     fn list_cores(&self) -> Vec<(usize, CoreType)>;
