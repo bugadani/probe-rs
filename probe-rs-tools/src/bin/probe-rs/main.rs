@@ -114,7 +114,7 @@ impl Cli {
         match self.subcommand {
             Subcommand::DapServer(cmd) => {
                 let log_path = self.log_file.as_deref();
-                cmd::dap_server::run(cmd, &lister, utc_offset, log_path).await
+                cmd::dap_server::run(cmd, client, &lister, utc_offset, log_path).await
             }
             #[cfg(feature = "remote")]
             Subcommand::Serve(cmd) => cmd.run(_config.server).await,
@@ -212,7 +212,9 @@ impl Subcommand {
             | Self::Attach(_)
             | Self::Run(_)
             | Self::Erase(_)
-            | Self::Verify(_) => true,
+            | Self::Verify(_)
+            | Self::Debug(_)
+            | Self::DapServer(_) => true,
             Self::Mi(mi) => mi.is_remote_cmd(),
             _ => false,
         }
