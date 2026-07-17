@@ -31,6 +31,23 @@ If you think probe-rs makes your embedded journey more enjoyable or even earns y
 
 In addition to being a library, probe-rs also includes a suite of tools which can be used for flashing and debugging.
 
+### Which tool should I use?
+
+For most projects, **`probe-rs run`** is what you want. It flashes your firmware, resets the target and streams RTT/`defmt` output and panics back to your console, so it works as a Cargo runner. Point Cargo at it once:
+
+```toml
+# .cargo/config.toml
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip nRF52840_xxAA"
+```
+
+and then `cargo run` flashes and runs your firmware.
+
+The other two tools cover narrower needs:
+
+- **`cargo-embed`** offers similar functionality with an interactive RTT terminal on top. It is expected to be phased out in the future, so prefer `probe-rs run` for new setups.
+- **`cargo-flash`** just flashes a binary onto the target without any further faff, for when you only need to program the chip.
+
 ### Installation
 
 The recommended way to install the tools is to download a precompiled version, using one of the methods below.
