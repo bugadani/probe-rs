@@ -654,13 +654,12 @@ pub async fn core_clear_hw_bps(
         },
         |core| {
             for address in request.addresses {
-                core.clear_hw_breakpoint(address)
-                    .or_else(|e| match e {
-                        probe_rs::Error::BreakpointOperation(probe_rs::BreakpointError::NotFound(_)) => {
-                            Ok(())
-                        }
-                        e => Err(e),
-                    })?;
+                core.clear_hw_breakpoint(address).or_else(|e| match e {
+                    probe_rs::Error::BreakpointOperation(probe_rs::BreakpointError::NotFound(
+                        _,
+                    )) => Ok(()),
+                    e => Err(e),
+                })?;
             }
             Ok(())
         }

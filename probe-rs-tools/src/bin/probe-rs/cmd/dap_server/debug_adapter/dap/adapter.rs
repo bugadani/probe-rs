@@ -7,6 +7,7 @@ use super::{
         get_variable_reference,
     },
 };
+use crate::cmd::dap_server::backend::DapBackend;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
@@ -19,7 +20,6 @@ use crate::cmd::dap_server::{
         session_data::{ActiveBreakpoint, BreakpointType, SessionData, SourceLocationScope},
     },
 };
-use crate::cmd::dap_server::backend::DapBackend;
 use crate::util::rtt;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose as base64_engine};
@@ -1200,7 +1200,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .backend
             .set_hw_breakpoints(core_index, set_addrs)
             .await
-            .map_err(|e| DebuggerError::Other(anyhow!("Failed to set instruction breakpoints: {e}")))?;
+            .map_err(|e| {
+                DebuggerError::Other(anyhow!("Failed to set instruction breakpoints: {e}"))
+            })?;
 
         let debug_info = session_data
             .core_data
@@ -1245,7 +1247,8 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                                 });
                                 let message = Some(format!(
                                     "Instruction breakpoint set @:{memory_reference:#010x}. File: {}: Line: {}, Column: {}",
-                                    loc.file_name().unwrap_or_else(|| "<unknown source file>".to_string()),
+                                    loc.file_name()
+                                        .unwrap_or_else(|| "<unknown source file>".to_string()),
                                     line.unwrap_or(0),
                                     column.unwrap_or(0),
                                 ));

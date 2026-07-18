@@ -402,11 +402,8 @@ impl DapBackend for RpcBackend {
     /// semihosting variant still needs target memory reads, reconstructed
     /// via a short-lived [`RpcRemoteCore`].
     async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         let wire: WireCoreStatus = client.status().await.map_err(rpc_err)?;
 
         if let WireCoreStatus::Halted(WireHaltReason::Breakpoint(
@@ -431,11 +428,8 @@ impl DapBackend for RpcBackend {
         core_index: usize,
         addresses: Vec<u64>,
     ) -> Result<Vec<bool>, Error> {
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.set_hw_breakpoints(addresses).await.map_err(rpc_err)
     }
 
@@ -444,11 +438,8 @@ impl DapBackend for RpcBackend {
         core_index: usize,
         addresses: Vec<u64>,
     ) -> Result<(), Error> {
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client
             .clear_hw_breakpoints(addresses)
             .await
@@ -461,11 +452,8 @@ impl DapBackend for RpcBackend {
         address: u64,
         count: usize,
     ) -> Result<Vec<u8>, Error> {
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.read_bytes(address, count).await.map_err(rpc_err)
     }
 
@@ -475,15 +463,9 @@ impl DapBackend for RpcBackend {
         address: u64,
         data: Vec<u8>,
     ) -> Result<(), Error> {
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
-        client
-            .write_memory_8(address, data)
-            .await
-            .map_err(rpc_err)
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client.write_memory_8(address, data).await.map_err(rpc_err)
     }
 
     async fn halt(
@@ -492,22 +474,16 @@ impl DapBackend for RpcBackend {
         timeout: Duration,
     ) -> Result<CoreInformation, Error> {
         self.invalidate_core_caches(core_index);
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         let info = client.halt(timeout).await.map_err(rpc_err)?;
         Ok(info.into())
     }
 
     async fn run(&mut self, core_index: usize) -> Result<(), Error> {
         self.invalidate_core_caches(core_index);
-        let client = RpcCoreClient::new_for_backend(
-            self.client.clone(),
-            self.sessid,
-            core_index as u32,
-        );
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.run().await.map_err(rpc_err)
     }
 

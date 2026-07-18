@@ -38,7 +38,11 @@ pub(crate) fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Ou
 /// possible, stopping at the first unreadable region. Mirrors the historical
 /// `CoreHandle::read_memory_lossy` so the local `Session` backend path
 /// preserves partial-read behavior.
-fn read_memory_lossy(core: &mut Core<'_>, mut address: u64, count: usize) -> Result<Vec<u8>, Error> {
+fn read_memory_lossy(
+    core: &mut Core<'_>,
+    mut address: u64,
+    count: usize,
+) -> Result<Vec<u8>, Error> {
     fn chunk_size(count: usize, max_chunk_size: usize) -> usize {
         (max_chunk_size.min(count) / 2).next_power_of_two()
     }

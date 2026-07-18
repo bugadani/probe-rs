@@ -250,9 +250,7 @@ impl Debugger {
             }
         };
 
-        if unhalt_me
-            && let Err(error) = session_data.backend.run(core_index).await
-        {
+        if unhalt_me && let Err(error) = session_data.backend.run(core_index).await {
             let error = DebuggerError::Other(anyhow!(error).context("Failed to resume target."));
             debug_adapter.show_error_message(&error)?;
             return Err(error);
@@ -398,11 +396,13 @@ impl Debugger {
 
         // Loop through remaining (user generated) requests and send to the [process_request] method until either the client or some unexpected behaviour terminates the process.
         let error = loop {
-            let debug_session_status =
-                match self.process_next_request(&mut session_data, &mut debug_adapter).await {
-                    Ok(status) => status,
-                    Err(error) => break error,
-                };
+            let debug_session_status = match self
+                .process_next_request(&mut session_data, &mut debug_adapter)
+                .await
+            {
+                Ok(status) => status,
+                Err(error) => break error,
+            };
 
             match debug_session_status {
                 DebugSessionStatus::Continue(delay) => {
