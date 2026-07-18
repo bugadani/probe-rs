@@ -27,9 +27,15 @@ pub mod variable_cache;
 pub(crate) mod exception_handling;
 
 pub use self::{
-    debug_info::*, debug_step::SteppingMode, exception_handling::exception_handler_for_core,
-    registers::*, source_instructions::SourceLocation, source_instructions::VerifiedBreakpoint,
-    stack_frame::StackFrame, variable::*, variable_cache::VariableCache,
+    debug_info::*,
+    debug_step::SteppingMode,
+    exception_handling::exception_handler_for_core,
+    registers::*,
+    source_instructions::SourceLocation,
+    source_instructions::VerifiedBreakpoint,
+    stack_frame::{StackFrame, StackFrameInfo},
+    variable::*,
+    variable_cache::VariableCache,
 };
 
 use probe_rs::{Core, MemoryInterface};
@@ -54,8 +60,8 @@ pub type EndianReader = gimli::EndianReader<RunTimeEndian, std::sync::Arc<[u8]>>
 
 // `DebugInfo` (and the `VariableCache` derived from it) must be `Send` so a
 // probe-rs RPC server can own them across requests in a `Send` object store.
-const _: fn() = || {
-    fn assert_send<T: Send>() {}
+const _: () = {
+    const fn assert_send<T: Send>() {}
     assert_send::<crate::DebugInfo>();
     assert_send::<crate::VariableCache>();
     assert_send::<crate::StackFrame>();

@@ -84,7 +84,8 @@ pub async fn scopes(
     _header: VarHeader,
     request: ScopesRequest,
 ) -> ScopesResponse {
-    let mut guard = ctx.debug_states().lock().await;
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
     let Some(state) = guard.get_mut(&request.sessid) else {
         Err("No debug state for session")?
     };
@@ -159,18 +160,19 @@ pub async fn variables(
     _header: VarHeader,
     request: VariablesRequest,
 ) -> VariablesResponse {
-    let debug_info = {
-        let guard = ctx.debug_states().lock().await;
-        guard.get(&request.sessid).map(|s| s.debug_info.clone())
-    };
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
+    let debug_info = guard.get(&request.sessid).map(|s| s.debug_info.clone());
     let Some(debug_info) = debug_info else {
         Err("No debug state for session")?
     };
 
+    // Take the session/core AFTER locking debug_states: `probe_rs::Core` is
+    // `!Send`, so it must not be held across the `debug_states().lock().await`
+    // (the spawned server future must remain `Send`).
     let mut session = ctx.session(request.sessid).await;
     let mut core = session.core(request.core as usize)?;
 
-    let mut guard = ctx.debug_states().lock().await;
     let Some(state) = guard.get_mut(&request.sessid) else {
         Err("No debug state for session")?
     };
@@ -183,9 +185,12 @@ pub async fn variables(
     let mut parent_variable: Option<Variable> = None;
     let mut variable_cache: Option<&mut VariableCache> = None;
     let mut frame_info: Option<StackFrameInfo<'_>> = None;
+    // Owned registers for the static-branch `frame_info`. Cloned (not
+    // borrowed from `core_state.stack_frames`) so `frame_info`'s lifetime is
+    // decoupled from `stack_frames`, keeping the later `stack_frames.iter_mut()`
+    // in the locals branch borrow-clean.
+    #[allow(unused_assignments)]
     let mut cloned_registers: Option<probe_rs_debug::DebugRegisters> = None;
-
-    // Registers special case: the variables_reference IS a frame id.
     if let Some(frame) = core_state
         .stack_frames
         .iter()
@@ -201,7 +206,6 @@ pub async fn variables(
                 memory_reference: None,
                 indexed_variables: None,
                 named_variables: None,
-                presentation_hint: None,
                 type_: Some(format!("{}", VariableName::RegistersRoot)),
                 value: register.value.unwrap_or_default().to_string(),
                 variables_reference: 0,
@@ -252,10 +256,9 @@ pub async fn variables(
     if let Some(parent) = parent_variable.as_mut()
         && parent.variable_node_type.is_deferred()
         && !variable_cache.has_children(parent)
+        && let Some(frame_info) = frame_info
     {
-        if let Some(frame_info) = frame_info {
-            debug_info.cache_deferred_variables(variable_cache, &mut core, parent, frame_info)?;
-        }
+        debug_info.cache_deferred_variables(variable_cache, &mut core, parent, frame_info)?;
     }
 
     let dap_variables: Vec<WireVariable> = variable_cache
@@ -277,7 +280,6 @@ pub async fn variables(
                 memory_reference: Some(variable.memory_location.to_string()),
                 indexed_variables: Some(indexed_cnt),
                 named_variables: Some(named_cnt),
-                presentation_hint: None,
                 type_: Some(variable.type_name()),
                 value: variable.to_string(variable_cache),
                 variables_reference: i64::from(variables_reference),
@@ -293,7 +295,8 @@ pub async fn clear_core_debug_state(
     _header: VarHeader,
     request: ClearCoreDebugStateRequest,
 ) -> crate::rpc::functions::RpcResult<()> {
-    let mut guard = ctx.debug_states().lock().await;
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
     if let Some(state) = guard.get_mut(&request.sessid) {
         state.clear_core(request.core as usize);
     }

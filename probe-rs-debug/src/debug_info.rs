@@ -37,7 +37,11 @@ pub struct DebugInfo {
     pub(crate) unit_infos: Vec<UnitInfo>,
     pub(crate) endianness: gimli::RunTimeEndian,
 
-    pub(crate) addr2line: Option<addr2line::Loader>,
+    /// Path used to (re)create an `addr2line::Loader` on demand for the
+    /// no-DWARF symbol fallback. Stored as a path (not a `Loader`) because
+    /// `addr2line::Loader` is `!Send` (it uses a `typed_arena::Arena`), and
+    /// `DebugInfo` must be `Send` so an RPC server can own it.
+    pub(crate) addr2line_path: Option<std::path::PathBuf>,
 }
 
 impl DebugInfo {
@@ -46,7 +50,7 @@ impl DebugInfo {
         let data = std::fs::read(path.as_ref())?;
 
         let mut this = DebugInfo::from_raw(&data)?;
-        this.addr2line = addr2line::Loader::new(path).ok();
+        this.addr2line_path = path.as_ref().to_path_buf().into();
         Ok(this)
     }
 
@@ -110,7 +114,7 @@ impl DebugInfo {
             debug_line_section,
             unit_infos,
             endianness,
-            addr2line: None,
+            addr2line_path: None,
         })
     }
 
@@ -323,7 +327,10 @@ impl DebugInfo {
         address: u64,
         unwind_registers: &DebugRegisters,
     ) -> Result<Vec<StackFrame>, DebugError> {
-        let Some(ref addr2line) = self.addr2line else {
+        let Some(ref addr2line_path) = self.addr2line_path else {
+            return Ok(vec![]);
+        };
+        let Some(addr2line) = addr2line::Loader::new(addr2line_path).ok() else {
             return Ok(vec![]);
         };
         let Some(fn_name) = addr2line.find_symbol(address) else {

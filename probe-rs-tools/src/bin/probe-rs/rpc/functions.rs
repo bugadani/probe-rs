@@ -115,6 +115,12 @@ impl From<&str> for RpcError {
     }
 }
 
+impl From<String> for RpcError {
+    fn from(e: String) -> Self {
+        Self(e)
+    }
+}
+
 impl From<anyhow::Error> for RpcError {
     fn from(e: anyhow::Error) -> Self {
         Self(format!("{e:?}"))

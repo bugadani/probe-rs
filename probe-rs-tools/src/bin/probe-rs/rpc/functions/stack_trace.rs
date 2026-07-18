@@ -300,83 +300,81 @@ pub async fn take_rich_stack_trace(
         Vec<StackFrame>,
         VariableCache,
         Vec<RichStackTraceFrame>,
-    )> = session
-        .halted_access(|session| {
-            let mut cores = Vec::new();
-            for (idx, core_type) in session.list_cores() {
-                let mut core = match session.core(idx) {
-                    Ok(core) => core,
-                    Err(Error::CoreDisabled(_)) => continue,
-                    Err(e) => return Err(e),
-                };
+    )> = session.halted_access(|session| {
+        let mut cores = Vec::new();
+        for (idx, core_type) in session.list_cores() {
+            let mut core = match session.core(idx) {
+                Ok(core) => core,
+                Err(Error::CoreDisabled(_)) => continue,
+                Err(e) => return Err(e),
+            };
 
-                let initial_registers = DebugRegisters::from_core(&mut core);
-                let exception_interface = exception_handler_for_core(core_type);
-                let instruction_set = core.instruction_set().ok();
-                let mut stack_frames = debug_info.unwind(
-                    &mut core,
-                    initial_registers,
-                    exception_interface.as_ref(),
-                    instruction_set,
-                    request.stack_frame_limit as usize,
-                )?;
+            let initial_registers = DebugRegisters::from_core(&mut core);
+            let exception_interface = exception_handler_for_core(core_type);
+            let instruction_set = core.instruction_set().ok();
+            let mut stack_frames = debug_info.unwind(
+                &mut core,
+                initial_registers,
+                exception_interface.as_ref(),
+                instruction_set,
+                request.stack_frame_limit as usize,
+            )?;
 
-                let static_variables = debug_info.create_static_scope_cache();
-                let statics_ref = static_variables.root_variable().variable_key();
+            let static_variables = debug_info.create_static_scope_cache();
+            let statics_ref = static_variables.root_variable().variable_key();
 
-                // Group consecutive frames sharing a register dump (an
-                // inlined chain from one `get_stackframe_info` call) and
-                // populate `local_variables` for each frame in the group.
-                let mut i = 0;
-                while i < stack_frames.len() {
-                    let group_start = i;
-                    let group_regs = stack_frames[i].registers.clone();
-                    while i < stack_frames.len() && stack_frames[i].registers == group_regs {
-                        i += 1;
-                    }
-                    let step_pc: u64 = stack_frames[group_start].pc.try_into().unwrap_or(0);
-                    let cfa = stack_frames[group_start].canonical_frame_address;
-                    let mut chain = debug_info
-                        .get_stackframe_info(&mut core, step_pc, cfa, &group_regs)
-                        .ok()
-                        .unwrap_or_default();
-                    // DIE order is outermost-first; wire order is innermost-first.
-                    chain.reverse();
-                    for (offset, frame) in stack_frames[group_start..i].iter_mut().enumerate() {
-                        if let Some(cf) = chain.get(offset) {
-                            frame.local_variables = cf.local_variables.clone();
-                            if frame.source_location.is_none() {
-                                frame.source_location = cf.source_location.clone();
-                            }
+            // Group consecutive frames sharing a register dump (an
+            // inlined chain from one `get_stackframe_info` call) and
+            // populate `local_variables` for each frame in the group.
+            let mut i = 0;
+            while i < stack_frames.len() {
+                let group_start = i;
+                let group_regs = stack_frames[i].registers.clone();
+                while i < stack_frames.len() && stack_frames[i].registers == group_regs {
+                    i += 1;
+                }
+                let step_pc: u64 = stack_frames[group_start].pc.try_into().unwrap_or(0);
+                let cfa = stack_frames[group_start].canonical_frame_address;
+                let mut chain = debug_info
+                    .get_stackframe_info(&mut core, step_pc, cfa, &group_regs)
+                    .ok()
+                    .unwrap_or_default();
+                // DIE order is outermost-first; wire order is innermost-first.
+                chain.reverse();
+                for (offset, frame) in stack_frames[group_start..i].iter_mut().enumerate() {
+                    if let Some(cf) = chain.get(offset) {
+                        frame.local_variables = cf.local_variables.clone();
+                        if frame.source_location.is_none() {
+                            frame.source_location = cf.source_location.clone();
                         }
                     }
                 }
-
-                let rich_frames = stack_frames
-                    .iter()
-                    .map(|f| RichStackTraceFrame {
-                        function_name: f.function_name.clone(),
-                        program_counter: WireRegisterValue::from(f.pc),
-                        is_inlined: f.is_inlined,
-                        location: f.source_location.as_ref().map(SourceLocation::from),
-                        frame_base: f.frame_base,
-                        canonical_frame_address: f.canonical_frame_address,
-                        registers: f.registers.0.iter().map(WireDebugRegister::from).collect(),
-                        id: i64::from(f.id) as u32,
-                        locals_reference: f
-                            .local_variables
-                            .as_ref()
-                            .map(|c| i64::from(c.root_variable().variable_key()) as u32)
-                            .unwrap_or(0),
-                        statics_reference: i64::from(statics_ref) as u32,
-                    })
-                    .collect();
-
-                cores.push((idx as u32, stack_frames, static_variables, rich_frames));
             }
-            Ok(cores)
-        })
-        .map_err(Into::into)?;
+
+            let rich_frames = stack_frames
+                .iter()
+                .map(|f| RichStackTraceFrame {
+                    function_name: f.function_name.clone(),
+                    program_counter: WireRegisterValue::from(f.pc),
+                    is_inlined: f.is_inlined,
+                    location: f.source_location.as_ref().map(SourceLocation::from),
+                    frame_base: f.frame_base,
+                    canonical_frame_address: f.canonical_frame_address,
+                    registers: f.registers.0.iter().map(WireDebugRegister::from).collect(),
+                    id: i64::from(f.id) as u32,
+                    locals_reference: f
+                        .local_variables
+                        .as_ref()
+                        .map(|c| i64::from(c.root_variable().variable_key()) as u32)
+                        .unwrap_or(0),
+                    statics_reference: i64::from(statics_ref) as u32,
+                })
+                .collect();
+
+            cores.push((idx as u32, stack_frames, static_variables, rich_frames));
+        }
+        Ok(cores)
+    })?;
 
     drop(session);
 

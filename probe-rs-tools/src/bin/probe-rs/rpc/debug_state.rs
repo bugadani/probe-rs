@@ -3,9 +3,6 @@ use std::sync::Arc;
 
 use probe_rs_debug::{DebugInfo, StackFrame, VariableCache};
 
-use crate::rpc::Key;
-use probe_rs::Session;
-
 /// Per-session server-owned debug state. The RPC server builds and owns the
 /// `VariableCache` trees (locals + statics) and the cached [`DebugInfo`], so
 /// that variable expansion and value reads happen next to the target instead

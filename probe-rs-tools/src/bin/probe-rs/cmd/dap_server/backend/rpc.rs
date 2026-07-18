@@ -40,7 +40,6 @@ use crate::rpc::{
             WireBreakpointCause, WireCoreStatus, WireHaltReason, WireRegisterValue,
             WireSemihostingCommand, WireVectorCatchCondition,
         },
-        debug_vars::{WireScope, WireVariable},
         flash::{
             DownloadOptions as WireDownloadOptions, ProgressEvent as WireProgressEvent,
             VerifyResult,
