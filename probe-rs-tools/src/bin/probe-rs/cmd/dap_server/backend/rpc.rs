@@ -49,6 +49,138 @@ use crate::rpc::{
 /// single round trip after the first register read.
 type RegisterCache = HashMap<usize, HashMap<RegisterId, RegisterValue>>;
 
+/// Per-core byte-oriented memory region cache. Stack unwinding and
+/// variable evaluation issue many small, clustered reads (saved
+/// registers on the stack, struct fields, ...). Each would otherwise be
+/// its own RPC round trip through [`RpcRemoteCore`]. By prefetching a
+/// modest aligned region on a miss and serving subsequent nearby reads
+/// from the cache, a halt's worth of memory reads collapses from dozens
+/// of round trips to roughly one per region touched.
+type MemoryCache = HashMap<usize, Vec<MemoryRegion>>;
+
+/// A contiguous cached byte range `[base, base + data.len())`.
+#[derive(Clone)]
+struct MemoryRegion {
+    base: u64,
+    data: Vec<u8>,
+}
+
+impl MemoryRegion {
+    /// If this region fully covers `[addr, addr + len)`, return the offset
+    /// of `addr` within it.
+    fn covers(&self, addr: u64, len: usize) -> Option<usize> {
+        let end = addr.checked_add(len as u64)?;
+        if addr >= self.base && end <= self.base + self.data.len() as u64 {
+            Some((addr - self.base) as usize)
+        } else {
+            None
+        }
+    }
+}
+
+/// Prefetch granularity for [`MemoryCache`]. Reads smaller than this are
+/// served from a region of this size; larger reads bypass the cache.
+const MEMORY_REGION_SIZE: usize = 2048;
+/// Soft cap on the total cached bytes per core. Oldest regions are
+/// evicted once the cap is exceeded.
+const MEMORY_CACHE_MAX_BYTES: usize = 256 * 1024;
+
+/// Interpret `bytes` (of length 1, 2, 4, or 8) as an unsigned integer
+/// using the given endianness, returned as a `u64` for easy casting.
+fn interpret_word(bytes: &[u8], endian: Endian) -> u64 {
+    let be = matches!(endian, Endian::Big);
+    match bytes.len() {
+        1 => bytes[0] as u64,
+        2 => {
+            let arr: [u8; 2] = [bytes[0], bytes[1]];
+            if be {
+                u16::from_be_bytes(arr) as u64
+            } else {
+                u16::from_le_bytes(arr) as u64
+            }
+        }
+        4 => {
+            let arr: [u8; 4] = [bytes[0], bytes[1], bytes[2], bytes[3]];
+            if be {
+                u32::from_be_bytes(arr) as u64
+            } else {
+                u32::from_le_bytes(arr) as u64
+            }
+        }
+        8 => {
+            let arr: [u8; 8] = [
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ];
+            if be {
+                u64::from_be_bytes(arr)
+            } else {
+                u64::from_le_bytes(arr)
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Cache-aware read of `[addr, addr + len)` bytes. On a hit, serves from
+/// `cache` with no fetch. On a miss, asks `fetch(base, count)` for an
+/// aligned [`MEMORY_REGION_SIZE`] region, inserts it (evicting oldest
+/// regions over [`MEMORY_CACHE_MAX_BYTES`]), and serves from it. Reads
+/// larger than a region, and prefetches that error or short-read, fall
+/// back to an exact fetch of just the requested range.
+///
+/// Split out from [`RpcRemoteCore::cached_read_bytes`] so the round-trip
+/// behaviour can be unit-tested with a fake fetch.
+fn cached_read_with<F>(cache: &mut Vec<MemoryRegion>, addr: u64, len: usize, mut fetch: F) -> Result<Vec<u8>, Error>
+where
+    F: FnMut(u64, usize) -> Result<Vec<u8>, Error>,
+{
+    // Large reads (disassemble, readMemory) gain nothing from caching and
+    // would blow the cap; pass them straight through.
+    if len > MEMORY_REGION_SIZE {
+        return fetch(addr, len);
+    }
+
+    // Fast path: an existing region fully covers the request.
+    for region in cache.iter() {
+        if let Some(start) = region.covers(addr, len) {
+            return Ok(region.data[start..start + len].to_vec());
+        }
+    }
+
+    // Miss: prefetch an aligned region around the address.
+    let region_base = (addr / MEMORY_REGION_SIZE as u64) * MEMORY_REGION_SIZE as u64;
+    let region_data = match fetch(region_base, MEMORY_REGION_SIZE) {
+        Ok(d) => d,
+        Err(_) => {
+            // The prefetched region may extend into unmapped memory that
+            // the exact read would not touch; fall back.
+            return fetch(addr, len);
+        }
+    };
+
+    let region = MemoryRegion {
+        base: region_base,
+        data: region_data,
+    };
+    let start = (addr - region_base) as usize;
+    if start + len > region.data.len() {
+        // Short prefetched read doesn't cover the request; fall back to
+        // an exact read so the caller gets the real result/error.
+        return fetch(addr, len);
+    }
+    let out = region.data[start..start + len].to_vec();
+
+    let mut total: usize = cache.iter().map(|r| r.data.len()).sum::<usize>() + region.data.len();
+    while total > MEMORY_CACHE_MAX_BYTES && !cache.is_empty() {
+        let removed = cache.first().map(|r| r.data.len()).unwrap_or(0);
+        cache.remove(0);
+        total -= removed;
+    }
+    cache.push(region);
+
+    Ok(out)
+}
+
 /// Run an async future to completion on the current tokio runtime, without
 /// actually blocking the runtime (by releasing the worker thread via
 /// [`tokio::task::block_in_place`]).
@@ -89,6 +221,8 @@ pub struct RpcBackend {
     core_metadata: Vec<CoreMetadata>,
     /// Per-core register dump cache. See [`RegisterCache`].
     register_cache: RegisterCache,
+    /// Per-core memory region cache. See [`MemoryCache`].
+    memory_cache: MemoryCache,
 }
 
 #[derive(Clone)]
@@ -173,6 +307,7 @@ impl RpcBackend {
             target: Arc::new(target),
             core_metadata,
             register_cache: HashMap::new(),
+            memory_cache: HashMap::new(),
         }
     }
 }
@@ -216,6 +351,7 @@ impl DapBackend for RpcBackend {
             metadata,
             core_index,
             register_cache: &mut self.register_cache,
+            memory_cache: &mut self.memory_cache,
         };
 
         Ok(Core::from_boxed(
@@ -234,6 +370,7 @@ pub struct RpcRemoteCore<'a> {
     metadata: CoreMetadata,
     core_index: usize,
     register_cache: &'a mut RegisterCache,
+    memory_cache: &'a mut MemoryCache,
 }
 
 impl RpcRemoteCore<'_> {
@@ -242,6 +379,43 @@ impl RpcRemoteCore<'_> {
     /// `run`, `step`, `halt`, any reset, or a register write.
     fn invalidate_register_cache(&mut self) {
         self.register_cache.remove(&self.core_index);
+    }
+
+    /// Drop both the register dump and the memory region caches for this
+    /// core. Used by operations that resume or reset the core, since the
+    /// program may have changed both registers and memory in the meantime.
+    fn invalidate_caches(&mut self) {
+        self.invalidate_register_cache();
+        self.invalidate_memory_cache();
+    }
+
+    /// Drop all cached memory regions for this core. Called whenever an
+    /// operation is issued that could change memory contents: `run`,
+    /// `step`, `halt`, any reset, a register write, or a memory write.
+    fn invalidate_memory_cache(&mut self) {
+        if let Some(entry) = self.memory_cache.get_mut(&self.core_index) {
+            entry.clear();
+        }
+    }
+
+    /// Read `[addr, addr + len)` bytes, serving from the per-core region
+    /// cache when possible and prefetching an aligned region on a miss.
+    /// Reads larger than [`MEMORY_REGION_SIZE`] bypass the cache. The
+    /// returned `Vec` is a copy so callers can release the borrow on
+    /// `self` before interpreting the bytes into typed words.
+    fn cached_read_bytes(&mut self, addr: u64, len: usize) -> Result<Vec<u8>, Error> {
+        let handle = &self.handle;
+        let client = &self.client;
+        let cache = self.memory_cache.entry(self.core_index).or_default();
+        cached_read_with(cache, addr, len, |a, n| {
+            block_on(handle, client.read_memory_8(a, n)).map_err(rpc_err)
+        })
+    }
+
+    /// Interpret `bytes` (of length 1, 2, 4, or 8) as an unsigned integer
+    /// using this core's endianness, returned as a `u64` for easy casting.
+    fn read_word_le_be(&self, bytes: &[u8]) -> u64 {
+        interpret_word(bytes, self.metadata.endian)
     }
 
     /// Look up a single register, refilling the cache with a batched
@@ -330,32 +504,29 @@ macro_rules! rpc_mem_methods {
     ($n:literal, $ty:ty, $read_word:ident, $read_many:ident, $write_word:ident,
      $write_many:ident, $rpc_read:ident, $rpc_write:ident) => {
         fn $read_word(&mut self, address: u64) -> Result<$ty, Error> {
-            let data =
-                block_on(&self.handle, self.client.$rpc_read(address, 1)).map_err(rpc_err)?;
-            data.into_iter().next().ok_or_else(|| {
-                Error::Other(concat!("empty response from memory/read", $n).to_string())
-            })
+            let bytes =
+                self.cached_read_bytes(address, std::mem::size_of::<$ty>())?;
+            Ok(self.read_word_le_be(&bytes) as $ty)
         }
 
         fn $read_many(&mut self, address: u64, data: &mut [$ty]) -> Result<(), Error> {
-            let result = block_on(&self.handle, self.client.$rpc_read(address, data.len()))
-                .map_err(rpc_err)?;
-            if result.len() != data.len() {
-                return Err(Error::Other(format!(
-                    "short read: requested {} units, got {}",
-                    data.len(),
-                    result.len()
-                )));
+            let ws = std::mem::size_of::<$ty>();
+            let nbytes = data.len() * ws;
+            let bytes = self.cached_read_bytes(address, nbytes)?;
+            for (i, slot) in data.iter_mut().enumerate() {
+                let off = i * ws;
+                *slot = self.read_word_le_be(&bytes[off..off + ws]) as $ty;
             }
-            data.copy_from_slice(&result);
             Ok(())
         }
 
         fn $write_word(&mut self, address: u64, data: $ty) -> Result<(), Error> {
+            self.invalidate_memory_cache();
             block_on(&self.handle, self.client.$rpc_write(address, vec![data])).map_err(rpc_err)
         }
 
         fn $write_many(&mut self, address: u64, data: &[$ty]) -> Result<(), Error> {
+            self.invalidate_memory_cache();
             block_on(&self.handle, self.client.$rpc_write(address, data.to_vec())).map_err(rpc_err)
         }
     };
@@ -451,23 +622,23 @@ impl CoreInterface for RpcRemoteCore<'_> {
     }
 
     fn halt(&mut self, timeout: Duration) -> Result<CoreInformation, Error> {
-        self.invalidate_register_cache();
+        self.invalidate_caches();
         let info = block_on(&self.handle, self.client.halt(timeout)).map_err(rpc_err)?;
         Ok(info.into())
     }
 
     fn run(&mut self) -> Result<(), Error> {
-        self.invalidate_register_cache();
+        self.invalidate_caches();
         block_on(&self.handle, self.client.run()).map_err(rpc_err)
     }
 
     fn reset(&mut self) -> Result<(), Error> {
-        self.invalidate_register_cache();
+        self.invalidate_caches();
         block_on(&self.handle, self.client.reset()).map_err(rpc_err)
     }
 
     fn reset_and_halt(&mut self, timeout: Duration) -> Result<CoreInformation, Error> {
-        self.invalidate_register_cache();
+        self.invalidate_caches();
         block_on(&self.handle, self.client.reset_and_halt(timeout)).map_err(rpc_err)?;
         // The existing `reset_and_halt` endpoint only returns `()`; the PC
         // will be read by the next call anyway. Surface a zero-filled
@@ -476,7 +647,7 @@ impl CoreInterface for RpcRemoteCore<'_> {
     }
 
     fn step(&mut self) -> Result<CoreInformation, Error> {
-        self.invalidate_register_cache();
+        self.invalidate_caches();
         let info = block_on(&self.handle, self.client.step()).map_err(rpc_err)?;
         Ok(info.into())
     }
@@ -684,5 +855,127 @@ impl FlashingBackend for RpcBackend {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fake fetch that returns deterministic bytes and counts how many
+    /// RPC round trips it would have issued. Each fetch returns `count`
+    /// bytes whose values are derived from `base`, so tests can verify the
+    /// right range was fetched and that cached reads return the right data.
+    struct CountingFetch {
+        calls: usize,
+        log: Vec<(u64, usize)>,
+    }
+
+    impl CountingFetch {
+        fn new() -> Self {
+            Self {
+                calls: 0,
+                log: Vec::new(),
+            }
+        }
+
+        fn fetch(&mut self, base: u64, count: usize) -> Result<Vec<u8>, Error> {
+            self.calls += 1;
+            self.log.push((base, count));
+            Ok((0..count)
+                .map(|i| base.wrapping_add(i as u64) as u8)
+                .collect())
+        }
+    }
+
+    #[test]
+    fn clustered_reads_collapse_into_one_fetch() {
+        let mut cache = Vec::new();
+        let mut fetcher = CountingFetch::new();
+
+        // A handful of small reads within the same 2 KB region, mirroring
+        // the access pattern of stack unwinding (saved registers at SP +
+        // small offsets).
+        for off in [0u64, 4, 8, 12, 16, 20, 24, 28] {
+            let addr = 0x1000_0000 + off;
+            let bytes =
+                cached_read_with(&mut cache, addr, 4, |a, n| fetcher.fetch(a, n)).unwrap();
+            // The fake fetch returns byte `i` == `(base + i) as u8`.
+            let expect: Vec<u8> = (0..4u64).map(|i| (addr + i) as u8).collect();
+            assert_eq!(bytes, expect);
+        }
+
+        // One prefetch covers all eight reads.
+        assert_eq!(fetcher.calls, 1);
+        assert_eq!(fetcher.log, vec![(0x1000_0000, MEMORY_REGION_SIZE)]);
+    }
+
+    #[test]
+    fn reads_in_different_regions_fetch_once_each() {
+        let mut cache = Vec::new();
+        let mut fetcher = CountingFetch::new();
+
+        cached_read_with(&mut cache, 0x0000, 4, |a, n| fetcher.fetch(a, n)).unwrap();
+        cached_read_with(&mut cache, 0x0800, 4, |a, n| fetcher.fetch(a, n)).unwrap();
+        cached_read_with(&mut cache, 0x1000, 4, |a, n| fetcher.fetch(a, n)).unwrap();
+        // Re-reading the first region is a cache hit (no new fetch).
+        cached_read_with(&mut cache, 0x0010, 4, |a, n| fetcher.fetch(a, n)).unwrap();
+
+        assert_eq!(fetcher.calls, 3);
+    }
+
+    #[test]
+    fn large_read_bypasses_cache() {
+        let mut cache = Vec::new();
+        let mut fetcher = CountingFetch::new();
+
+        let len = MEMORY_REGION_SIZE + 64;
+        cached_read_with(&mut cache, 0x2000, len, |a, n| fetcher.fetch(a, n)).unwrap();
+
+        assert_eq!(fetcher.calls, 1);
+        assert_eq!(fetcher.log, vec![(0x2000, len)]);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn prefetch_error_falls_back_to_exact_read() {
+        let mut cache = Vec::new();
+        let mut fetcher = CountingFetch::new();
+
+        let bytes = cached_read_with(&mut cache, 0x0, 4, |a, n| {
+            if n == MEMORY_REGION_SIZE {
+                Err(Error::Other("unmapped".into()))
+            } else {
+                fetcher.fetch(a, n)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(bytes, vec![0x00, 0x01, 0x02, 0x03]);
+        assert_eq!(fetcher.calls, 1);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn region_covers_helper() {
+        let region = MemoryRegion {
+            base: 0x1000,
+            data: vec![0; 64],
+        };
+        assert_eq!(region.covers(0x1000, 4), Some(0));
+        assert_eq!(region.covers(0x1000 + 60, 4), Some(60));
+        assert_eq!(region.covers(0x1000 + 60, 8), None);
+        assert_eq!(region.covers(0x0FFC, 8), None);
+    }
+
+    #[test]
+    fn interpret_word_endianness() {
+        let bytes = [0x01, 0x02, 0x03, 0x04];
+        assert_eq!(interpret_word(&bytes, Endian::Little), 0x0403_0201);
+        assert_eq!(interpret_word(&bytes, Endian::Big), 0x0102_0304);
+        assert_eq!(interpret_word(&[0xAB], Endian::Little), 0xAB);
+        let b8 = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(interpret_word(&b8, Endian::Little), 0x0807_0605_0403_0201);
+        assert_eq!(interpret_word(&b8, Endian::Big), 0x0102_0304_0506_0708);
     }
 }
