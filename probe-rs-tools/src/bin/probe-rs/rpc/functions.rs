@@ -407,6 +407,13 @@ impl RpcContext {
         self.object_mut(sid).await
     }
 
+    pub fn debug_states(
+        &self,
+    ) -> std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<Key<Session>, crate::rpc::debug_state::ServerDebugState>>>
+    {
+        self.state.debug_states.clone()
+    }
+
     pub fn lister(&self) -> Lister {
         Lister::with_lister(Box::new(LimitedLister::new(self.probe_access.clone())))
     }

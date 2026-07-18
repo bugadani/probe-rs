@@ -57,6 +57,8 @@ pub type EndianReader = gimli::EndianReader<RunTimeEndian, std::sync::Arc<[u8]>>
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<crate::DebugInfo>();
+    assert_send::<crate::VariableCache>();
+    assert_send::<crate::StackFrame>();
 };
 
 /// An error occurred while debugging the target.

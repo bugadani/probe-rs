@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub mod client;
+pub mod debug_state;
 pub mod functions;
 pub mod transport;
 pub mod utils;
@@ -155,6 +156,10 @@ pub struct ConnectionState {
     /// Generic object storage.
     object_storage: Arc<Mutex<ObjectStorage>>,
     registry: Arc<Mutex<Registry>>,
+    /// Server-owned debug state (cached `DebugInfo` + per-core `VariableCache`),
+    /// keyed by session. Populated by the rich stack-trace endpoint and consumed
+    /// by the server-side scopes/variables endpoints.
+    debug_states: Arc<Mutex<HashMap<Key<Session>, crate::rpc::debug_state::ServerDebugState>>>,
     token: CancellationToken,
 }
 
@@ -164,6 +169,7 @@ impl ConnectionState {
             dry_run_sessions: HashSet::new(),
             object_storage: Arc::new(Mutex::new(ObjectStorage::new())),
             registry: Arc::new(Mutex::new(Registry::from_builtin_families())),
+            debug_states: Arc::new(Mutex::new(HashMap::new())),
             token: CancellationToken::new(),
         }
     }
