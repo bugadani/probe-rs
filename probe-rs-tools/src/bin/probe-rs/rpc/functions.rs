@@ -39,7 +39,10 @@ use crate::{
                 CreateRttClientRequest, CreateRttClientResponse, RttDownRequest, create_rtt_client,
                 write_rtt_down,
             },
-            stack_trace::{TakeStackTraceRequest, TakeStackTraceResponse, take_stack_trace},
+            stack_trace::{
+                TakeStackTraceRequest, TakeStackTraceResponse,
+                TakeRichStackTraceResponse, take_rich_stack_trace, take_stack_trace,
+            },
             test::{
                 ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse, list_tests,
                 run_test,
@@ -488,6 +491,7 @@ endpoints! {
     | CreateRttClientEndpoint   | CreateRttClientRequest  | CreateRttClientResponse | "create_rtt"       |
     | RttDownEndpoint           | RttDownRequest          | NoResponse              | "rtt/down"         |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
+    | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
     | EraseEndpoint             | EraseRequest            | NoResponse              | "flash/erase"      |
@@ -574,6 +578,7 @@ postcard_rpc::define_dispatch! {
         | ResumeAllCoresEndpoint    | async     | resume_all_cores  |
         | CreateRttClientEndpoint   | async     | create_rtt_client |
         | TakeStackTraceEndpoint    | async     | take_stack_trace  |
+        | TakeRichStackTraceEndpoint | async    | take_rich_stack_trace |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |
         | EraseEndpoint             | async     | erase             |

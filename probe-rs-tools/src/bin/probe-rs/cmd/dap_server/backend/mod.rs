@@ -17,6 +17,7 @@ pub mod rpc;
 use std::path::Path;
 
 use probe_rs::{Core, CoreType, Error, Session, Target, flashing::FlashError};
+use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
 
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
@@ -38,6 +39,37 @@ pub trait DapBackend {
 
     /// Return a handle to the requested core.
     fn core(&mut self, core_index: usize) -> Result<Core<'_>, Error>;
+
+    /// Build the stack frames for `core_index` while it is halted.
+    ///
+    /// The default implementation performs the unwind locally, reading
+    /// target memory through the core returned by [`DapBackend::core`]. The
+    /// RPC backend overrides this to issue a single
+    /// `stack_trace/rich` round trip for the register-state unwind and then
+    /// rebuild local variables from the supplied `debug_info` (which the
+    /// DAP server holds locally), collapsing the per-memory-read round-trip
+    /// storm into one request.
+    fn unwind_stack(
+        &mut self,
+        core_index: usize,
+        _program_binary: Option<&Path>,
+        debug_info: &DebugInfo,
+        max_frames: usize,
+    ) -> Result<Vec<StackFrame>, Error> {
+        let mut core = self.core(core_index)?;
+        let initial_registers = DebugRegisters::from_core(&mut core);
+        let exception_interface = exception_handler_for_core(core.core_type());
+        let instruction_set = core.instruction_set().ok();
+        debug_info
+            .unwind(
+                &mut core,
+                initial_registers,
+                exception_interface.as_ref(),
+                instruction_set,
+                max_frames,
+            )
+            .map_err(Into::into)
+    }
 }
 
 impl DapBackend for Session {

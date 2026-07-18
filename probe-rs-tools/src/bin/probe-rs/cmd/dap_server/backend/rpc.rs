@@ -22,6 +22,7 @@ use probe_rs::{
     VectorCatchCondition,
     semihosting::{Buffer, GetCommandLineRequest, SemihostingCommand},
 };
+use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, get_object_reference};
 use tokio::runtime::Handle;
 
 use super::{DapBackend, FlashingBackend};
@@ -39,6 +40,7 @@ use crate::rpc::{
             DownloadOptions as WireDownloadOptions, ProgressEvent as WireProgressEvent,
             VerifyResult,
         },
+        stack_trace::{RichStackTraces, WireDebugRegister},
     },
 };
 
@@ -204,6 +206,25 @@ fn rpc_err(err: anyhow::Error) -> Error {
     Error::Other(format!("{err:?}"))
 }
 
+/// Rebuild a [`DebugRegisters`] from a wire register dump, using the same
+/// static [`CoreRegisters`] file the server used so that the resulting
+/// `DebugRegister` ordering and DWARF ids match a freshly-built
+/// `DebugRegisters::from_core` (which is what the server's `unwind` starts
+/// from). This keeps client-side `get_stackframe_info` calls consistent with
+/// the server's.
+fn rebuild_debug_registers(
+    regs: &'static CoreRegisters,
+    wire: &[WireDebugRegister],
+) -> DebugRegisters {
+    let mut lookup: HashMap<RegisterId, RegisterValue> = HashMap::with_capacity(wire.len());
+    for w in wire {
+        if let Some(value) = w.value {
+            lookup.insert(w.id.into(), value.into());
+        }
+    }
+    DebugRegisters::from_core_registers(regs, |rid| lookup.get(rid).copied())
+}
+
 /// A DAP backend that drives a remote target over RPC.
 pub struct RpcBackend {
     handle: Handle,
@@ -360,6 +381,116 @@ impl DapBackend for RpcBackend {
             &self.target,
             Box::new(core),
         ))
+    }
+
+    /// Single-round-trip stack unwind for the RPC backend.
+    ///
+    /// The server performs the register-state unwind (the round-trip-heavy
+    /// part: one memory read per unwind step) and returns per-frame register
+    /// dumps plus metadata. We then rebuild [`StackFrame`]s locally, using the
+    /// DAP server's own [`DebugInfo`] to recompute `local_variables` and
+    /// accurate `source_location`s via [`DebugInfo::get_stackframe_info`].
+    ///
+    /// Inlined functions are handled per *unwind step*: all frames produced
+    /// by one server-side `get_stackframe_info` call share an identical
+    /// register dump, so we group consecutive wire frames with equal
+    /// `registers` and issue a single local `get_stackframe_info` for the
+    /// group, zipping the returned inlined chain against the group in order.
+    fn unwind_stack(
+        &mut self,
+        core_index: usize,
+        program_binary: Option<&Path>,
+        debug_info: &DebugInfo,
+        max_frames: usize,
+    ) -> Result<Vec<StackFrame>, Error> {
+        let path = program_binary
+            .ok_or_else(|| Error::Other("program_binary required for RPC stack trace".into()))?
+            .to_path_buf();
+
+        let session = self.session_interface();
+        let rich: RichStackTraces = block_on(
+            &self.handle,
+            session.take_rich_stack_trace(path, max_frames as u32),
+        )
+        .map_err(rpc_err)?;
+
+        let rich_core = rich
+            .cores
+            .into_iter()
+            .find(|c| c.core == core_index as u32)
+            .ok_or_else(|| Error::Other(format!("core {core_index} missing from rich stack trace").into()))?;
+
+        // Clone metadata before borrowing `self` via `self.core(...)`.
+        let metadata = self
+            .cores
+            .iter()
+            .zip(self.core_metadata.iter())
+            .find_map(|((idx, _), meta)| (*idx == core_index).then_some(meta.clone()))
+            .ok_or(Error::CoreNotFound(core_index))?;
+
+        let mut core = self.core(core_index)?;
+
+        let wire_frames = rich_core.frames;
+        let mut frames: Vec<StackFrame> = Vec::with_capacity(wire_frames.len());
+
+        let mut idx = 0;
+        while idx < wire_frames.len() {
+            // Group consecutive wire frames sharing an identical register
+            // dump: they all came from one server-side `get_stackframe_info`
+            // call (an inlined chain), so we rebuild them with a single local
+            // `get_stackframe_info` call.
+            let group_start = idx;
+            let group_regs = wire_frames[idx].registers.clone();
+            while idx < wire_frames.len() && wire_frames[idx].registers == group_regs {
+                idx += 1;
+            }
+            let group = &wire_frames[group_start..idx];
+
+            let step_pc: u64 = {
+                let pc: RegisterValue = group[0].program_counter.into();
+                pc.try_into().unwrap_or(0)
+            };
+            let cfa = group[0].canonical_frame_address;
+            let registers = rebuild_debug_registers(metadata.registers, &group_regs);
+
+            // `get_stackframe_info` returns the inlined chain in DIE order
+            // (outermost first, innermost last). Reverse to match the wire
+            // group order (innermost first, outermost last) and zip.
+            let chain = debug_info
+                .get_stackframe_info(&mut core, step_pc, cfa, &registers)
+                .ok()
+                .unwrap_or_default();
+            let mut chain = chain;
+            chain.reverse();
+
+            for (offset, wf) in group.iter().enumerate() {
+                let pc_value: RegisterValue = wf.program_counter.clone().into();
+                let (source_location, local_variables) = chain
+                    .get(offset)
+                    .map(|cf| (cf.source_location.clone(), cf.local_variables.clone()))
+                    .unwrap_or_else(|| {
+                        // No matching rebuilt frame (handler / unknown / no
+                        // debug info at this PC): keep the wire metadata and
+                        // fall back to a best-effort source location.
+                        let pc_u64: u64 = pc_value.clone().try_into().unwrap_or(0);
+                        (debug_info.get_source_location(pc_u64), None)
+                    });
+
+                frames.push(StackFrame {
+                    id: get_object_reference(),
+                    function_name: wf.function_name.clone(),
+                    source_location,
+                    registers: registers.clone(),
+                    pc: pc_value,
+                    frame_base: wf.frame_base,
+                    is_inlined: wf.is_inlined,
+                    local_variables,
+                    canonical_frame_address: cfa,
+                });
+            }
+        }
+
+        Ok(frames)
     }
 }
 

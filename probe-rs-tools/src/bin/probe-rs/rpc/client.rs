@@ -42,8 +42,8 @@ use crate::{
             ReadMemory16Endpoint, ReadMemory32Endpoint, ReadMemory64Endpoint,
             ResetCoreAndHaltEndpoint, ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult,
             RttDownEndpoint, RunTestEndpoint, SelectProbeEndpoint, TakeStackTraceEndpoint,
-            TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint,
-            TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
+            TakeRichStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
+            TempFileDataEndpoint, TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
             WriteMemory32Endpoint, WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
@@ -68,7 +68,7 @@ use crate::{
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest},
             resume::ResumeAllCoresRequest,
             rtt_client::{CreateRttClientRequest, RttClientData, RttDownRequest, ScanRegion},
-            stack_trace::{StackTraces, TakeStackTraceRequest},
+            stack_trace::{StackTraces, TakeStackTraceRequest, RichStackTraces},
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
         },
         transport::memory::{PostcardReceiver, PostcardSender, WireRx, WireTx},
@@ -671,6 +671,26 @@ impl SessionInterface {
 
         self.client
             .send_resp::<TakeStackTraceEndpoint, _>(&TakeStackTraceRequest {
+                sessid: self.sessid,
+                path: path.display().to_string(),
+                stack_frame_limit,
+            })
+            .await
+    }
+
+    /// Fetch a rich stack trace (per-frame register state + frame metadata,
+    /// no local variables) for every core, in a single round trip. The
+    /// DAP-side caller rebuilds `local_variables` from its own local
+    /// [`DebugInfo`] using [`DebugInfo::get_stackframe_info`].
+    pub async fn take_rich_stack_trace(
+        &self,
+        path: PathBuf,
+        stack_frame_limit: u32,
+    ) -> anyhow::Result<RichStackTraces> {
+        let path = self.client.upload_file(&path).await?;
+
+        self.client
+            .send_resp::<TakeRichStackTraceEndpoint, _>(&TakeStackTraceRequest {
                 sessid: self.sessid,
                 path: path.display().to_string(),
                 stack_frame_limit,

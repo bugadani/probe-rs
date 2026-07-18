@@ -107,7 +107,7 @@ impl From<WireRegisterId> for RegisterId {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Schema, Copy, Clone)]
+#[derive(Debug, Serialize, Deserialize, Schema, Copy, Clone, PartialEq)]
 pub enum WireRegisterValue {
     U32(u32),
     U64(u64),

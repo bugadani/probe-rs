@@ -30,9 +30,7 @@ use probe_rs::{
     probe::list::Lister,
     rtt::{Rtt, ScanRegion, find_rtt_control_block_in_raw_file},
 };
-use probe_rs_debug::{
-    DebugRegisters, SourceLocation, debug_info::DebugInfo, exception_handler_for_core,
-};
+use probe_rs_debug::{SourceLocation, debug_info::DebugInfo};
 use std::{any::Any, collections::HashMap, env::set_current_dir, time::Duration};
 use time::UtcOffset;
 
@@ -360,6 +358,13 @@ impl<B: DapBackend> SessionData<B> {
 
         // Always set `all_cores_halted` to true, until one core is found to be running.
         debug_adapter.all_cores_halted = true;
+
+        // Cores that transitioned to halted during this poll and need their
+        // stack frames rebuilt. We defer the actual unwind to *after* the
+        // per-core loop so that `&mut self.backend` is free (the loop body
+        // holds a `CoreHandle` borrowing the backend for status polling).
+        let mut needs_unwind: Vec<usize> = Vec::new();
+
         for core_config in session_config.core_configs.iter() {
             let Ok(mut target_core) = self.attach_core(core_config.core_index) else {
                 tracing::debug!(
@@ -449,23 +454,46 @@ impl<B: DapBackend> SessionData<B> {
                     target_core.id()
                 );
 
-                let initial_registers = DebugRegisters::from_core(&mut target_core.core);
-                let exception_interface = exception_handler_for_core(target_core.core.core_type());
-                let instruction_set = target_core.core.instruction_set().ok();
-
                 if target_core.core_data.static_variables.is_none() {
                     target_core.core_data.static_variables =
                         Some(debug_info.create_static_scope_cache());
                 }
 
-                target_core.core_data.stack_frames = debug_info.unwind(
-                    &mut target_core.core,
-                    initial_registers,
-                    exception_interface.as_ref(),
-                    instruction_set,
-                    500, // TODO: we should be able to unwind incrementally as the user requests more frames on the UI
-                )?;
+                // Defer the unwind: it goes through `DapBackend::unwind_stack`,
+                // which for the RPC backend takes `&mut self.backend` and
+                // cannot run while this `CoreHandle` is alive.
+                needs_unwind.push(core_config.core_index);
             }
+        }
+
+        // Now that the per-core loop has dropped all `CoreHandle`s, perform
+        // the deferred unwinds. The local backend does the unwind here in
+        // memory; the RPC backend issues a single `stack_trace/rich` round
+        // trip and rebuilds locals from the local `DebugInfo`.
+        for &core_index in &needs_unwind {
+            let program_binary = session_config
+                .core_configs
+                .iter()
+                .find(|c| c.core_index == core_index)
+                .and_then(|c| c.program_binary.as_deref());
+
+            let Some(core_data) = self
+                .core_data
+                .iter_mut()
+                .find(|cd| cd.core_index == core_index)
+            else {
+                continue;
+            };
+
+            let frames = match core_data.debug_info.as_ref() {
+                Some(debug_info) => {
+                    self.backend
+                        .unwind_stack(core_index, program_binary, debug_info, 500)
+                        .map_err(DebuggerError::ProbeRs)?
+                }
+                None => continue,
+            };
+            core_data.stack_frames = frames;
         }
         Ok(suggest_delay_required)
     }
