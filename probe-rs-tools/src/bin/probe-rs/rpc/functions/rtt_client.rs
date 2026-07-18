@@ -101,3 +101,133 @@ pub async fn write_rtt_down(
 
     Ok(())
 }
+
+/// Metadata for a single RTT up/down channel, returned by [`get_rtt_channels`].
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct RttChannelMeta {
+    pub number: u32,
+    pub name: String,
+    pub buffer_size: u64,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone, Default)]
+pub struct RttChannels {
+    pub up: Vec<RttChannelMeta>,
+    pub down: Vec<RttChannelMeta>,
+}
+
+pub type RttChannelsResponse = RpcResult<RttChannels>;
+
+/// Attach the server-side [`RttClient`] to the target's RTT control block
+/// (if not already attached) and return the up/down channel metadata so an
+/// RPC-backed DAP client can open output windows without driving any
+/// target memory reads itself.
+pub async fn get_rtt_channels(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: RttChannelRequest,
+) -> RttChannelsResponse {
+    let mut session = ctx.session(request.sessid).await;
+    let mut rtt_client = ctx.object_mut(request.rtt_client).await;
+
+    let core_id = rtt_client.core_id();
+    let mut core = session.core(core_id)?;
+    rtt_client.try_attach(&mut core)?;
+
+    let up = rtt_client
+        .up_channels()
+        .iter()
+        .map(|c| RttChannelMeta {
+            number: c.number(),
+            name: c.channel_name(),
+            buffer_size: c.buffer_size() as u64,
+        })
+        .collect();
+    let down = rtt_client
+        .down_channels()
+        .iter()
+        .map(|c| RttChannelMeta {
+            number: c.number(),
+            name: c.channel_name(),
+            buffer_size: c.buffer_size() as u64,
+        })
+        .collect();
+
+    Ok(RttChannels { up, down })
+}
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct RttChannelRequest {
+    pub sessid: Key<Session>,
+    pub rtt_client: Key<RttClient>,
+}
+
+pub type PollRttUpResponse = RpcResult<Vec<RttPollResult>>;
+
+/// Result of polling a single up channel in a batched [`poll_rtt_up`] request.
+///
+/// `result` is `Ok(data)` when the channel was polled successfully (empty
+/// `data` means no new bytes, including the recoverable corrupted-control-
+/// block case which `RttClient::poll_channel` handles internally), and
+/// `Err(message)` when the channel could not be polled at all (e.g. the
+/// probe was lost).
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct RttPollResult {
+    pub channel: u32,
+    pub result: Result<Vec<u8>, String>,
+}
+
+/// Poll multiple up channels on the server-side [`RttClient`] in a single
+/// request, returning the newly-available bytes for each. This collapses the
+/// per-memory-read round-trip storm of a client-side `RttClient` into one
+/// request per poll (instead of one per channel per poll).
+pub async fn poll_rtt_up(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: PollRttUpRequest,
+) -> PollRttUpResponse {
+    let mut session = ctx.session(request.sessid).await;
+    let mut rtt_client = ctx.object_mut(request.rtt_client).await;
+
+    let core_id = rtt_client.core_id();
+    let mut core = session.core(core_id)?;
+
+    let mut results = Vec::with_capacity(request.channels.len());
+    for channel in request.channels {
+        let result = match rtt_client.poll_channel(&mut core, channel) {
+            Ok(bytes) => Ok(bytes.to_vec()),
+            Err(error) => {
+                tracing::warn!("RTT poll of channel {channel} failed: {error}");
+                Err(format!("{error}"))
+            }
+        };
+        results.push(RttPollResult { channel, result });
+    }
+
+    Ok(results)
+}
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct PollRttUpRequest {
+    pub sessid: Key<Session>,
+    pub rtt_client: Key<RttClient>,
+    /// Up channel numbers to poll in this request.
+    pub channels: Vec<u32>,
+}
+
+/// Restore the original mode of every up channel on the server-side
+/// [`RttClient`], mirroring [`RttClient::clean_up`].
+pub async fn clean_up_rtt(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: RttChannelRequest,
+) -> NoResponse {
+    let mut session = ctx.session(request.sessid).await;
+    let mut rtt_client = ctx.object_mut(request.rtt_client).await;
+
+    let core_id = rtt_client.core_id();
+    let mut core = session.core(core_id)?;
+    rtt_client.clean_up(&mut core)?;
+
+    Ok(())
+}

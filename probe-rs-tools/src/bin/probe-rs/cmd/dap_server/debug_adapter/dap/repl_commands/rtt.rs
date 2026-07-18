@@ -61,7 +61,7 @@ fn write(
     let mut data = data.to_string();
     data.push('\n');
     rtt.client
-        .write_down_channel(&mut target_core.core, channel_id, data)
+        .write_down(&mut target_core.core, channel_id, data.as_bytes())
         .map_err(|e| {
             DebuggerError::UserMessage(format!("Failed to write to channel {}: {}", channel_id, e))
         })?;

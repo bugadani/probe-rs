@@ -383,6 +383,13 @@ impl DapBackend for RpcBackend {
         ))
     }
 
+    fn rtt_remote_seed(&self) -> Option<super::RttRemoteSeed> {
+        Some(super::RttRemoteSeed {
+            handle: self.handle.clone(),
+            session: self.session_interface(),
+        })
+    }
+
     /// Single-round-trip stack unwind for the RPC backend.
     ///
     /// The server performs the register-state unwind (the round-trip-heavy

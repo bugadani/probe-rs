@@ -45,6 +45,7 @@ use crate::{
             TakeRichStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
             TempFileDataEndpoint, TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
             WriteMemory32Endpoint, WriteMemory64Endpoint,
+            CleanUpRttEndpoint, GetRttChannelsEndpoint, PollRttUpEndpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreHaltRequest, CoreReadRegRequest,
@@ -67,7 +68,10 @@ use crate::{
             },
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest},
             resume::ResumeAllCoresRequest,
-            rtt_client::{CreateRttClientRequest, RttClientData, RttDownRequest, ScanRegion},
+            rtt_client::{
+                CreateRttClientRequest, PollRttUpRequest, RttChannelRequest, RttChannels,
+                RttClientData, RttDownRequest, RttPollResult, ScanRegion,
+            },
             stack_trace::{StackTraces, TakeStackTraceRequest, RichStackTraces},
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
         },
@@ -658,6 +662,45 @@ impl SessionInterface {
                 scan_regions,
                 config,
                 default_config,
+            })
+            .await
+    }
+
+    /// Attach the server-side RTT client and return its up/down channel
+    /// metadata. See [`get_rtt_channels`].
+    pub async fn get_rtt_channels(&self, rtt_client: Key<RttClient>) -> anyhow::Result<RttChannels> {
+        self.client
+            .send_resp::<GetRttChannelsEndpoint, _>(&RttChannelRequest {
+                sessid: self.sessid,
+                rtt_client,
+            })
+            .await
+    }
+
+    /// Poll multiple up channels on the server-side RTT client in one
+    /// request, returning the newly-available bytes (and any per-channel
+    /// error) for each.
+    pub async fn poll_rtt_up(
+        &self,
+        rtt_client: Key<RttClient>,
+        channels: Vec<u32>,
+    ) -> anyhow::Result<Vec<RttPollResult>> {
+        self.client
+            .send_resp::<PollRttUpEndpoint, _>(&PollRttUpRequest {
+                sessid: self.sessid,
+                rtt_client,
+                channels,
+            })
+            .await
+    }
+
+    /// Restore the original mode of every up channel on the server-side
+    /// RTT client.
+    pub async fn clean_up_rtt(&self, rtt_client: Key<RttClient>) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<CleanUpRttEndpoint, _>(&RttChannelRequest {
+                sessid: self.sessid,
+                rtt_client,
             })
             .await
     }

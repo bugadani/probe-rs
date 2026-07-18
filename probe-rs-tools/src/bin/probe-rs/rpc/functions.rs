@@ -36,8 +36,9 @@ use crate::{
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest, reset, reset_and_halt},
             resume::{ResumeAllCoresRequest, resume_all_cores},
             rtt_client::{
-                CreateRttClientRequest, CreateRttClientResponse, RttDownRequest, create_rtt_client,
-                write_rtt_down,
+                CreateRttClientRequest, CreateRttClientResponse, PollRttUpRequest,
+                PollRttUpResponse, RttChannelRequest, RttChannelsResponse, RttDownRequest,
+                clean_up_rtt, create_rtt_client, get_rtt_channels, poll_rtt_up, write_rtt_down,
             },
             stack_trace::{
                 TakeStackTraceRequest, TakeStackTraceResponse,
@@ -490,6 +491,9 @@ endpoints! {
     | ResumeAllCoresEndpoint    | ResumeAllCoresRequest   | NoResponse              | "resume"           |
     | CreateRttClientEndpoint   | CreateRttClientRequest  | CreateRttClientResponse | "create_rtt"       |
     | RttDownEndpoint           | RttDownRequest          | NoResponse              | "rtt/down"         |
+    | GetRttChannelsEndpoint    | RttChannelRequest       | RttChannelsResponse     | "rtt/channels"     |
+    | PollRttUpEndpoint         | PollRttUpRequest        | PollRttUpResponse       | "rtt/poll_up"      |
+    | CleanUpRttEndpoint        | RttChannelRequest       | NoResponse              | "rtt/clean_up"     |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
     | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
@@ -585,6 +589,9 @@ postcard_rpc::define_dispatch! {
         | VerifyEndpoint            | async     | verify            |
         | MonitorEndpoint           | spawn     | monitor           |
         | RttDownEndpoint           | async     | write_rtt_down    |
+        | GetRttChannelsEndpoint    | async     | get_rtt_channels  |
+        | PollRttUpEndpoint         | async     | poll_rtt_up       |
+        | CleanUpRttEndpoint        | async     | clean_up_rtt      |
 
         | ListTestsEndpoint         | spawn     | list_tests        |
         | RunTestEndpoint           | spawn     | run_test          |

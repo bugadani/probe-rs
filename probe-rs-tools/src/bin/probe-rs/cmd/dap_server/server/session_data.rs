@@ -639,6 +639,8 @@ fn build_core_data(
         rtt_scan_ranges: ScanRegion::Ranges(vec![]),
         rtt_connection: None,
         rtt_client: None,
+        rtt_remote_seed: None,
+        rtt_remote_handle: None,
 
         // We're abusing the RTT window machinery here for simplicity.
         // Let's assume there are less than 1024 RTT channels.
@@ -680,7 +682,9 @@ fn initialize_core_data<B: DapBackend>(
             let mut core = backend.core(core_configuration.core_index)?;
             apply_vector_catch(&mut core, core_configuration)?;
         }
-        core_data_vec.push(build_core_data(core_configuration, &target_name)?);
+        let mut core_data = build_core_data(core_configuration, &target_name)?;
+        core_data.rtt_remote_seed = backend.rtt_remote_seed();
+        core_data_vec.push(core_data);
     }
     Ok(core_data_vec)
 }

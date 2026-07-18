@@ -18,10 +18,30 @@ use std::path::Path;
 
 use probe_rs::{Core, CoreType, Error, Session, Target, flashing::FlashError};
 use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
+use tokio::runtime::Handle;
 
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
+
+/// Seed for driving the **server-side** RTT client over RPC.
+///
+/// Only the RPC backend returns `Some` from [`DapBackend::rtt_remote_seed`];
+/// the local [`Session`] backend returns `None`, in which case the DAP server
+/// falls back to a local [`RttClient`] that reads the target directly.
+///
+/// With the RPC backend, RTT polling goes through the server-side `RttClient`
+/// (created via the `create_rtt` endpoint and polled via `rtt/poll_up`),
+/// collapsing the per-memory-read round-trip storm of a client-side
+/// `RttClient` into one request per channel per poll.
+#[derive(Clone)]
+pub struct RttRemoteSeed {
+    /// Tokio runtime handle used to bridge the synchronous DAP server to
+    /// the async RPC client (same pattern as `RpcRemoteCore`).
+    pub handle: Handle,
+    /// RPC session interface used to issue RTT requests.
+    pub session: crate::rpc::client::SessionInterface,
+}
 use crate::util::flash::build_loader;
 
 /// Session-level operations used by the DAP server.
@@ -39,6 +59,13 @@ pub trait DapBackend {
 
     /// Return a handle to the requested core.
     fn core(&mut self, core_index: usize) -> Result<Core<'_>, Error>;
+
+    /// If `Some`, the DAP server should drive the **server-side** RTT client
+    /// over RPC (RPC backend). If `None`, it uses a local `RttClient`
+    /// reading the target directly (local `Session` backend).
+    fn rtt_remote_seed(&self) -> Option<RttRemoteSeed> {
+        None
+    }
 
     /// Build the stack frames for `core_index` while it is halted.
     ///

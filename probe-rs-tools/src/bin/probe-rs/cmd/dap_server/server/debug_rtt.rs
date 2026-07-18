@@ -1,18 +1,144 @@
+use std::borrow::Cow;
+
 use crate::util::rtt::client::RttClient;
 use crate::{
     cmd::dap_server::{
         DebuggerError,
         debug_adapter::{dap::adapter::*, protocol::ProtocolAdapter},
     },
+    rpc::{Key, client::SessionInterface},
     util::rtt::RttDecoder,
 };
 use anyhow::anyhow;
-use probe_rs::Core;
+use probe_rs::{Core, rtt::Error as RttError};
+use tokio::runtime::Handle;
+
+/// Run an async future to completion on the current tokio runtime, without
+/// actually blocking the runtime (by releasing the worker thread via
+/// [`tokio::task::block_in_place`]). Mirrors the bridge used by `RpcRemoteCore`.
+fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
+    tokio::task::block_in_place(|| handle.block_on(fut))
+}
+
+/// The RTT client the DAP server drives.
+///
+/// `Local` is the historical path: a [`RttClient`] that reads the target's
+/// RTT control block and channel buffers directly through a [`Core`]. With
+/// the RPC backend that `Core` is a `RpcRemoteCore`, so every poll expands to
+/// many memory-read round trips.
+///
+/// `Remote` instead drives the **server-side** `RttClient` (created via the
+/// `create_rtt` RPC endpoint and stored under a [`Key`]) so each poll is a
+/// single `rtt/poll_up` round trip.
+pub enum RttClientHandle {
+    Local(RttClient),
+    Remote(RemoteRttClient),
+}
+
+/// Handle to the server-side [`RttClient`], used by the RPC-backed DAP server.
+pub struct RemoteRttClient {
+    handle: Handle,
+    session: SessionInterface,
+    rtt_client: Key<RttClient>,
+}
+
+impl RemoteRttClient {
+    pub(crate) fn new(handle: Handle, session: SessionInterface, rtt_client: Key<RttClient>) -> Self {
+        Self {
+            handle,
+            session,
+            rtt_client,
+        }
+    }
+}
+
+impl RttClientHandle {
+    /// Poll multiple up channels in one go and return the newly-available
+    /// bytes for each, keyed by channel number.
+    ///
+    /// The local path copies each channel's buffered bytes (the local
+    /// `RttClient::poll_channel` borrows an internal buffer that cannot
+    /// be held across multiple channels). The remote path issues a single
+    /// `rtt/poll_up` round trip for all channels.
+    ///
+    /// Per-channel errors are reported inline (as `Err`) so the caller can
+    /// surface them per channel; a top-level `Err` means the batch itself
+    /// failed (e.g. the RPC request errored).
+    fn poll_channels<'c>(
+        &'c mut self,
+        core: &mut Core<'_>,
+        channels: &[u32],
+    ) -> Result<Vec<(u32, Result<Cow<'c, [u8]>, RttError>)>, RttError> {
+        match self {
+            RttClientHandle::Local(client) => {
+                let mut out = Vec::with_capacity(channels.len());
+                for &channel in channels {
+                    let res = client
+                        .poll_channel(core, channel)
+                        .map(|b| Cow::Owned(b.to_vec()));
+                    out.push((channel, res));
+                }
+                Ok(out)
+            }
+            RttClientHandle::Remote(remote) => {
+                let results = block_on(
+                    &remote.handle,
+                    remote
+                        .session
+                        .poll_rtt_up(remote.rtt_client, channels.to_vec()),
+                )
+                .map_err(RttError::Other)?;
+                Ok(results
+                    .into_iter()
+                    .map(|r| {
+                        let res = match r.result {
+                            Ok(data) => Ok(Cow::Owned(data)),
+                            Err(e) => Err(RttError::Other(anyhow!(e))),
+                        };
+                        (r.channel, res)
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// Restore the original mode of every up channel.
+    fn clean_up(&mut self, core: &mut Core<'_>) -> Result<(), RttError> {
+        match self {
+            RttClientHandle::Local(client) => client.clean_up(core),
+            RttClientHandle::Remote(remote) => {
+                block_on(&remote.handle, remote.session.clean_up_rtt(remote.rtt_client))
+                    .map_err(RttError::Other)
+            }
+        }
+    }
+
+    /// Write data to a down channel.
+    pub(crate) fn write_down(
+        &mut self,
+        core: &mut Core<'_>,
+        channel: u32,
+        data: &[u8],
+    ) -> Result<(), RttError> {
+        match self {
+            RttClientHandle::Local(client) => client.write_down_channel(core, channel, data),
+            RttClientHandle::Remote(remote) => {
+                block_on(
+                    &remote.handle,
+                    remote
+                        .session
+                        .send_to_rtt(remote.rtt_client, channel, data.to_vec()),
+                )
+                .map_err(RttError::Other)
+            }
+        }
+    }
+}
 
 /// Manage the active RTT target for a specific SessionData, as well as provide methods to reliably move RTT from target, through the debug_adapter, to the client.
 pub struct RttConnection {
     /// The connection to RTT on the target
-    pub(crate) client: RttClient,
+    pub(crate) client: RttClientHandle,
     /// Some status fields and methods to ensure continuity in flow of data from target to debugger to client.
     pub(crate) debugger_rtt_channels: Vec<DebuggerRttChannel>,
 }
@@ -25,10 +151,51 @@ impl RttConnection {
         debug_adapter: &mut DebugAdapter<P>,
         target_core: &mut Core<'_>,
     ) -> bool {
+        // Only poll channels that the client has opened an output window
+        // for — pulling from a channel with no window would drain target
+        // buffers prematurely.
+        let windowed: Vec<u32> = self
+            .debugger_rtt_channels
+            .iter()
+            .filter(|c| c.has_client_window)
+            .map(|c| c.channel_number)
+            .collect();
+        if windowed.is_empty() {
+            return false;
+        }
+
+        let results = match self.client.poll_channels(target_core, &windowed) {
+            Ok(results) => results,
+            Err(error) => {
+                debug_adapter
+                    .show_error_message(&DebuggerError::Other(anyhow!(error)))
+                    .ok();
+                return false;
+            }
+        };
+
         let mut at_least_one_channel_had_data = false;
-        for debugger_rtt_channel in self.debugger_rtt_channels.iter_mut() {
+        for (channel, result) in results {
+            let Some(debugger_rtt_channel) = self
+                .debugger_rtt_channels
+                .iter_mut()
+                .find(|c| c.channel_number == channel)
+            else {
+                continue;
+            };
+
+            let bytes = match result {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    debug_adapter
+                        .show_error_message(&DebuggerError::Other(anyhow!(error)))
+                        .ok();
+                    continue;
+                }
+            };
+
             at_least_one_channel_had_data |=
-                debugger_rtt_channel.poll_rtt_data(target_core, debug_adapter, &mut self.client)
+                debugger_rtt_channel.process_bytes(debug_adapter, &bytes);
         }
         at_least_one_channel_had_data
     }
@@ -50,29 +217,13 @@ pub(crate) struct DebuggerRttChannel {
 }
 
 impl DebuggerRttChannel {
-    /// Poll and retrieve data from the target, and send it to the client, depending on the state of `hasClientWindow`.
-    /// Doing this selectively ensures that we don't pull data from target buffers until we have an output window, and also helps us drain buffers after the target has entered a `is_halted` state.
-    /// Errors will be reported back to the `debug_adapter`, and the return `bool` value indicates whether there was available data that was processed.
-    pub(crate) fn poll_rtt_data<P: ProtocolAdapter>(
+    /// Decode already-fetched `bytes` for this channel and forward them to
+    /// the DAP client. Returns whether any data was emitted.
+    pub(crate) fn process_bytes<P: ProtocolAdapter>(
         &mut self,
-        core: &mut Core<'_>,
         debug_adapter: &mut DebugAdapter<P>,
-        client: &mut RttClient,
+        bytes: &[u8],
     ) -> bool {
-        if !self.has_client_window {
-            return false;
-        }
-
-        let bytes = match client.poll_channel(core, self.channel_number) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                debug_adapter
-                    .show_error_message(&DebuggerError::Other(anyhow!(e)))
-                    .ok();
-                return false;
-            }
-        };
-
         match self.channel_data_format.process(bytes).ok().flatten() {
             Some(data) => debug_adapter.rtt_output(self.channel_number, data.to_string()),
             _ => false,
