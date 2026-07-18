@@ -343,7 +343,7 @@ impl<B: DapBackend> SessionData<B> {
     ///
     /// Return a boolean indicating whether we should consider a short delay before the next poll.
     #[tracing::instrument(level = "trace", skip_all)]
-    pub(crate) fn poll_cores<P: ProtocolAdapter>(
+    pub(crate) async fn poll_cores<P: ProtocolAdapter>(
         &mut self,
         session_config: &SessionConfig,
         debug_adapter: &mut DebugAdapter<P>,
@@ -470,6 +470,10 @@ impl<B: DapBackend> SessionData<B> {
         // the deferred unwinds. The local backend does the unwind here in
         // memory; the RPC backend issues a single `stack_trace/rich` round
         // trip and rebuilds locals from the local `DebugInfo`.
+        //
+        // We resolve each unwind fully (dropping the `&mut self.backend`
+        // borrow it holds) before touching `self.core_data`, so no borrow is
+        // held across the `.await`.
         for &core_index in &needs_unwind {
             let program_binary = session_config
                 .core_configs
@@ -477,22 +481,28 @@ impl<B: DapBackend> SessionData<B> {
                 .find(|c| c.core_index == core_index)
                 .and_then(|c| c.program_binary.as_deref());
 
-            let Some(core_data) = self
+            let Some(debug_info) = self
                 .core_data
-                .iter_mut()
+                .iter()
                 .find(|cd| cd.core_index == core_index)
+                .and_then(|cd| cd.debug_info.as_ref())
             else {
                 continue;
             };
 
-            let frames = match core_data.debug_info.as_ref() {
-                Some(debug_info) => self
-                    .backend
-                    .unwind_stack(core_index, program_binary, debug_info, 500)
-                    .map_err(DebuggerError::ProbeRs)?,
-                None => continue,
-            };
-            core_data.stack_frames = frames;
+            let frames = self
+                .backend
+                .unwind_stack(core_index, program_binary, debug_info, 500)
+                .await
+                .map_err(DebuggerError::ProbeRs)?;
+
+            if let Some(core_data) = self
+                .core_data
+                .iter_mut()
+                .find(|cd| cd.core_index == core_index)
+            {
+                core_data.stack_frames = frames;
+            }
         }
         Ok(suggest_delay_required)
     }

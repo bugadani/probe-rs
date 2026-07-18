@@ -80,14 +80,16 @@ pub trait DapBackend {
 
     /// Build the stack frames for `core_index` while it is halted.
     ///
-    /// The default implementation performs the unwind locally, reading
-    /// target memory through the core returned by [`DapBackend::core`]. The
-    /// RPC backend overrides this to issue a single
-    /// `stack_trace/rich` round trip for the register-state unwind and then
-    /// rebuild local variables from the supplied `debug_info` (which the
-    /// DAP server holds locally), collapsing the per-memory-read round-trip
-    /// storm into one request.
-    fn unwind_stack(
+    /// This is `async` so the RPC backend can `.await` the
+    /// `stack_trace/rich` round trip directly instead of bridging through
+    /// `block_in_place` + `block_on` (see [`super::rpc::RpcBackend`]). The
+    /// default implementation performs the unwind locally, reading target
+    /// memory through the core returned by [`DapBackend::core`]; the RPC
+    /// backend overrides this to issue a single round trip for the
+    /// register-state unwind and then rebuild local variables from the
+    /// supplied `debug_info` (which the DAP server holds locally),
+    /// collapsing the per-memory-read round-trip storm into one request.
+    async fn unwind_stack(
         &mut self,
         core_index: usize,
         _program_binary: Option<&Path>,

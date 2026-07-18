@@ -112,7 +112,7 @@ impl Debugger {
     ///   - If the [`super::core_data::CoreData::last_known_status`] is `Halted(_)`, then we stop polling the Probe until the next DAP-Client request attempts an action
     ///   - If the `new_status` is an Err, then the probe is no longer available, and we  end the debugging session
     ///   - If the `new_status` is `Running`, then we have to poll on a regular basis, until the Probe stops for good reasons like breakpoints, or bad reasons like panics.
-    pub(crate) fn process_next_request<P: ProtocolAdapter, B: DapBackend>(
+    pub(crate) async fn process_next_request<P: ProtocolAdapter, B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
         debug_adapter: &mut DebugAdapter<P>,
@@ -121,12 +121,13 @@ impl Debugger {
 
         if let Some(request) = debug_adapter.listen_for_request()? {
             self.handle_request(session_data, debug_adapter, request)
+                .await
         } else {
-            self.no_request_poll(session_data, debug_adapter)
+            self.no_request_poll(session_data, debug_adapter).await
         }
     }
 
-    fn handle_request<P: ProtocolAdapter, B: DapBackend>(
+    async fn handle_request<P: ProtocolAdapter, B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
         debug_adapter: &mut DebugAdapter<P>,
@@ -135,7 +136,7 @@ impl Debugger {
         let _req_span = tracing::info_span!("Handling request", request = ?request).entered();
 
         // Poll ALL target cores for status, which includes synching status with the DAP client, and handling RTT data.
-        session_data.poll_cores(&self.config, debug_adapter)?;
+        session_data.poll_cores(&self.config, debug_adapter).await?;
 
         // Check if we have configured cores
         if session_data.core_data.is_empty() {
@@ -210,7 +211,7 @@ impl Debugger {
         Ok(debug_session)
     }
 
-    fn no_request_poll<P: ProtocolAdapter, B: DapBackend>(
+    async fn no_request_poll<P: ProtocolAdapter, B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
         debug_adapter: &mut DebugAdapter<P>,
@@ -220,7 +221,7 @@ impl Debugger {
 
         // Poll ALL target cores for status, which includes synching status with the DAP client, and handling RTT data.
         // We do this even if the cores may be halted, as we need to handle RTT data from cores the debugger does not control.
-        let suggest_delay_required = session_data.poll_cores(&self.config, debug_adapter)?;
+        let suggest_delay_required = session_data.poll_cores(&self.config, debug_adapter).await?;
 
         if debug_adapter.all_cores_halted {
             // Medium delay to reduce fast looping costs.
@@ -348,7 +349,7 @@ impl Debugger {
         // Loop through remaining (user generated) requests and send to the [process_request] method until either the client or some unexpected behaviour terminates the process.
         let error = loop {
             let debug_session_status =
-                match self.process_next_request(&mut session_data, &mut debug_adapter) {
+                match self.process_next_request(&mut session_data, &mut debug_adapter).await {
                     Ok(status) => status,
                     Err(error) => break error,
                 };
@@ -552,7 +553,7 @@ impl Debugger {
 
         drop(target_core);
 
-        session_data.poll_cores(&self.config, debug_adapter)?;
+        session_data.poll_cores(&self.config, debug_adapter).await?;
 
         debug_adapter.send_response::<()>(launch_attach_request, Ok(None))?;
         self.debug_logger.flush_to_dap(debug_adapter)?;
@@ -620,7 +621,7 @@ impl Debugger {
 
         session_data.clear_rtt_blocks()?;
 
-        session_data.poll_cores(&self.config, debug_adapter)?;
+        session_data.poll_cores(&self.config, debug_adapter).await?;
 
         // Re-attach
         let mut target_core = session_data.attach_core(target_core_config.core_index)?;

@@ -401,7 +401,7 @@ impl DapBackend for RpcBackend {
     /// register dump, so we group consecutive wire frames with equal
     /// `registers` and issue a single local `get_stackframe_info` for the
     /// group, zipping the returned inlined chain against the group in order.
-    fn unwind_stack(
+    async fn unwind_stack(
         &mut self,
         core_index: usize,
         program_binary: Option<&Path>,
@@ -413,11 +413,10 @@ impl DapBackend for RpcBackend {
             .to_path_buf();
 
         let session = self.session_interface();
-        let rich: RichStackTraces = block_on(
-            &self.handle,
-            session.take_rich_stack_trace(path, max_frames as u32),
-        )
-        .map_err(rpc_err)?;
+        let rich: RichStackTraces = session
+            .take_rich_stack_trace(path, max_frames as u32)
+            .await
+            .map_err(rpc_err)?;
 
         let rich_core = rich
             .cores
