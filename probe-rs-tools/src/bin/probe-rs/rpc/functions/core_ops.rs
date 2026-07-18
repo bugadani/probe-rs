@@ -611,21 +611,34 @@ pub async fn core_set_hw_bps(
     ctx: &mut RpcContext,
     _header: VarHeader,
     request: CoreBreakpointsRequest,
-) -> NoResponse {
-    with_core!(
+) -> RpcResult<Vec<bool>> {
+    let results = with_core!(
         ctx,
         CoreAccessRequest {
             sessid: request.sessid,
             core: request.core,
         },
         |core| {
-            for address in request.addresses {
-                core.set_hw_breakpoint(address)?;
+            let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            let mut out: Vec<bool> = Vec::with_capacity(request.addresses.len());
+            for address in &request.addresses {
+                let ok = if seen.contains(address) {
+                    true
+                } else {
+                    match core.set_hw_breakpoint(*address) {
+                        Ok(()) => {
+                            seen.insert(*address);
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                };
+                out.push(ok);
             }
-            Ok(())
+            Ok(out)
         }
     )?;
-    Ok(())
+    Ok(results)
 }
 
 pub async fn core_clear_hw_bps(
@@ -641,7 +654,14 @@ pub async fn core_clear_hw_bps(
         },
         |core| {
             for address in request.addresses {
-                core.clear_hw_breakpoint(address)?;
+                let _ = core
+                    .clear_hw_breakpoint(address)
+                    .or_else(|e| match e {
+                        probe_rs::Error::BreakpointOperation(probe_rs::BreakpointError::NotFound(_)) => {
+                            Ok(())
+                        }
+                        e => Err(e),
+                    })?;
             }
             Ok(())
         }

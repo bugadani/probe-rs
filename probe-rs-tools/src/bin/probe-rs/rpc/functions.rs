@@ -480,6 +480,7 @@ type CoreRegValueResponse = RpcResult<WireRegisterValue>;
 type CoreU32Response = RpcResult<u32>;
 type CoreInstructionSetResponse = RpcResult<WireInstructionSet>;
 type CoreReadRegistersResponse = RpcResult<Vec<WireRegisterReadResult>>;
+type CoreSetHwBpsResponse = RpcResult<Vec<bool>>;
 
 endpoints! {
     list = ENDPOINT_LIST;
@@ -528,7 +529,7 @@ endpoints! {
     | CoreWriteRegEndpoint      | CoreWriteRegRequest     | NoResponse                    | "core/write_reg"          |
     | CoreSetHwBpEndpoint       | CoreBreakpointRequest   | NoResponse                    | "core/set_hw_bp"          |
     | CoreClearHwBpEndpoint     | CoreBreakpointRequest   | NoResponse                    | "core/clear_hw_bp"        |
-    | CoreSetHwBpsEndpoint      | CoreBreakpointsRequest  | NoResponse                    | "core/set_hw_bps"         |
+    | CoreSetHwBpsEndpoint      | CoreBreakpointsRequest  | CoreSetHwBpsResponse           | "core/set_hw_bps"         |
     | CoreClearHwBpsEndpoint    | CoreBreakpointsRequest  | NoResponse                    | "core/clear_hw_bps"       |
     | CoreAvailableBpUnitsEndpoint | CoreAccessRequest    | CoreU32Response               | "core/available_bp_units" |
     | CoreEnableVcEndpoint      | CoreVectorCatchRequest  | NoResponse                    | "core/enable_vc"          |

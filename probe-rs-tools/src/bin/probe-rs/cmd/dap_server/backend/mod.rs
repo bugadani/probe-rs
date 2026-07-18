@@ -63,19 +63,22 @@ pub trait DapBackend {
         core.status()
     }
 
-    /// Set hardware breakpoints at all `addresses` in one round trip. Default
-    /// impl loops via [`DapBackend::core`]; the RPC backend overrides this to
-    /// issue a single `core/set_hw_bps` round trip.
+    /// Set hardware breakpoints at all `addresses` in one round trip. Returns
+    /// per-address success so callers can preserve per-breakpoint DAP
+    /// verification feedback. Default impl loops via [`DapBackend::core`];
+    /// the RPC backend overrides this to issue a single `core/set_hw_bps`
+    /// round trip.
     async fn set_hw_breakpoints(
         &mut self,
         core_index: usize,
         addresses: Vec<u64>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<bool>, Error> {
         let mut core = self.core(core_index)?;
+        let mut out = Vec::with_capacity(addresses.len());
         for address in addresses {
-            core.set_hw_breakpoint(address)?;
+            out.push(core.set_hw_breakpoint(address).is_ok());
         }
-        Ok(())
+        Ok(out)
     }
 
     /// Clear hardware breakpoints at all `addresses` in one round trip.
@@ -86,7 +89,11 @@ pub trait DapBackend {
     ) -> Result<(), Error> {
         let mut core = self.core(core_index)?;
         for address in addresses {
-            core.clear_hw_breakpoint(address)?;
+            match core.clear_hw_breakpoint(address) {
+                Ok(()) => {}
+                Err(Error::BreakpointOperation(probe_rs::BreakpointError::NotFound(_))) => {}
+                Err(e) => return Err(e),
+            }
         }
         Ok(())
     }

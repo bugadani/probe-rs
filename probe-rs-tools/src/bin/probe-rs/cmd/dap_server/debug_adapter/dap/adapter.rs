@@ -16,9 +16,10 @@ use crate::cmd::dap_server::{
     server::{
         configuration::ConsoleLog,
         core_data::CoreHandle,
-        session_data::{BreakpointType, SourceLocationScope},
+        session_data::{ActiveBreakpoint, BreakpointType, SessionData, SourceLocationScope},
     },
 };
+use crate::cmd::dap_server::backend::DapBackend;
 use crate::util::rtt;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose as base64_engine};
@@ -29,7 +30,7 @@ use probe_rs::{
     RegisterValue, UnwindRule,
 };
 use probe_rs_debug::{
-    ColumnType, ObjectRef, SteppingMode, VariableName, VerifiedBreakpoint,
+    ColumnType, ObjectRef, SourceLocation, SteppingMode, VariableName, VerifiedBreakpoint,
     exception_handler_for_core,
     registers::{DebugRegister, DebugRegisters},
     stack_frame::StackFrameInfo,
@@ -902,9 +903,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response::<()>(request, Ok(None))
     }
 
-    pub(crate) fn set_breakpoints(
+    pub(crate) async fn set_breakpoints<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let args: SetBreakpointsArguments = get_arguments(self, request)?;
@@ -917,13 +919,85 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 ))),
             );
         };
+        let source = args.source.clone();
+        let typed_source_path = NativePathBuf::from(source_path).to_typed_path_buf();
+        let requested_bps = args.breakpoints.as_deref().unwrap_or_default().to_vec();
 
-        // Always clear existing breakpoints for the specified `[crate::debug_adapter::dap_types::Source]` before setting new ones.
-        // The DAP Specification doesn't make allowances for deleting and setting individual breakpoints for a specific `Source`.
-        if let Err(error) = target_core.clear_breakpoints(BreakpointType::SourceBreakpoint {
-            source: Box::new(args.source.clone()),
-            location: SourceLocationScope::All,
-        }) {
+        // Resolve addresses client-side and collect existing breakpoints for
+        // this source to clear. Both happen against `core_data` only.
+        let (resolved, clear_addrs) = {
+            let Some(core_data) = session_data
+                .core_data
+                .iter_mut()
+                .find(|cd| cd.core_index == core_index)
+            else {
+                return self.send_response::<()>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "No core data for core {core_index}"
+                    ))),
+                );
+            };
+
+            let clear_addrs: Vec<u64> = core_data
+                .breakpoints
+                .iter()
+                .filter(|ab| {
+                    matches!(
+                        &ab.breakpoint_type,
+                        BreakpointType::SourceBreakpoint { source: bp_source, .. }
+                            if bp_source.as_ref() == &source
+                    )
+                })
+                .map(|ab| ab.address)
+                .collect();
+            core_data.breakpoints.retain(|ab| {
+                !matches!(
+                    &ab.breakpoint_type,
+                    BreakpointType::SourceBreakpoint { source: bp_source, .. }
+                        if bp_source.as_ref() == &source
+                )
+            });
+
+            let Some(debug_info) = &core_data.debug_info else {
+                return self.send_response::<()>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Cannot set source breakpoint without debug information."
+                    ))),
+                );
+            };
+
+            let mut resolved: Vec<Result<VerifiedBreakpoint, String>> =
+                Vec::with_capacity(requested_bps.len());
+            for bp in &requested_bps {
+                let line = if self.lines_start_at_1 {
+                    bp.line as u64
+                } else {
+                    bp.line as u64 + 1
+                };
+                let column = if self.columns_start_at_1 {
+                    Some(bp.column.unwrap_or(1) as u64)
+                } else {
+                    Some(bp.column.unwrap_or(0) as u64 + 1)
+                };
+                match debug_info.get_breakpoint_location(typed_source_path.to_path(), line, column)
+                {
+                    Ok(vb) => resolved.push(Ok(vb)),
+                    Err(e) => resolved.push(Err(format!(
+                        "Cannot set breakpoint here. Try reducing compile time-, and link time-, optimization in your build configuration, or choose a different source location: {e}"
+                    ))),
+                }
+            }
+            (resolved, clear_addrs)
+        };
+
+        // One round trip to clear the old set, one to set the new set.
+        if let Err(error) = session_data
+            .backend
+            .clear_hw_breakpoints(core_index, clear_addrs)
+            .await
+        {
             return self.send_response::<()>(
                 request,
                 Err(&DebuggerError::Other(anyhow!(
@@ -931,73 +1005,96 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 ))),
             );
         }
+        let set_addrs: Vec<u64> = resolved
+            .iter()
+            .filter_map(|r| r.as_ref().ok().map(|vb| vb.address))
+            .collect();
+        let set_results = session_data
+            .backend
+            .set_hw_breakpoints(core_index, set_addrs)
+            .await
+            .map_err(|e| DebuggerError::Other(anyhow!("Failed to set breakpoints: {e}")))?;
 
-        // For returning in the Response
-        let mut created_breakpoints: Vec<Breakpoint> = Vec::new();
-
-        // Assume that the path is native to the current OS
-        let source_path = NativePathBuf::from(source_path).to_typed_path_buf();
-
-        for bp in args.breakpoints.as_deref().unwrap_or_default() {
-            // Some overrides to improve breakpoint accuracy when `DebugInfo::get_breakpoint_location()` has to select the best from multiple options
-            let requested_breakpoint_line = if self.lines_start_at_1 {
-                // If the debug client uses 1 based numbering, then we can use it as is.
-                bp.line as u64
-            } else {
-                // If the debug client uses 0 based numbering, then we bump the number by 1
-                bp.line as u64 + 1
-            };
-            let requested_breakpoint_column = if self.columns_start_at_1 {
-                // If the debug client uses 1 based numbering, then we can use it as is.
-                Some(bp.column.unwrap_or(1) as u64)
-            } else {
-                // If the debug client uses 0 based numbering, then we bump the number by 1
-                Some(bp.column.unwrap_or(0) as u64 + 1)
-            };
-
-            let bp = match target_core.verify_and_set_breakpoint(
-                source_path.to_path(),
-                requested_breakpoint_line,
-                requested_breakpoint_column,
-                &args.source,
-            ) {
-                Ok(VerifiedBreakpoint {
-                    address,
-                    source_location,
-                }) => Breakpoint {
-                    column: source_location.column.map(|col| match col {
-                        ColumnType::LeftEdge => 0_i64,
-                        ColumnType::Column(c) => c as i64,
-                    }),
-                    end_column: None,
-                    end_line: None,
-                    id: Some(address as i64),
-                    line: source_location.line.map(|line| line as i64),
-                    message: Some(format!(
-                        "Source breakpoint at memory address: {address:#010X}"
-                    )),
-                    source: Some(args.source.clone()),
-                    instruction_reference: Some(format!("{address:#010X}")),
-                    offset: None,
-                    verified: true,
-                    reason: None,
-                },
-                Err(error) => Breakpoint {
+        let mut created_breakpoints: Vec<Breakpoint> = Vec::with_capacity(requested_bps.len());
+        let mut to_cache: Vec<(u64, SourceLocation)> = Vec::new();
+        let mut set_idx = 0;
+        for (i, bp) in requested_bps.iter().enumerate() {
+            match &resolved[i] {
+                Err(msg) => created_breakpoints.push(Breakpoint {
                     column: None,
                     end_column: None,
                     end_line: None,
                     id: None,
                     line: Some(bp.line),
-                    message: Some(error.to_string()),
+                    message: Some(msg.clone()),
                     source: None,
                     instruction_reference: None,
                     offset: None,
                     verified: false,
                     reason: Some("failed".to_string()),
-                },
-            };
+                }),
+                Ok(VerifiedBreakpoint {
+                    address,
+                    source_location,
+                }) => {
+                    let verified = set_results.get(set_idx).copied().unwrap_or(false);
+                    set_idx += 1;
+                    if verified {
+                        to_cache.push((*address, source_location.clone()));
+                        created_breakpoints.push(Breakpoint {
+                            column: source_location.column.map(|col| match col {
+                                ColumnType::LeftEdge => 0_i64,
+                                ColumnType::Column(c) => c as i64,
+                            }),
+                            end_column: None,
+                            end_line: None,
+                            id: Some(*address as i64),
+                            line: source_location.line.map(|line| line as i64),
+                            message: Some(format!(
+                                "Source breakpoint at memory address: {address:#010X}"
+                            )),
+                            source: Some(source.clone()),
+                            instruction_reference: Some(format!("{address:#010X}")),
+                            offset: None,
+                            verified: true,
+                            reason: None,
+                        });
+                    } else {
+                        created_breakpoints.push(Breakpoint {
+                            column: None,
+                            end_column: None,
+                            end_line: None,
+                            id: None,
+                            line: Some(bp.line),
+                            message: Some(format!(
+                                "Failed to set hardware breakpoint at {address:#010X}"
+                            )),
+                            source: None,
+                            instruction_reference: None,
+                            offset: None,
+                            verified: false,
+                            reason: Some("failed".to_string()),
+                        });
+                    }
+                }
+            }
+        }
 
-            created_breakpoints.push(bp);
+        // Update the client-side breakpoint cache.
+        if let Some(core_data) = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            for (address, source_location) in to_cache {
+                core_data.breakpoints.push(ActiveBreakpoint {
+                    breakpoint_type: BreakpointType::SourceBreakpoint {
+                        source: Box::new(source.clone()),
+                        location: SourceLocationScope::Specific(source_location),
+                    },
+                    address,
+                });
+            }
         }
 
         let breakpoint_body = SetBreakpointsResponseBody {

@@ -985,7 +985,7 @@ impl CoreInterface {
             .await
     }
 
-    pub async fn set_hw_breakpoints(&self, addresses: Vec<u64>) -> anyhow::Result<()> {
+    pub async fn set_hw_breakpoints(&self, addresses: Vec<u64>) -> anyhow::Result<Vec<bool>> {
         self.client
             .send_resp::<CoreSetHwBpsEndpoint, _>(&CoreBreakpointsRequest {
                 sessid: self.sessid,

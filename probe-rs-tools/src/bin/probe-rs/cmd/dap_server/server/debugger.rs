@@ -155,38 +155,36 @@ impl Debugger {
         // to a multi-core implementation that understands which MS DAP requests are core specific.
         let core_id = 0;
 
-        // Attach to the core. so that we have the handle available for processing the request.
-
         let Some(target_core_config) = self.config.core_configs.get(core_id) else {
             return Err(DebuggerError::Other(anyhow!(
                 "No core configuration found for core id {core_id}"
             )));
         };
-
-        let mut target_core = session_data
-            .attach_core(target_core_config.core_index)
-            .context("Unable to connect to target core")?;
-
-        let new_status = target_core.core_data.last_known_status;
+        let core_index = target_core_config.core_index;
 
         // For some operations, we need to make sure the core isn't sleeping, by calling `Core::halt()`.
         // When we do this, we need to flag it (`unhalt_me = true`), and later call `Core::run()` again.
         // NOTE: The target will exit sleep mode as a result of this command.
         let mut unhalt_me = false;
-
-        match request.command.as_ref() {
-            "configurationDone"
-            | "setBreakpoints"
-            | "setInstructionBreakpoints"
-            | "clearBreakpoint"
-            | "stackTrace"
-            | "threads"
-            | "scopes"
-            | "variables"
-            | "readMemory"
-            | "writeMemory"
-            | "disassemble"
-                if new_status == CoreStatus::Sleeping =>
+        {
+            let mut target_core = session_data
+                .attach_core(core_index)
+                .context("Unable to connect to target core")?;
+            let new_status = target_core.core_data.last_known_status;
+            if matches!(
+                request.command.as_ref(),
+                "configurationDone"
+                    | "setBreakpoints"
+                    | "setInstructionBreakpoints"
+                    | "clearBreakpoint"
+                    | "stackTrace"
+                    | "threads"
+                    | "scopes"
+                    | "variables"
+                    | "readMemory"
+                    | "writeMemory"
+                    | "disassemble"
+            ) && new_status == CoreStatus::Sleeping
             {
                 if let Err(error) = target_core.core.halt(Duration::from_millis(100)) {
                     let err = DebuggerError::from(error);
@@ -195,17 +193,36 @@ impl Debugger {
                 }
                 unhalt_me = true;
             }
-            _ => {}
         }
 
-        // Now we are ready to execute supported commands, or return an error if it isn't supported.
-        let debug_session = dispatch_request(debug_adapter, request, &mut target_core)
-            .context("Error executing request.")?;
+        // Route batched-breakpoint handling at the session level (it needs
+        // `&mut backend` for a single round trip); everything else goes through
+        // the per-core `dispatch_request` path.
+        let debug_session = match request.command.as_ref() {
+            "setBreakpoints" => {
+                debug_adapter
+                    .set_breakpoints(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
+            _ => {
+                let mut target_core = session_data
+                    .attach_core(core_index)
+                    .context("Unable to connect to target core")?;
+                dispatch_request(debug_adapter, request, &mut target_core)
+                    .context("Error executing request.")?
+            }
+        };
 
-        if unhalt_me && let Err(error) = target_core.core.run() {
-            let error = DebuggerError::Other(anyhow!(error).context("Failed to resume target."));
-            debug_adapter.show_error_message(&error)?;
-            return Err(error);
+        if unhalt_me {
+            let mut target_core = session_data
+                .attach_core(core_index)
+                .context("Unable to connect to target core")?;
+            if let Err(error) = target_core.core.run() {
+                let error = DebuggerError::Other(anyhow!(error).context("Failed to resume target."));
+                debug_adapter.show_error_message(&error)?;
+                return Err(error);
+            }
         }
 
         Ok(debug_session)
@@ -888,7 +905,6 @@ fn dispatch_request<P: ProtocolAdapter>(
 
             return Ok(DebugSessionStatus::Restart(request));
         }
-        "setBreakpoints" => debug_adapter.set_breakpoints(target_core, &request)?,
         "setInstructionBreakpoints" => {
             debug_adapter.set_instruction_breakpoints(target_core, &request)?
         }

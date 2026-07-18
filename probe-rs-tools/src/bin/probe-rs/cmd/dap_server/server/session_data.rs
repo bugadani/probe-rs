@@ -47,11 +47,9 @@ pub(crate) enum BreakpointType {
     },
 }
 
-/// Breakpoint requests will either be refer to a specific `SourceLocation`, or unspecified, in which case it will refer to
-/// all breakpoints for the Source.
+/// Breakpoint requests refer to a specific `SourceLocation` for a `Source`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SourceLocationScope {
-    All,
     Specific(SourceLocation),
 }
 

@@ -420,7 +420,7 @@ impl DapBackend for RpcBackend {
         &mut self,
         core_index: usize,
         addresses: Vec<u64>,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<bool>, Error> {
         let client = RpcCoreClient::new_for_backend(
             self.client.clone(),
             self.sessid,
