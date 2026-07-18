@@ -388,19 +388,41 @@ impl DapBackend for RpcBackend {
         })
     }
 
-    /// Single-round-trip stack unwind for the RPC backend.
-    ///
-    /// The server performs the register-state unwind (the round-trip-heavy
-    /// part: one memory read per unwind step) and returns per-frame register
-    /// dumps plus metadata. We then rebuild [`StackFrame`]s locally, using the
-    /// DAP server's own [`DebugInfo`] to recompute `local_variables` and
-    /// accurate `source_location`s via [`DebugInfo::get_stackframe_info`].
-    ///
-    /// Inlined functions are handled per *unwind step*: all frames produced
-    /// by one server-side `get_stackframe_info` call share an identical
-    /// register dump, so we group consecutive wire frames with equal
-    /// `registers` and issue a single local `get_stackframe_info` for the
-    /// group, zipping the returned inlined chain against the group in order.
+    /// `.await` the `core/status` round trip directly. The `GetCommandLine`
+    /// semihosting variant still needs target memory reads, reconstructed
+    /// via a short-lived [`RpcRemoteCore`].
+    async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        let wire: WireCoreStatus = client.status().await.map_err(rpc_err)?;
+
+        if let WireCoreStatus::Halted(WireHaltReason::Breakpoint(
+            WireBreakpointCause::Semihosting(WireSemihostingCommand::GetCommandLine {
+                block_address,
+            }),
+        )) = wire
+        {
+            let mut core = self.core(core_index)?;
+            let buffer = Buffer::from_block_at(&mut core, block_address)?;
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(SemihostingCommand::GetCommandLine(
+                    GetCommandLineRequest::new(buffer),
+                )),
+            )));
+        }
+        Ok(wire.into())
+    }
+
+    /// Single-round-trip stack unwind: the server unwinds (the round-trip-
+    /// heavy part) and returns per-frame registers + metadata; we rebuild
+    /// [`StackFrame`]s locally, recomputing `local_variables` and
+    /// `source_location`s from the DAP server's own [`DebugInfo`].
+    /// Consecutive wire frames sharing a register dump came from one
+    /// server-side `get_stackframe_info` call (an inlined chain), so they
+    /// are grouped and rebuilt with a single local `get_stackframe_info`.
     async fn unwind_stack(
         &mut self,
         core_index: usize,
@@ -441,10 +463,6 @@ impl DapBackend for RpcBackend {
 
         let mut idx = 0;
         while idx < wire_frames.len() {
-            // Group consecutive wire frames sharing an identical register
-            // dump: they all came from one server-side `get_stackframe_info`
-            // call (an inlined chain), so we rebuild them with a single local
-            // `get_stackframe_info` call.
             let group_start = idx;
             let group_regs = wire_frames[idx].registers.clone();
             while idx < wire_frames.len() && wire_frames[idx].registers == group_regs {
@@ -460,8 +478,7 @@ impl DapBackend for RpcBackend {
             let registers = rebuild_debug_registers(metadata.registers, &group_regs);
 
             // `get_stackframe_info` returns the inlined chain in DIE order
-            // (outermost first, innermost last). Reverse to match the wire
-            // group order (innermost first, outermost last) and zip.
+            // (outermost first); reverse to match wire order (innermost first).
             let chain = debug_info
                 .get_stackframe_info(&mut core, step_pc, cfa, &registers)
                 .ok()
@@ -475,9 +492,6 @@ impl DapBackend for RpcBackend {
                     .get(offset)
                     .map(|cf| (cf.source_location.clone(), cf.local_variables.clone()))
                     .unwrap_or_else(|| {
-                        // No matching rebuilt frame (handler / unknown / no
-                        // debug info at this PC): keep the wire metadata and
-                        // fall back to a best-effort source location.
                         let pc_u64: u64 = pc_value.try_into().unwrap_or(0);
                         (debug_info.get_source_location(pc_u64), None)
                     });

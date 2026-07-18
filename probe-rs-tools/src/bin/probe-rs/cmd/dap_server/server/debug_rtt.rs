@@ -14,26 +14,18 @@ use anyhow::anyhow;
 use probe_rs::{Core, rtt::Error as RttError};
 use tokio::runtime::Handle;
 
-/// Per-channel result of a batched [`RttClientHandle::poll_channels`] call:
-/// newly-available bytes (or a per-channel error), keyed by channel number.
+/// Per-channel result of a batched [`RttClientHandle::poll_channels`] call.
 pub(crate) type ChannelPollResults<'c> = Vec<(u32, Result<Cow<'c, [u8]>, RttError>)>;
 
-/// The RTT client the DAP server drives.
-///
-/// `Local` is the historical path: a [`RttClient`] that reads the target's
-/// RTT control block and channel buffers directly through a [`Core`]. With
-/// the RPC backend that `Core` is a `RpcRemoteCore`, so every poll expands to
-/// many memory-read round trips.
-///
-/// `Remote` instead drives the **server-side** `RttClient` (created via the
-/// `create_rtt` RPC endpoint and stored under a [`Key`]) so each poll is a
-/// single `rtt/poll_up` round trip.
+/// The RTT client the DAP server drives. `Local` reads the target directly
+/// through a [`Core`]; `Remote` drives the server-side `RttClient` so each
+/// poll is a single `rtt/poll_up` round trip.
 pub enum RttClientHandle {
     Local(RttClient),
     Remote(RemoteRttClient),
 }
 
-/// Handle to the server-side [`RttClient`], used by the RPC-backed DAP server.
+/// Handle to the server-side [`RttClient`].
 pub struct RemoteRttClient {
     handle: Handle,
     session: SessionInterface,
@@ -55,18 +47,10 @@ impl RemoteRttClient {
 }
 
 impl RttClientHandle {
-    /// Poll multiple up channels in one go and return the newly-available
-    /// bytes for each, keyed by channel number.
-    ///
-    /// The local path copies each channel's buffered bytes (the local
-    /// `RttClient::poll_channel` borrows an internal buffer that cannot
-    /// be held across multiple channels). The remote path issues a single
-    /// `rtt/poll_up` round trip for all channels, `.await`-ed directly (no
-    /// `block_in_place`/`block_on` bridge).
-    ///
-    /// Per-channel errors are reported inline (as `Err`) so the caller can
-    /// surface them per channel; a top-level `Err` means the batch itself
-    /// failed (e.g. the RPC request errored).
+    /// Poll multiple up channels in one go. The local path copies each
+    /// channel's bytes (its `poll_channel` buffer can't span channels); the
+    /// remote path `.await`s a single `rtt/poll_up` round trip. Per-channel
+    /// errors are reported inline; a top-level `Err` means the batch failed.
     async fn poll_channels<'c>(
         &'c mut self,
         core: &mut Core<'_>,
@@ -151,9 +135,8 @@ impl RttConnection {
         debug_adapter: &mut DebugAdapter<P>,
         target_core: &mut Core<'_>,
     ) -> bool {
-        // Only poll channels that the client has opened an output window
-        // for — pulling from a channel with no window would drain target
-        // buffers prematurely.
+        // Only poll channels with an open client window; draining a closed
+        // channel would drop target buffers prematurely.
         let windowed: Vec<u32> = self
             .debugger_rtt_channels
             .iter()
@@ -217,8 +200,8 @@ pub(crate) struct DebuggerRttChannel {
 }
 
 impl DebuggerRttChannel {
-    /// Decode already-fetched `bytes` for this channel and forward them to
-    /// the DAP client. Returns whether any data was emitted.
+    /// Decode already-fetched `bytes` for this channel and forward them.
+    /// Returns whether any data was emitted.
     pub(crate) fn process_bytes<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,

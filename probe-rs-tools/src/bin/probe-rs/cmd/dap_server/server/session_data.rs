@@ -366,6 +366,30 @@ impl<B: DapBackend> SessionData<B> {
         let mut needs_unwind: Vec<usize> = Vec::new();
 
         for core_config in session_config.core_configs.iter() {
+            // Fetch status via the backend (RPC backend `.await`s the
+            // `core/status` round trip directly). Done before `attach_core`
+            // so the `&mut self.backend` borrow is released before
+            // `attach_core` reborrows it.
+            let current_core_status = if debug_adapter.configuration_is_done() {
+                match self.backend.status(core_config.core_index).await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        let err = DebuggerError::from(error);
+                        let _ = debug_adapter.show_error_message(&err);
+                        if let Some(cd) = self
+                            .core_data
+                            .iter_mut()
+                            .find(|c| c.core_index == core_config.core_index)
+                        {
+                            cd.last_known_status = CoreStatus::Unknown;
+                        }
+                        return Err(err);
+                    }
+                }
+            } else {
+                CoreStatus::Unknown
+            };
+
             let Ok(mut target_core) = self.attach_core(core_config.core_index) else {
                 tracing::debug!(
                     "Failed to attach to target core #{}. Cannot poll for RTT data.",
@@ -374,13 +398,11 @@ impl<B: DapBackend> SessionData<B> {
                 continue;
             };
 
-            // poll_core will not tell us if the core's status has changed,
-            // so we need to keep track of the previous status.
             let previous_core_status = target_core.core_data.last_known_status;
 
-            // We need to poll the core to determine its status.
-            let mut current_core_status =
-                target_core.poll_core(debug_adapter).inspect_err(|error| {
+            let mut current_core_status = target_core
+                .process_core_status(debug_adapter, current_core_status)
+                .inspect_err(|error| {
                     let _ = debug_adapter.show_error_message(error);
                 })?;
 
@@ -465,21 +487,16 @@ impl<B: DapBackend> SessionData<B> {
                         Some(debug_info.create_static_scope_cache());
                 }
 
-                // Defer the unwind: it goes through `DapBackend::unwind_stack`,
-                // which for the RPC backend takes `&mut self.backend` and
-                // cannot run while this `CoreHandle` is alive.
+                // Defer the unwind: `DapBackend::unwind_stack` borrows
+                // `&mut self.backend`, which the live `CoreHandle` already
+                // holds.
                 needs_unwind.push(core_config.core_index);
             }
         }
 
-        // Now that the per-core loop has dropped all `CoreHandle`s, perform
-        // the deferred unwinds. The local backend does the unwind here in
-        // memory; the RPC backend issues a single `stack_trace/rich` round
-        // trip and rebuilds locals from the local `DebugInfo`.
-        //
-        // We resolve each unwind fully (dropping the `&mut self.backend`
-        // borrow it holds) before touching `self.core_data`, so no borrow is
-        // held across the `.await`.
+        // Deferred unwinds (per-core `CoreHandle`s are now dropped). Resolve
+        // each fully before touching `self.core_data` so no borrow is held
+        // across the `.await`.
         for &core_index in &needs_unwind {
             let program_binary = session_config
                 .core_configs

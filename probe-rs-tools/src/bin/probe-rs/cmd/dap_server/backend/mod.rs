@@ -16,7 +16,7 @@ pub mod rpc;
 
 use std::path::Path;
 
-use probe_rs::{Core, CoreType, Error, Session, Target, flashing::FlashError};
+use probe_rs::{Core, CoreStatus, CoreType, Error, Session, Target, flashing::FlashError};
 use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
 use tokio::runtime::Handle;
 
@@ -24,33 +24,18 @@ use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
 
-/// Run an async future to completion on the current tokio runtime, without
-/// actually blocking the runtime (by releasing the worker thread via
-/// [`tokio::task::block_in_place`]).
-///
-/// This is the single sync↔async bridge used by the DAP server (which is
-/// synchronous) to drive async RPC calls. It was previously duplicated in
-/// `backend/rpc.rs`, `server/debug_rtt.rs` and `server/core_data.rs`.
+/// Sync↔async bridge: drive `fut` to completion on `handle` without
+/// blocking the runtime (via `block_in_place`).
 pub(crate) fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
     tokio::task::block_in_place(|| handle.block_on(fut))
 }
 
-/// Seed for driving the **server-side** RTT client over RPC.
-///
-/// Only the RPC backend returns `Some` from [`DapBackend::rtt_remote_seed`];
-/// the local [`Session`] backend returns `None`, in which case the DAP server
-/// falls back to a local [`RttClient`] that reads the target directly.
-///
-/// With the RPC backend, RTT polling goes through the server-side `RttClient`
-/// (created via the `create_rtt` endpoint and polled via `rtt/poll_up`),
-/// collapsing the per-memory-read round-trip storm of a client-side
-/// `RttClient` into one request per channel per poll.
+/// Seed for driving the server-side RTT client over RPC. Only the RPC
+/// backend returns `Some` from [`DapBackend::rtt_remote_seed`]; the local
+/// [`Session`] backend returns `None` and uses a local `RttClient` instead.
 #[derive(Clone)]
 pub struct RttRemoteSeed {
-    /// Tokio runtime handle used to bridge the synchronous DAP server to
-    /// the async RPC client (same pattern as `RpcRemoteCore`).
     pub handle: Handle,
-    /// RPC session interface used to issue RTT requests.
     pub session: crate::rpc::client::SessionInterface,
 }
 use crate::util::flash::build_loader;
@@ -71,24 +56,23 @@ pub trait DapBackend {
     /// Return a handle to the requested core.
     fn core(&mut self, core_index: usize) -> Result<Core<'_>, Error>;
 
-    /// If `Some`, the DAP server should drive the **server-side** RTT client
-    /// over RPC (RPC backend). If `None`, it uses a local `RttClient`
-    /// reading the target directly (local `Session` backend).
+    /// Read the current [`CoreStatus`] of `core_index`. `async` so the RPC
+    /// backend can `.await` the round trip directly.
+    async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
+        let mut core = self.core(core_index)?;
+        core.status()
+    }
+
+    /// If `Some`, drive the server-side RTT client over RPC (RPC backend);
+    /// if `None`, use a local `RttClient` (local `Session` backend).
     fn rtt_remote_seed(&self) -> Option<RttRemoteSeed> {
         None
     }
 
-    /// Build the stack frames for `core_index` while it is halted.
-    ///
-    /// This is `async` so the RPC backend can `.await` the
-    /// `stack_trace/rich` round trip directly instead of bridging through
-    /// `block_in_place` + `block_on` (see [`super::rpc::RpcBackend`]). The
-    /// default implementation performs the unwind locally, reading target
-    /// memory through the core returned by [`DapBackend::core`]; the RPC
-    /// backend overrides this to issue a single round trip for the
-    /// register-state unwind and then rebuild local variables from the
-    /// supplied `debug_info` (which the DAP server holds locally),
-    /// collapsing the per-memory-read round-trip storm into one request.
+    /// Build the stack frames for `core_index` while it is halted. The
+    /// default unwinds locally via [`DapBackend::core`]; the RPC backend
+    /// overrides this to issue a single `stack_trace/rich` round trip and
+    /// rebuild locals from the supplied `debug_info`.
     async fn unwind_stack(
         &mut self,
         core_index: usize,

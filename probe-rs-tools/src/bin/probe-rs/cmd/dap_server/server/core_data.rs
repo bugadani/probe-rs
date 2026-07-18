@@ -41,8 +41,7 @@ use probe_rs_debug::{
 use time::UtcOffset;
 use typed_path::TypedPath;
 
-/// Convert the DAP server's [`ScanRegion`] (probe-rs) into the wire
-/// [`WireScanRegion`] accepted by the `create_rtt` RPC endpoint.
+/// Convert [`ScanRegion`] (probe-rs) into the wire [`WireScanRegion`].
 fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
     match scan {
         ScanRegion::Ram => WireScanRegion::Ram,
@@ -119,35 +118,18 @@ impl CoreHandle<'_> {
         debug_adapter.all_cores_halted = false;
     }
 
-    /// - Whenever we check the status, we compare it against `last_known_status` and send the appropriate event to the client.
-    /// - If we cannot determine the core status, then there is no sense in continuing the debug session, so please propagate the error.
-    /// - If the core status has changed, then we update `last_known_status` to the new value, and return `true` as part of the Result<>.
-    pub(crate) fn poll_core<P: ProtocolAdapter>(
+    /// Process a freshly-fetched [`CoreStatus`]: compare against
+    /// `last_known_status`, update it, and emit the appropriate DAP event.
+    /// The status is fetched by the caller via
+    /// [`crate::cmd::dap_server::backend::DapBackend::status`].
+    pub(crate) fn process_core_status<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
+        status: CoreStatus,
     ) -> Result<CoreStatus, DebuggerError> {
-        if !debug_adapter.configuration_is_done() {
-            tracing::trace!(
-                "Ignored last_known_status: {:?} during `configuration_done=false`, and reset it to {:?}.",
-                self.core_data.last_known_status,
-                CoreStatus::Unknown
-            );
-            return Ok(CoreStatus::Unknown);
+        if status == self.core_data.last_known_status {
+            return Ok(status);
         }
-
-        let status = match self.core.status() {
-            Ok(status) => {
-                if status == self.core_data.last_known_status {
-                    return Ok(status);
-                }
-
-                status
-            }
-            Err(error) => {
-                self.core_data.last_known_status = CoreStatus::Unknown;
-                return Err(error.into());
-            }
-        };
 
         // Update this unconditionally, because halted() can have more than one variant.
         self.core_data.last_known_status = status;
@@ -297,15 +279,14 @@ impl CoreHandle<'_> {
             })
         };
 
-        // Resolve the RTT client handle plus the up/down channel metadata.
-        // Remote (RPC) path drives the server-side `RttClient`; the local
-        // path reads the target directly through `self.core`.
+        // Resolve the RTT client handle + up/down channel metadata. The
+        // remote path drives the server-side `RttClient`; the local path
+        // reads the target directly via `self.core`.
         let (client, up_channels, down_channels): (
             debug_rtt::RttClientHandle,
             ChannelNames,
             ChannelNames,
         ) = if let Some(seed) = self.core_data.rtt_remote_seed.clone() {
-            // Remote (RPC) path.
             let rtt_key = if let Some(k) = self.core_data.rtt_remote_handle {
                 k
             } else {
@@ -330,9 +311,7 @@ impl CoreHandle<'_> {
                 .map_err(|e| anyhow!("Failed to query remote RTT channels: {e}"))?;
 
             if channels.up.is_empty() && channels.down.is_empty() {
-                // Not attached to the control block yet; retry on the next
-                // poll. Keep the cached handle so we don't re-create the
-                // server-side client.
+                // Not attached yet; retry next poll (keep the cached handle).
                 return Ok(());
             }
 
@@ -355,7 +334,7 @@ impl CoreHandle<'_> {
 
             (handle, up, down)
         } else {
-            // Local path (unchanged behavior).
+            // Local path.
             let client = if let Some(client) = self.core_data.rtt_client.as_mut() {
                 client
             } else {
@@ -374,7 +353,6 @@ impl CoreHandle<'_> {
                 return Ok(());
             };
 
-            // Now that we're attached, we can transform our state.
             let Some(client) = self.core_data.rtt_client.take() else {
                 return Ok(());
             };
