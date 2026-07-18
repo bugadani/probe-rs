@@ -167,10 +167,12 @@ impl Debugger {
         // NOTE: The target will exit sleep mode as a result of this command.
         let mut unhalt_me = false;
         {
-            let mut target_core = session_data
-                .attach_core(core_index)
-                .context("Unable to connect to target core")?;
-            let new_status = target_core.core_data.last_known_status;
+            let new_status = session_data
+                .core_data
+                .iter()
+                .find(|cd| cd.core_index == core_index)
+                .map(|cd| cd.last_known_status)
+                .unwrap_or(CoreStatus::Unknown);
             if matches!(
                 request.command.as_ref(),
                 "configurationDone"
@@ -186,7 +188,11 @@ impl Debugger {
                     | "disassemble"
             ) && new_status == CoreStatus::Sleeping
             {
-                if let Err(error) = target_core.core.halt(Duration::from_millis(100)) {
+                if let Err(error) = session_data
+                    .backend
+                    .halt(core_index, Duration::from_millis(100))
+                    .await
+                {
                     let err = DebuggerError::from(error);
                     debug_adapter.send_response::<()>(&request, Err(&err))?;
                     return Err(err);
@@ -223,6 +229,18 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "pause" => {
+                debug_adapter
+                    .pause(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
+            "continue" => {
+                debug_adapter
+                    .r#continue(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
@@ -232,15 +250,12 @@ impl Debugger {
             }
         };
 
-        if unhalt_me {
-            let mut target_core = session_data
-                .attach_core(core_index)
-                .context("Unable to connect to target core")?;
-            if let Err(error) = target_core.core.run() {
-                let error = DebuggerError::Other(anyhow!(error).context("Failed to resume target."));
-                debug_adapter.show_error_message(&error)?;
-                return Err(error);
-            }
+        if unhalt_me
+            && let Err(error) = session_data.backend.run(core_index).await
+        {
+            let error = DebuggerError::Other(anyhow!(error).context("Failed to resume target."));
+            debug_adapter.show_error_message(&error)?;
+            return Err(error);
         }
 
         Ok(debug_session)
@@ -909,7 +924,6 @@ fn dispatch_request<P: ProtocolAdapter>(
         "next" => debug_adapter.next(target_core, &request)?,
         "stepIn" => debug_adapter.step_in(target_core, &request)?,
         "stepOut" => debug_adapter.step_out(target_core, &request)?,
-        "pause" => debug_adapter.pause(target_core, &request)?,
         "setVariable" => debug_adapter.set_variable(target_core, &request)?,
         "configurationDone" => debug_adapter.configuration_done(target_core, &request)?,
         "threads" => debug_adapter.threads(target_core, &request)?,
@@ -925,7 +939,6 @@ fn dispatch_request<P: ProtocolAdapter>(
         "scopes" => debug_adapter.scopes(target_core, &request)?,
         "disassemble" => debug_adapter.disassemble(target_core, &request)?,
         "variables" => debug_adapter.variables(target_core, &request)?,
-        "continue" => debug_adapter.r#continue(target_core, &request)?,
         "evaluate" => debug_adapter.evaluate(target_core, &request)?,
         "completions" => debug_adapter.completions(target_core, &request)?,
 

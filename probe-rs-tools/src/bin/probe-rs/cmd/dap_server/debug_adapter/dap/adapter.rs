@@ -103,12 +103,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.configuration_done
     }
 
-    pub(crate) fn pause(
+    pub(crate) async fn pause<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        let response = match self.pause_impl(target_core) {
+        let response = match self.pause_impl_async(session_data, core_index).await {
             Ok(cpu_info) => Ok(Some(format!(
                 "Core stopped at address {:#010x}",
                 cpu_info.pc
@@ -117,6 +118,39 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         };
 
         self.send_response(request, response)
+    }
+
+    async fn pause_impl_async<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+    ) -> Result<CoreInformation> {
+        let cpu_info = session_data
+            .backend
+            .halt(core_index, Duration::from_millis(500))
+            .await?;
+        let new_status = CoreStatus::Halted(HaltReason::Request);
+        let event_body = Some(StoppedEventBody {
+            reason: "pause".to_owned(),
+            description: Some(new_status.short_long_status(Some(cpu_info.pc)).1),
+            thread_id: Some(core_index as i64),
+            preserve_focus_hint: Some(false),
+            text: None,
+            all_threads_stopped: Some(self.all_cores_halted),
+            hit_breakpoint_ids: None,
+        });
+        if let Some(cd) = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            cd.last_known_status = new_status;
+        }
+        self.dyn_send_event(
+            "stopped",
+            event_body.map(|event_body| serde_json::to_value(event_body).unwrap_or_default()),
+        )?;
+        Ok(cpu_info)
     }
 
     pub(crate) fn disconnect(
@@ -816,7 +850,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         if let Some(request) = request {
             // Now we can decide if it is appropriate to resume the core.
             if !self.halt_after_reset {
-                if let Err(error) = self.r#continue(target_core, request) {
+                if let Err(error) = self.continue_impl(target_core) {
                     return self.send_response::<()>(
                         request,
                         Err(&DebuggerError::Other(anyhow!("{error}"))),
@@ -902,7 +936,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 tracing::debug!(
                     "Core is halted, but not due to a breakpoint and halt_after_reset is not set. Continuing."
                 );
-                self.r#continue(target_core, request)?;
+                self.continue_impl(target_core)?;
             }
         }
 
@@ -1839,12 +1873,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         }
     }
 
-    pub(crate) fn r#continue(
+    pub(crate) async fn r#continue<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        match self.continue_impl(target_core) {
+        match self.continue_impl_async(session_data, core_index).await {
             Ok(all_continued) if request.command == "continue" => {
                 // If this continue was initiated as part of some other request, then do not respond.
                 self.send_response(
@@ -1860,6 +1895,23 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 Err(error)
             }
         }
+    }
+
+    async fn continue_impl_async<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+    ) -> Result<bool> {
+        session_data.backend.run(core_index).await?;
+        if let Some(cd) = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            cd.last_known_status = CoreStatus::Unknown;
+        }
+        self.all_cores_halted = false;
+        Ok(true) // TODO this isn't very useful?
     }
 
     /// Steps through the code at the requested granularity.

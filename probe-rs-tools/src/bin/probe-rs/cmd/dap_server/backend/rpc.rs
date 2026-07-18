@@ -329,6 +329,16 @@ impl RpcBackend {
             memory_cache: HashMap::new(),
         }
     }
+
+    /// Drop the register dump and memory region caches for `core_index`.
+    /// Called by the async `DapBackend` core-control overrides whenever an
+    /// operation runs that could change registers or memory.
+    fn invalidate_core_caches(&mut self, core_index: usize) {
+        self.register_cache.remove(&core_index);
+        if let Some(entry) = self.memory_cache.get_mut(&core_index) {
+            entry.clear();
+        }
+    }
 }
 
 /// Per-core information the [`RpcBackend`] caller has to gather at attach
@@ -474,6 +484,31 @@ impl DapBackend for RpcBackend {
             .write_memory_8(address, data)
             .await
             .map_err(rpc_err)
+    }
+
+    async fn halt(
+        &mut self,
+        core_index: usize,
+        timeout: Duration,
+    ) -> Result<CoreInformation, Error> {
+        self.invalidate_core_caches(core_index);
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        let info = client.halt(timeout).await.map_err(rpc_err)?;
+        Ok(info.into())
+    }
+
+    async fn run(&mut self, core_index: usize) -> Result<(), Error> {
+        self.invalidate_core_caches(core_index);
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        client.run().await.map_err(rpc_err)
     }
 
     /// Single-round-trip stack unwind: the server unwinds (the round-trip-

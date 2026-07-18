@@ -15,8 +15,12 @@
 pub mod rpc;
 
 use std::path::Path;
+use std::time::Duration;
 
-use probe_rs::{Core, CoreStatus, CoreType, Error, MemoryInterface, Session, Target, flashing::FlashError};
+use probe_rs::{
+    Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, Session, Target,
+    flashing::FlashError,
+};
 use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
 use tokio::runtime::Handle;
 
@@ -158,6 +162,20 @@ pub trait DapBackend {
     ) -> Result<(), Error> {
         let mut core = self.core(core_index)?;
         core.write_8(address, &data)
+    }
+
+    async fn halt(
+        &mut self,
+        core_index: usize,
+        timeout: Duration,
+    ) -> Result<CoreInformation, Error> {
+        let mut core = self.core(core_index)?;
+        core.halt(timeout)
+    }
+
+    async fn run(&mut self, core_index: usize) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        core.run()
     }
 
     /// If `Some`, drive the server-side RTT client over RPC (RPC backend);
