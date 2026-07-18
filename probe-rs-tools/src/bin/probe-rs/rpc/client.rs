@@ -43,9 +43,9 @@ use crate::{
             ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
             ReadMemory32Endpoint, ReadMemory64Endpoint, ResetCoreAndHaltEndpoint,
             ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint,
-            SelectProbeEndpoint, TakeRichStackTraceEndpoint, TakeStackTraceEndpoint,
+            ScopesEndpoint, SelectProbeEndpoint, TakeRichStackTraceEndpoint, TakeStackTraceEndpoint,
             TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint,
-            TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
+            TokioSpawner, VariablesEndpoint, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
             WriteMemory32Endpoint, WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
@@ -74,6 +74,9 @@ use crate::{
                 RttClientData, RttDownRequest, RttPollResult, ScanRegion,
             },
             stack_trace::{RichStackTraces, StackTraces, TakeStackTraceRequest},
+            debug_vars::{
+                ScopesRequest, VariablesRequest, WireScope, WireVariable,
+            },
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
         },
         transport::memory::{PostcardReceiver, PostcardSender, WireRx, WireTx},
@@ -741,6 +744,36 @@ impl SessionInterface {
                 sessid: self.sessid,
                 path: path.display().to_string(),
                 stack_frame_limit,
+            })
+            .await
+    }
+
+    /// Resolve DAP scopes for a frame on the server (single round trip
+    /// against the server-owned `VariableCache`).
+    pub async fn scopes(&self, core: u32, frame_id: u32) -> anyhow::Result<Vec<WireScope>> {
+        self.client
+            .send_resp::<ScopesEndpoint, _>(&ScopesRequest {
+                sessid: self.sessid,
+                core,
+                frame_id,
+            })
+            .await
+    }
+
+    /// Resolve DAP variables for a `variables_reference` on the server
+    /// (single round trip, with lazy expansion server-side).
+    pub async fn variables(
+        &self,
+        core: u32,
+        variables_reference: u32,
+        filter: Option<String>,
+    ) -> anyhow::Result<Vec<WireVariable>> {
+        self.client
+            .send_resp::<VariablesEndpoint, _>(&VariablesRequest {
+                sessid: self.sessid,
+                core,
+                variables_reference,
+                filter,
             })
             .await
     }

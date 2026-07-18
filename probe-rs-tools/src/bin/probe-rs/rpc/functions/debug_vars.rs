@@ -43,7 +43,6 @@ pub struct WireVariable {
     pub memory_reference: Option<String>,
     pub indexed_variables: Option<i64>,
     pub named_variables: Option<i64>,
-    pub presentation_hint: Option<String>,
     pub type_: Option<String>,
     pub value: String,
     pub variables_reference: i64,

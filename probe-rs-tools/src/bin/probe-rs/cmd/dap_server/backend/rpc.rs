@@ -27,6 +27,7 @@ use tokio::runtime::Handle;
 
 use super::{DapBackend, FlashingBackend, block_on};
 use crate::cmd::dap_server::DebuggerError;
+use crate::cmd::dap_server::debug_adapter::dap::dap_types::{Scope, Variable};
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::{
     Key,
@@ -41,6 +42,7 @@ use crate::rpc::{
             VerifyResult,
         },
         stack_trace::{RichStackTraces, WireDebugRegister},
+        debug_vars::{WireScope, WireVariable},
     },
 };
 
@@ -582,6 +584,65 @@ impl DapBackend for RpcBackend {
         }
 
         Ok(frames)
+    }
+
+    async fn scopes(
+        &mut self,
+        core_index: usize,
+        frame_id: u32,
+    ) -> Result<Option<Vec<Scope>>, Error> {
+        let session = self.session_interface();
+        let wire = session
+            .scopes(core_index as u32, frame_id)
+            .await
+            .map_err(rpc_err)?;
+        Ok(Some(
+            wire.into_iter()
+                .map(|w| Scope {
+                    name: w.name,
+                    presentation_hint: w.presentation_hint,
+                    variables_reference: w.variables_reference,
+                    named_variables: w.named_variables,
+                    indexed_variables: w.indexed_variables,
+                    expensive: w.expensive,
+                    line: w.line,
+                    column: w.column,
+                    end_line: w.end_line,
+                    end_column: w.end_column,
+                    source: None,
+                })
+                .collect(),
+        ))
+    }
+
+    async fn variables(
+        &mut self,
+        core_index: usize,
+        variables_reference: u32,
+        filter: Option<String>,
+    ) -> Result<Option<Vec<Variable>>, Error> {
+        let session = self.session_interface();
+        let wire = session
+            .variables(core_index as u32, variables_reference, filter)
+            .await
+            .map_err(rpc_err)?;
+        Ok(Some(
+            wire.into_iter()
+                .map(|w| Variable {
+                    name: w.name,
+                    evaluate_name: w.evaluate_name,
+                    memory_reference: w.memory_reference,
+                    indexed_variables: w.indexed_variables,
+                    named_variables: w.named_variables,
+                    presentation_hint: None,
+                    type_: w.type_,
+                    value: w.value,
+                    variables_reference: w.variables_reference,
+                    declaration_location_reference: None,
+                    value_location_reference: None,
+                })
+                .collect(),
+        ))
     }
 }
 
