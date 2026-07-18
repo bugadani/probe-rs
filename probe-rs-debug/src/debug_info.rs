@@ -14,8 +14,7 @@ use gimli::{
 use object::read::{Object, ObjectSection};
 use probe_rs::{CoreRegister, Error, InstructionSet, MemoryInterface, RegisterRole, RegisterValue};
 use std::{
-    borrow, cmp::Ordering, num::NonZeroU64, ops::ControlFlow, path::Path, str::from_utf8,
-    sync::Arc,
+    borrow, cmp::Ordering, num::NonZeroU64, ops::ControlFlow, path::Path, str::from_utf8, sync::Arc,
 };
 use typed_path::{TypedPath, TypedPathBuf};
 

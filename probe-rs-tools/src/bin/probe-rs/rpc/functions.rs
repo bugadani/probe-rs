@@ -23,6 +23,10 @@ use crate::{
                 core_read_registers, core_run, core_set_hw_bp, core_set_hw_bps, core_status,
                 core_step, core_wait_halted, core_write_reg,
             },
+            debug_vars::{
+                ScopesRequest, VariablesRequest, scopes as debug_scopes,
+                variables as debug_variables,
+            },
             flash::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
                 VerifyRequest, VerifyResponse, build, erase, flash, verify,
@@ -78,6 +82,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod chip;
 pub mod core_ops;
+pub mod debug_vars;
 pub mod file;
 pub mod flash;
 pub mod info;
@@ -118,6 +123,12 @@ impl From<anyhow::Error> for RpcError {
 
 impl From<probe_rs::Error> for RpcError {
     fn from(e: probe_rs::Error) -> Self {
+        Self::from(anyhow!(e))
+    }
+}
+
+impl From<probe_rs_debug::DebugError> for RpcError {
+    fn from(e: probe_rs_debug::DebugError) -> Self {
         Self::from(anyhow!(e))
     }
 }
@@ -409,8 +420,11 @@ impl RpcContext {
 
     pub fn debug_states(
         &self,
-    ) -> std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<Key<Session>, crate::rpc::debug_state::ServerDebugState>>>
-    {
+    ) -> std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<Key<Session>, crate::rpc::debug_state::ServerDebugState>,
+        >,
+    > {
         self.state.debug_states.clone()
     }
 
@@ -479,6 +493,9 @@ type ReadMemory32Response = RpcResult<Vec<u32>>;
 type ReadMemory64Response = RpcResult<Vec<u64>>;
 type ReadBytesResponse = RpcResult<Vec<u8>>;
 
+type ScopesResponse = RpcResult<Vec<debug_vars::WireScope>>;
+type VariablesResponse = RpcResult<Vec<debug_vars::WireVariable>>;
+
 type WriteMemory8Request = WriteMemoryRequest<u8>;
 type WriteMemory16Request = WriteMemoryRequest<u16>;
 type WriteMemory32Request = WriteMemoryRequest<u32>;
@@ -509,6 +526,8 @@ endpoints! {
     | CleanUpRttEndpoint        | RttChannelRequest       | NoResponse              | "rtt/clean_up"     |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
     | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
+    | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
+    | VariablesEndpoint         | VariablesRequest        | VariablesResponse       | "stack_trace/variables" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
     | EraseEndpoint             | EraseRequest            | NoResponse              | "flash/erase"      |
@@ -540,7 +559,7 @@ endpoints! {
     | CoreWriteRegEndpoint      | CoreWriteRegRequest     | NoResponse                    | "core/write_reg"          |
     | CoreSetHwBpEndpoint       | CoreBreakpointRequest   | NoResponse                    | "core/set_hw_bp"          |
     | CoreClearHwBpEndpoint     | CoreBreakpointRequest   | NoResponse                    | "core/clear_hw_bp"        |
-    | CoreSetHwBpsEndpoint      | CoreBreakpointsRequest  | CoreSetHwBpsResponse           | "core/set_hw_bps"         |
+    | CoreSetHwBpsEndpoint      | CoreBreakpointsRequest  | CoreSetHwBpsResponse          | "core/set_hw_bps"         |
     | CoreClearHwBpsEndpoint    | CoreBreakpointsRequest  | NoResponse                    | "core/clear_hw_bps"       |
     | CoreAvailableBpUnitsEndpoint | CoreAccessRequest    | CoreU32Response               | "core/available_bp_units" |
     | CoreEnableVcEndpoint      | CoreVectorCatchRequest  | NoResponse                    | "core/enable_vc"          |
@@ -599,6 +618,8 @@ postcard_rpc::define_dispatch! {
         | CreateRttClientEndpoint   | async     | create_rtt_client |
         | TakeStackTraceEndpoint    | async     | take_stack_trace  |
         | TakeRichStackTraceEndpoint | async    | take_rich_stack_trace |
+        | ScopesEndpoint            | async     | debug_scopes      |
+        | VariablesEndpoint         | async     | debug_variables   |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |
         | EraseEndpoint             | async     | erase             |

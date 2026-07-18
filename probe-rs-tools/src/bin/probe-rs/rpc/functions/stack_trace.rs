@@ -295,7 +295,12 @@ pub async fn take_rich_stack_trace(
     // Per core: unwind, build locals via `get_stackframe_info`, build the
     // static scope cache. Returns the full `Vec<StackFrame>` (with locals),
     // the static cache, and the wire frames.
-    let cores: Vec<(u32, Vec<StackFrame>, VariableCache, Vec<RichStackTraceFrame>)> = session
+    let cores: Vec<(
+        u32,
+        Vec<StackFrame>,
+        VariableCache,
+        Vec<RichStackTraceFrame>,
+    )> = session
         .halted_access(|session| {
             let mut cores = Vec::new();
             for (idx, core_type) in session.list_cores() {
@@ -392,10 +397,12 @@ pub async fn take_rich_stack_trace(
             .collect(),
         None => cores
             .into_iter()
-            .map(|(core, _frames, _static_variables, rich_frames)| RichStackTrace {
-                core,
-                frames: rich_frames,
-            })
+            .map(
+                |(core, _frames, _static_variables, rich_frames)| RichStackTrace {
+                    core,
+                    frames: rich_frames,
+                },
+            )
             .collect(),
     };
     drop(guard);

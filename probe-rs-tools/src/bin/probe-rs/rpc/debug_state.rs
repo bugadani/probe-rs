@@ -29,7 +29,12 @@ impl ServerDebugState {
         }
     }
 
-    pub fn store_core(&mut self, core_index: usize, stack_frames: Vec<StackFrame>, static_variables: Option<VariableCache>) {
+    pub fn store_core(
+        &mut self,
+        core_index: usize,
+        stack_frames: Vec<StackFrame>,
+        static_variables: Option<VariableCache>,
+    ) {
         self.per_core.insert(
             core_index,
             CoreDebugState {
