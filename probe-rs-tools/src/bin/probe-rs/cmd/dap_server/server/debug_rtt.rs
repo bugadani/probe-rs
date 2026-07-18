@@ -61,12 +61,13 @@ impl RttClientHandle {
     /// The local path copies each channel's buffered bytes (the local
     /// `RttClient::poll_channel` borrows an internal buffer that cannot
     /// be held across multiple channels). The remote path issues a single
-    /// `rtt/poll_up` round trip for all channels.
+    /// `rtt/poll_up` round trip for all channels, `.await`-ed directly (no
+    /// `block_in_place`/`block_on` bridge).
     ///
     /// Per-channel errors are reported inline (as `Err`) so the caller can
     /// surface them per channel; a top-level `Err` means the batch itself
     /// failed (e.g. the RPC request errored).
-    fn poll_channels<'c>(
+    async fn poll_channels<'c>(
         &'c mut self,
         core: &mut Core<'_>,
         channels: &[u32],
@@ -83,13 +84,11 @@ impl RttClientHandle {
                 Ok(out)
             }
             RttClientHandle::Remote(remote) => {
-                let results = block_on(
-                    &remote.handle,
-                    remote
-                        .session
-                        .poll_rtt_up(remote.rtt_client, channels.to_vec()),
-                )
-                .map_err(RttError::Other)?;
+                let results = remote
+                    .session
+                    .poll_rtt_up(remote.rtt_client, channels.to_vec())
+                    .await
+                    .map_err(RttError::Other)?;
                 Ok(results
                     .into_iter()
                     .map(|r| {
@@ -147,7 +146,7 @@ pub struct RttConnection {
 impl RttConnection {
     /// Polls all the available channels for data and transmits data to the client.
     /// If at least one channel had data, then return a `true` status.
-    pub fn process_rtt_data<P: ProtocolAdapter>(
+    pub async fn process_rtt_data<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
         target_core: &mut Core<'_>,
@@ -165,7 +164,7 @@ impl RttConnection {
             return false;
         }
 
-        let results = match self.client.poll_channels(target_core, &windowed) {
+        let results = match self.client.poll_channels(target_core, &windowed).await {
             Ok(results) => results,
             Err(error) => {
                 debug_adapter

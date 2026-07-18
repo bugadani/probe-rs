@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::{ops::Range, path::Path};
 
 use super::session_data::{self, ActiveBreakpoint, BreakpointType, SourceLocationScope};
-use crate::cmd::dap_server::backend::{RttRemoteSeed, block_on};
+use crate::cmd::dap_server::backend::RttRemoteSeed;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{MessageSeverity, PromptKind};
 use crate::cmd::dap_server::debug_adapter::dap::repl_commands::ReplCommand;
 use crate::rpc::Key;
@@ -211,7 +211,7 @@ impl CoreHandle<'_> {
     }
 
     /// Confirm RTT initialization on the target, and use the RTT channel configurations to initialize the output windows on the DAP Client.
-    pub fn attach_to_rtt<P: ProtocolAdapter>(
+    pub async fn attach_to_rtt<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
         program_binary: Option<&Path>,
@@ -310,20 +310,23 @@ impl CoreHandle<'_> {
                 k
             } else {
                 let wire_scan = wire_scan_region(&self.core_data.rtt_scan_ranges);
-                let data = block_on(
-                    &seed.handle,
-                    seed.session.create_rtt_client(
+                let data = seed
+                    .session
+                    .create_rtt_client(
                         wire_scan,
                         rtt_config.channels.clone(),
                         rtt_config.default_config.clone(),
-                    ),
-                )
-                .map_err(|e| anyhow!("Failed to create remote RTT client: {e}"))?;
+                    )
+                    .await
+                    .map_err(|e| anyhow!("Failed to create remote RTT client: {e}"))?;
                 self.core_data.rtt_remote_handle = Some(data.handle);
                 data.handle
             };
 
-            let channels = block_on(&seed.handle, seed.session.get_rtt_channels(rtt_key))
+            let channels = seed
+                .session
+                .get_rtt_channels(rtt_key)
+                .await
                 .map_err(|e| anyhow!("Failed to query remote RTT channels: {e}"))?;
 
             if channels.up.is_empty() && channels.down.is_empty() {
