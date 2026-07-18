@@ -205,6 +205,12 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "setInstructionBreakpoints" => {
+                debug_adapter
+                    .set_instruction_breakpoints(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
@@ -904,9 +910,6 @@ fn dispatch_request<P: ProtocolAdapter>(
                 .context("Failed to halt core")?;
 
             return Ok(DebugSessionStatus::Restart(request));
-        }
-        "setInstructionBreakpoints" => {
-            debug_adapter.set_instruction_breakpoints(target_core, &request)?
         }
         "stackTrace" => debug_adapter.stack_trace(target_core, &request)?,
         "scopes" => debug_adapter.scopes(target_core, &request)?,

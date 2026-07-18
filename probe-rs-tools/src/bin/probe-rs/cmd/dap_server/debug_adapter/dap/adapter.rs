@@ -4,7 +4,7 @@ use super::{
     repl_commands_helpers::{build_expanded_commands, command_completions},
     request_helpers::{
         DisassemblyAmount, disassemble_target_memory, get_dap_source, get_svd_variable_reference,
-        get_variable_reference, set_instruction_breakpoint,
+        get_variable_reference,
     },
 };
 use crate::cmd::dap_server::{
@@ -1103,30 +1103,169 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(breakpoint_body)))
     }
 
-    pub(crate) fn set_instruction_breakpoints(
+    pub(crate) async fn set_instruction_breakpoints<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: SetInstructionBreakpointsArguments = get_arguments(self, request)?;
+        let requested: Vec<InstructionBreakpoint> = arguments.breakpoints;
 
-        // Always clear existing breakpoints before setting new ones.
-        if let Err(error) = target_core.clear_breakpoints(BreakpointType::InstructionBreakpoint) {
-            tracing::warn!("Failed to clear instruction breakpoints. {}", error)
-        }
-
-        let instruction_breakpoint_body = SetInstructionBreakpointsResponseBody {
-            breakpoints: arguments
+        // Parse memory references and collect existing instruction bps to clear.
+        let (parsed, clear_addrs) = {
+            let Some(core_data) = session_data
+                .core_data
+                .iter_mut()
+                .find(|cd| cd.core_index == core_index)
+            else {
+                return self.send_response::<()>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "No core data for core {core_index}"
+                    ))),
+                );
+            };
+            let clear_addrs: Vec<u64> = core_data
                 .breakpoints
-                .into_iter()
-                .map(|requested_breakpoint| {
-                    set_instruction_breakpoint(requested_breakpoint, target_core)
+                .iter()
+                .filter(|ab| matches!(ab.breakpoint_type, BreakpointType::InstructionBreakpoint))
+                .map(|ab| ab.address)
+                .collect();
+            core_data
+                .breakpoints
+                .retain(|ab| !matches!(ab.breakpoint_type, BreakpointType::InstructionBreakpoint));
+            let parsed: Vec<Option<u64>> = requested
+                .iter()
+                .map(|rb| {
+                    MemoryAddress::try_from(rb.instruction_reference.as_str())
+                        .ok()
+                        .map(|MemoryAddress(addr)| addr)
                 })
-                .collect(),
+                .collect();
+            (parsed, clear_addrs)
         };
 
-        // In addition to the response values, also show a message to users for any breakpoints that could not be verified.
-        for breakpoint_response in &instruction_breakpoint_body.breakpoints {
+        if let Err(error) = session_data
+            .backend
+            .clear_hw_breakpoints(core_index, clear_addrs)
+            .await
+        {
+            tracing::warn!("Failed to clear instruction breakpoints. {}", error);
+        }
+        let set_addrs: Vec<u64> = parsed.iter().copied().flatten().collect();
+        let set_results = session_data
+            .backend
+            .set_hw_breakpoints(core_index, set_addrs)
+            .await
+            .map_err(|e| DebuggerError::Other(anyhow!("Failed to set instruction breakpoints: {e}")))?;
+
+        let debug_info = session_data
+            .core_data
+            .iter()
+            .find(|cd| cd.core_index == core_index)
+            .and_then(|cd| cd.debug_info.as_ref());
+
+        let mut breakpoints: Vec<Breakpoint> = Vec::with_capacity(requested.len());
+        let mut to_cache: Vec<u64> = Vec::new();
+        let mut set_idx = 0;
+        for (i, rb) in requested.iter().enumerate() {
+            match parsed[i] {
+                None => breakpoints.push(Breakpoint {
+                    column: None,
+                    end_column: None,
+                    end_line: None,
+                    id: None,
+                    instruction_reference: Some(rb.instruction_reference.clone()),
+                    line: None,
+                    message: Some(format!(
+                        "Invalid memory reference specified: {:?}",
+                        rb.instruction_reference
+                    )),
+                    offset: None,
+                    source: None,
+                    verified: false,
+                    reason: None,
+                }),
+                Some(memory_reference) => {
+                    let verified = set_results.get(set_idx).copied().unwrap_or(false);
+                    set_idx += 1;
+                    if verified {
+                        to_cache.push(memory_reference);
+                        let (source, line, column, message) = match debug_info
+                            .and_then(|di| di.get_source_location(memory_reference))
+                        {
+                            Some(loc) => {
+                                let line = loc.line.map(|l| l as i64);
+                                let column = loc.column.map(|c| match c {
+                                    ColumnType::LeftEdge => 0_i64,
+                                    ColumnType::Column(c) => c as i64,
+                                });
+                                let message = Some(format!(
+                                    "Instruction breakpoint set @:{memory_reference:#010x}. File: {}: Line: {}, Column: {}",
+                                    loc.file_name().unwrap_or_else(|| "<unknown source file>".to_string()),
+                                    line.unwrap_or(0),
+                                    column.unwrap_or(0),
+                                ));
+                                (get_dap_source(&loc), line, column, message)
+                            }
+                            None => (
+                                None,
+                                None,
+                                None,
+                                Some(format!(
+                                    "Instruction breakpoint set @:{memory_reference:#010x}, but could not resolve a source location."
+                                )),
+                            ),
+                        };
+                        breakpoints.push(Breakpoint {
+                            column,
+                            end_column: None,
+                            end_line: None,
+                            id: Some(memory_reference as i64),
+                            instruction_reference: Some(format!("{memory_reference:#010x}")),
+                            line,
+                            message,
+                            offset: None,
+                            source,
+                            verified: true,
+                            reason: None,
+                        });
+                    } else {
+                        breakpoints.push(Breakpoint {
+                            column: None,
+                            end_column: None,
+                            end_line: None,
+                            id: None,
+                            instruction_reference: Some(format!("{memory_reference:#010x}")),
+                            line: None,
+                            message: Some(format!(
+                                "Warning: Could not set breakpoint at memory address: {memory_reference:#010x}"
+                            )),
+                            offset: None,
+                            source: None,
+                            verified: false,
+                            reason: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        if let Some(core_data) = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            for address in to_cache {
+                core_data.breakpoints.push(ActiveBreakpoint {
+                    breakpoint_type: BreakpointType::InstructionBreakpoint,
+                    address,
+                });
+            }
+        }
+
+        for breakpoint_response in &breakpoints {
             if !breakpoint_response.verified
                 && let Some(message) = &breakpoint_response.message
             {
@@ -1135,7 +1274,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             }
         }
 
-        self.send_response(request, Ok(Some(instruction_breakpoint_body)))
+        self.send_response(
+            request,
+            Ok(Some(SetInstructionBreakpointsResponseBody { breakpoints })),
+        )
     }
 
     pub(crate) fn threads(

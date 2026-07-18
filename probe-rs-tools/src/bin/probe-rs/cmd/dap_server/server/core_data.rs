@@ -442,34 +442,6 @@ impl CoreHandle<'_> {
         }
     }
 
-    /// Clear all breakpoints of a specified [`super::session_data::BreakpointType`].
-    /// Affects target configuration as well as [`CoreData::breakpoints`].
-    /// If `breakpoint_type` is of type [`super::session_data::BreakpointType::SourceBreakpoint`], then all breakpoints for the contained [`Source`] will be cleared.
-    pub(crate) fn clear_breakpoints(
-        &mut self,
-        breakpoint_type: session_data::BreakpointType,
-    ) -> Result<()> {
-        let target_breakpoints = self
-            .core_data
-            .breakpoints
-            .iter()
-            .filter(|target_breakpoint| {
-                target_breakpoint.breakpoint_type == breakpoint_type
-                 || matches!(
-                        &target_breakpoint.breakpoint_type,
-                        BreakpointType::SourceBreakpoint{source: breakpoint_source, location: _}
-                            if matches!(&breakpoint_type, BreakpointType::SourceBreakpoint{source: clear_breakpoint_source, ..}
-                                if clear_breakpoint_source == breakpoint_source)
-                    )
-            })
-            .map(|breakpoint| breakpoint.address)
-            .collect::<Vec<u64>>();
-        for breakpoint in target_breakpoints {
-            self.clear_breakpoint(breakpoint)?;
-        }
-        Ok(())
-    }
-
     /// Set a breakpoint at the requested address. If the requested source location is not specific, or
     /// if the requested address is not a valid breakpoint location,
     /// the debugger will attempt to find the closest location to the requested location, and set a breakpoint there.
