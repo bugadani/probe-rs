@@ -285,6 +285,61 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         )
     }
 
+    /// Lifted `scopes` handler: resolve scopes server-side when the backend
+    /// supports it (RPC), else fall back to the local `CoreHandle` path.
+    pub(crate) async fn scopes<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+        request: &Request,
+    ) -> Result<()> {
+        let arguments: ScopesArguments = get_arguments(self, request)?;
+        let frame_id = arguments.frame_id as u32;
+        if let Some(scopes) = session_data
+            .backend
+            .scopes(core_index, frame_id)
+            .await
+            .map_err(DebuggerError::ProbeRs)?
+        {
+            return self.send_response(
+                request,
+                Ok(Some(ScopesResponseBody { scopes })),
+            );
+        }
+        let mut target_core = session_data
+            .attach_core(core_index)
+            .context("Unable to connect to target core")?;
+        self.scopes_local(&mut target_core, request)
+    }
+
+    /// Lifted `variables` handler: resolve variables server-side when the
+    /// backend supports it (RPC), else fall back to the local `CoreHandle`
+    /// path.
+    pub(crate) async fn variables<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+        request: &Request,
+    ) -> Result<()> {
+        let arguments: VariablesArguments = get_arguments(self, request)?;
+        let variables_reference = arguments.variables_reference as u32;
+        if let Some(variables) = session_data
+            .backend
+            .variables(core_index, variables_reference, arguments.filter)
+            .await
+            .map_err(DebuggerError::ProbeRs)?
+        {
+            return self.send_response(
+                request,
+                Ok(Some(VariablesResponseBody { variables })),
+            );
+        }
+        let mut target_core = session_data
+            .attach_core(core_index)
+            .context("Unable to connect to target core")?;
+        self.variables_local(&mut target_core, request)
+    }
+
     /// Evaluates the given expression in the context of the top most stack frame.
     /// The expression has access to any variables and arguments that are in scope.
     pub(crate) fn evaluate(
@@ -1474,7 +1529,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// - static scope  : Variables with `static` modifier
     /// - registers     : The [probe_rs::Core::registers] for the target [probe_rs::CoreType]
     /// - local scope   : Variables defined between start of current frame, and the current pc (program counter)
-    pub(crate) fn scopes(
+    pub(crate) fn scopes_local(
         &mut self,
         target_core: &mut CoreHandle<'_>,
         request: &Request,
@@ -1657,7 +1712,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// nor does it specify if this variable is in the local, register or static scope.
     /// Unfortunately this means we have to search through all the available [`probe_rs::debug::variable_cache::VariableCache`]'s until we find it.
     /// To minimize the impact of this, we will search in the most 'likely' places first (first stack frame's locals, then statics, then registers, then move to next stack frame, and so on ...)
-    pub(crate) fn variables(
+    pub(crate) fn variables_local(
         &mut self,
         target_core: &mut CoreHandle<'_>,
         request: &Request,
