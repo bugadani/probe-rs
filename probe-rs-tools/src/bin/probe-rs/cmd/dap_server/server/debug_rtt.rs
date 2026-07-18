@@ -4,6 +4,7 @@ use crate::util::rtt::client::RttClient;
 use crate::{
     cmd::dap_server::{
         DebuggerError,
+        backend::block_on,
         debug_adapter::{dap::adapter::*, protocol::ProtocolAdapter},
     },
     rpc::{Key, client::SessionInterface},
@@ -13,12 +14,9 @@ use anyhow::anyhow;
 use probe_rs::{Core, rtt::Error as RttError};
 use tokio::runtime::Handle;
 
-/// Run an async future to completion on the current tokio runtime, without
-/// actually blocking the runtime (by releasing the worker thread via
-/// [`tokio::task::block_in_place`]). Mirrors the bridge used by `RpcRemoteCore`.
-fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
-    tokio::task::block_in_place(|| handle.block_on(fut))
-}
+/// Per-channel result of a batched [`RttClientHandle::poll_channels`] call:
+/// newly-available bytes (or a per-channel error), keyed by channel number.
+pub(crate) type ChannelPollResults<'c> = Vec<(u32, Result<Cow<'c, [u8]>, RttError>)>;
 
 /// The RTT client the DAP server drives.
 ///
@@ -43,7 +41,11 @@ pub struct RemoteRttClient {
 }
 
 impl RemoteRttClient {
-    pub(crate) fn new(handle: Handle, session: SessionInterface, rtt_client: Key<RttClient>) -> Self {
+    pub(crate) fn new(
+        handle: Handle,
+        session: SessionInterface,
+        rtt_client: Key<RttClient>,
+    ) -> Self {
         Self {
             handle,
             session,
@@ -68,7 +70,7 @@ impl RttClientHandle {
         &'c mut self,
         core: &mut Core<'_>,
         channels: &[u32],
-    ) -> Result<Vec<(u32, Result<Cow<'c, [u8]>, RttError>)>, RttError> {
+    ) -> Result<ChannelPollResults<'c>, RttError> {
         match self {
             RttClientHandle::Local(client) => {
                 let mut out = Vec::with_capacity(channels.len());
@@ -106,10 +108,11 @@ impl RttClientHandle {
     fn clean_up(&mut self, core: &mut Core<'_>) -> Result<(), RttError> {
         match self {
             RttClientHandle::Local(client) => client.clean_up(core),
-            RttClientHandle::Remote(remote) => {
-                block_on(&remote.handle, remote.session.clean_up_rtt(remote.rtt_client))
-                    .map_err(RttError::Other)
-            }
+            RttClientHandle::Remote(remote) => block_on(
+                &remote.handle,
+                remote.session.clean_up_rtt(remote.rtt_client),
+            )
+            .map_err(RttError::Other),
         }
     }
 
@@ -122,15 +125,13 @@ impl RttClientHandle {
     ) -> Result<(), RttError> {
         match self {
             RttClientHandle::Local(client) => client.write_down_channel(core, channel, data),
-            RttClientHandle::Remote(remote) => {
-                block_on(
-                    &remote.handle,
-                    remote
-                        .session
-                        .send_to_rtt(remote.rtt_client, channel, data.to_vec()),
-                )
-                .map_err(RttError::Other)
-            }
+            RttClientHandle::Remote(remote) => block_on(
+                &remote.handle,
+                remote
+                    .session
+                    .send_to_rtt(remote.rtt_client, channel, data.to_vec()),
+            )
+            .map_err(RttError::Other),
         }
     }
 }

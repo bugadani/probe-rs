@@ -486,11 +486,10 @@ impl<B: DapBackend> SessionData<B> {
             };
 
             let frames = match core_data.debug_info.as_ref() {
-                Some(debug_info) => {
-                    self.backend
-                        .unwind_stack(core_index, program_binary, debug_info, 500)
-                        .map_err(DebuggerError::ProbeRs)?
-                }
+                Some(debug_info) => self
+                    .backend
+                    .unwind_stack(core_index, program_binary, debug_info, 500)
+                    .map_err(DebuggerError::ProbeRs)?,
                 None => continue,
             };
             core_data.stack_frames = frames;

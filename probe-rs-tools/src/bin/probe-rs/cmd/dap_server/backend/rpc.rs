@@ -25,7 +25,7 @@ use probe_rs::{
 use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, get_object_reference};
 use tokio::runtime::Handle;
 
-use super::{DapBackend, FlashingBackend};
+use super::{DapBackend, FlashingBackend, block_on};
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::{
@@ -132,7 +132,12 @@ fn interpret_word(bytes: &[u8], endian: Endian) -> u64 {
 ///
 /// Split out from [`RpcRemoteCore::cached_read_bytes`] so the round-trip
 /// behaviour can be unit-tested with a fake fetch.
-fn cached_read_with<F>(cache: &mut Vec<MemoryRegion>, addr: u64, len: usize, mut fetch: F) -> Result<Vec<u8>, Error>
+fn cached_read_with<F>(
+    cache: &mut Vec<MemoryRegion>,
+    addr: u64,
+    len: usize,
+    mut fetch: F,
+) -> Result<Vec<u8>, Error>
 where
     F: FnMut(u64, usize) -> Result<Vec<u8>, Error>,
 {
@@ -181,13 +186,6 @@ where
     cache.push(region);
 
     Ok(out)
-}
-
-/// Run an async future to completion on the current tokio runtime, without
-/// actually blocking the runtime (by releasing the worker thread via
-/// [`tokio::task::block_in_place`]).
-fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
-    tokio::task::block_in_place(|| handle.block_on(fut))
 }
 
 /// Convert an [`anyhow::Error`] coming out of the RPC client into the
@@ -425,7 +423,9 @@ impl DapBackend for RpcBackend {
             .cores
             .into_iter()
             .find(|c| c.core == core_index as u32)
-            .ok_or_else(|| Error::Other(format!("core {core_index} missing from rich stack trace").into()))?;
+            .ok_or_else(|| {
+                Error::Other(format!("core {core_index} missing from rich stack trace"))
+            })?;
 
         // Clone metadata before borrowing `self` via `self.core(...)`.
         let metadata = self
@@ -471,7 +471,7 @@ impl DapBackend for RpcBackend {
             chain.reverse();
 
             for (offset, wf) in group.iter().enumerate() {
-                let pc_value: RegisterValue = wf.program_counter.clone().into();
+                let pc_value: RegisterValue = wf.program_counter.into();
                 let (source_location, local_variables) = chain
                     .get(offset)
                     .map(|cf| (cf.source_location.clone(), cf.local_variables.clone()))
@@ -479,7 +479,7 @@ impl DapBackend for RpcBackend {
                         // No matching rebuilt frame (handler / unknown / no
                         // debug info at this PC): keep the wire metadata and
                         // fall back to a best-effort source location.
-                        let pc_u64: u64 = pc_value.clone().try_into().unwrap_or(0);
+                        let pc_u64: u64 = pc_value.try_into().unwrap_or(0);
                         (debug_info.get_source_location(pc_u64), None)
                     });
 
@@ -642,8 +642,7 @@ macro_rules! rpc_mem_methods {
     ($n:literal, $ty:ty, $read_word:ident, $read_many:ident, $write_word:ident,
      $write_many:ident, $rpc_read:ident, $rpc_write:ident) => {
         fn $read_word(&mut self, address: u64) -> Result<$ty, Error> {
-            let bytes =
-                self.cached_read_bytes(address, std::mem::size_of::<$ty>())?;
+            let bytes = self.cached_read_bytes(address, std::mem::size_of::<$ty>())?;
             Ok(self.read_word_le_be(&bytes) as $ty)
         }
 
@@ -1036,8 +1035,7 @@ mod tests {
         // small offsets).
         for off in [0u64, 4, 8, 12, 16, 20, 24, 28] {
             let addr = 0x1000_0000 + off;
-            let bytes =
-                cached_read_with(&mut cache, addr, 4, |a, n| fetcher.fetch(a, n)).unwrap();
+            let bytes = cached_read_with(&mut cache, addr, 4, |a, n| fetcher.fetch(a, n)).unwrap();
             // The fake fetch returns byte `i` == `(base + i) as u8`.
             let expect: Vec<u8> = (0..4u64).map(|i| (addr + i) as u8).collect();
             assert_eq!(bytes, expect);

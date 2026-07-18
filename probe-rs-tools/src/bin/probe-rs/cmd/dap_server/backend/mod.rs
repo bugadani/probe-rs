@@ -24,6 +24,17 @@ use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
 
+/// Run an async future to completion on the current tokio runtime, without
+/// actually blocking the runtime (by releasing the worker thread via
+/// [`tokio::task::block_in_place`]).
+///
+/// This is the single sync↔async bridge used by the DAP server (which is
+/// synchronous) to drive async RPC calls. It was previously duplicated in
+/// `backend/rpc.rs`, `server/debug_rtt.rs` and `server/core_data.rs`.
+pub(crate) fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
+    tokio::task::block_in_place(|| handle.block_on(fut))
+}
+
 /// Seed for driving the **server-side** RTT client over RPC.
 ///
 /// Only the RPC backend returns `Some` from [`DapBackend::rtt_remote_seed`];
@@ -87,15 +98,13 @@ pub trait DapBackend {
         let initial_registers = DebugRegisters::from_core(&mut core);
         let exception_interface = exception_handler_for_core(core.core_type());
         let instruction_set = core.instruction_set().ok();
-        debug_info
-            .unwind(
-                &mut core,
-                initial_registers,
-                exception_interface.as_ref(),
-                instruction_set,
-                max_frames,
-            )
-            .map_err(Into::into)
+        debug_info.unwind(
+            &mut core,
+            initial_registers,
+            exception_interface.as_ref(),
+            instruction_set,
+            max_frames,
+        )
     }
 }
 

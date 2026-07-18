@@ -31,21 +31,21 @@ use crate::{
     rpc::{
         Key,
         functions::{
-            AttachEndpoint, BuildEndpoint, ChipInfoEndpoint, CoreAvailableBpUnitsEndpoint,
-            CoreClearHwBpEndpoint, CoreDisableVcEndpoint, CoreEnableVcEndpoint, CoreHaltEndpoint,
-            CoreHaltedEndpoint, CoreInstructionSetEndpoint, CoreReadRegEndpoint,
-            CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint, CoreStatusEndpoint,
-            CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
+            AttachEndpoint, BuildEndpoint, ChipInfoEndpoint, CleanUpRttEndpoint,
+            CoreAvailableBpUnitsEndpoint, CoreClearHwBpEndpoint, CoreDisableVcEndpoint,
+            CoreEnableVcEndpoint, CoreHaltEndpoint, CoreHaltedEndpoint, CoreInstructionSetEndpoint,
+            CoreReadRegEndpoint, CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint,
+            CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
             CreateRttClientEndpoint, CreateTempFileEndpoint, EraseEndpoint, FlashEndpoint,
-            ListChipFamiliesEndpoint, ListProbesEndpoint, ListTestsEndpoint,
-            LoadChipFamilyEndpoint, MonitorEndpoint, ProgressEventTopic, ReadMemory8Endpoint,
-            ReadMemory16Endpoint, ReadMemory32Endpoint, ReadMemory64Endpoint,
-            ResetCoreAndHaltEndpoint, ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult,
-            RttDownEndpoint, RunTestEndpoint, SelectProbeEndpoint, TakeStackTraceEndpoint,
-            TakeRichStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
-            TempFileDataEndpoint, TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
+            GetRttChannelsEndpoint, ListChipFamiliesEndpoint, ListProbesEndpoint,
+            ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint, PollRttUpEndpoint,
+            ProgressEventTopic, ReadMemory8Endpoint, ReadMemory16Endpoint, ReadMemory32Endpoint,
+            ReadMemory64Endpoint, ResetCoreAndHaltEndpoint, ResetCoreEndpoint,
+            ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint,
+            SelectProbeEndpoint, TakeRichStackTraceEndpoint, TakeStackTraceEndpoint,
+            TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint,
+            TokioSpawner, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
             WriteMemory32Endpoint, WriteMemory64Endpoint,
-            CleanUpRttEndpoint, GetRttChannelsEndpoint, PollRttUpEndpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreHaltRequest, CoreReadRegRequest,
@@ -72,7 +72,7 @@ use crate::{
                 CreateRttClientRequest, PollRttUpRequest, RttChannelRequest, RttChannels,
                 RttClientData, RttDownRequest, RttPollResult, ScanRegion,
             },
-            stack_trace::{StackTraces, TakeStackTraceRequest, RichStackTraces},
+            stack_trace::{RichStackTraces, StackTraces, TakeStackTraceRequest},
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
         },
         transport::memory::{PostcardReceiver, PostcardSender, WireRx, WireTx},
@@ -668,7 +668,10 @@ impl SessionInterface {
 
     /// Attach the server-side RTT client and return its up/down channel
     /// metadata. See [`get_rtt_channels`].
-    pub async fn get_rtt_channels(&self, rtt_client: Key<RttClient>) -> anyhow::Result<RttChannels> {
+    pub async fn get_rtt_channels(
+        &self,
+        rtt_client: Key<RttClient>,
+    ) -> anyhow::Result<RttChannels> {
         self.client
             .send_resp::<GetRttChannelsEndpoint, _>(&RttChannelRequest {
                 sessid: self.sessid,

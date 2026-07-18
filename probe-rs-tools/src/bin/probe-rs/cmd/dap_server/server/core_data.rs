@@ -4,13 +4,16 @@ use std::num::NonZeroU32;
 use std::{ops::Range, path::Path};
 
 use super::session_data::{self, ActiveBreakpoint, BreakpointType, SourceLocationScope};
-use crate::cmd::dap_server::backend::RttRemoteSeed;
+use crate::cmd::dap_server::backend::{RttRemoteSeed, block_on};
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{MessageSeverity, PromptKind};
 use crate::cmd::dap_server::debug_adapter::dap::repl_commands::ReplCommand;
-use crate::util::rtt::client::RttClient;
-use crate::util::rtt::{self, DataFormat, DefmtProcessor, DefmtState};
 use crate::rpc::Key;
 use crate::rpc::functions::rtt_client::ScanRegion as WireScanRegion;
+use crate::util::rtt::client::RttClient;
+
+/// `(channel number, channel name)` pairs returned while attaching to RTT.
+type ChannelNames = Vec<(u32, String)>;
+use crate::util::rtt::{self, DataFormat, DefmtProcessor, DefmtState};
 use crate::{
     cmd::dap_server::{
         DebuggerError,
@@ -36,23 +39,16 @@ use probe_rs_debug::{
     ColumnType, ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo,
 };
 use time::UtcOffset;
-use tokio::runtime::Handle;
 use typed_path::TypedPath;
-
-/// Bridge the synchronous DAP server to the async RPC client. Same pattern
-/// as `RpcRemoteCore::block_on` / `debug_rtt::block_on`.
-fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
-    tokio::task::block_in_place(|| handle.block_on(fut))
-}
 
 /// Convert the DAP server's [`ScanRegion`] (probe-rs) into the wire
 /// [`WireScanRegion`] accepted by the `create_rtt` RPC endpoint.
 fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
     match scan {
         ScanRegion::Ram => WireScanRegion::Ram,
-        ScanRegion::Ranges(ranges) => WireScanRegion::Ranges(
-            ranges.iter().map(|r| (r.start, r.end)).collect(),
-        ),
+        ScanRegion::Ranges(ranges) => {
+            WireScanRegion::Ranges(ranges.iter().map(|r| (r.start, r.end)).collect())
+        }
         ScanRegion::Exact(addr) => WireScanRegion::Exact(*addr),
     }
 }
@@ -306,8 +302,8 @@ impl CoreHandle<'_> {
         // path reads the target directly through `self.core`.
         let (client, up_channels, down_channels): (
             debug_rtt::RttClientHandle,
-            Vec<(u32, String)>,
-            Vec<(u32, String)>,
+            ChannelNames,
+            ChannelNames,
         ) = if let Some(seed) = self.core_data.rtt_remote_seed.clone() {
             // Remote (RPC) path.
             let rtt_key = if let Some(k) = self.core_data.rtt_remote_handle {

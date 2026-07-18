@@ -10,7 +10,9 @@ use crate::rpc::{
 use postcard_rpc::header::VarHeader;
 use postcard_schema::Schema;
 use probe_rs::{Error, Session};
-use probe_rs_debug::{DebugInfo, DebugRegister, DebugRegisters, StackFrame, exception_handler_for_core};
+use probe_rs_debug::{
+    DebugInfo, DebugRegister, DebugRegisters, StackFrame, exception_handler_for_core,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -119,11 +121,16 @@ pub struct TakeStackTraceRequest {
 
 pub type TakeStackTraceResponse = RpcResult<StackTraces>;
 
-pub async fn take_stack_trace(
+/// Shared per-core unwind loop used by both [`take_stack_trace`] and
+/// [`take_rich_stack_trace`]. Returns `(core_index, frames)` pairs, where
+/// each `StackFrame` is converted to `F` via `F::from`. The two endpoints
+/// differ only in the frame type and the outer wrapper, so the unwind
+/// machinery (debug-info load, `halted_access`, per-core `unwind`) lives
+/// here exactly once.
+async fn unwind_all_cores<F: From<StackFrame>>(
     ctx: &mut RpcContext,
-    _header: VarHeader,
-    request: TakeStackTraceRequest,
-) -> TakeStackTraceResponse {
+    request: &TakeStackTraceRequest,
+) -> RpcResult<Vec<(u32, Vec<F>)>> {
     let mut session = ctx.session(request.sessid).await;
 
     let Some(debug_info) = DebugInfo::from_file(&request.path).ok() else {
@@ -151,19 +158,26 @@ pub async fn take_stack_trace(
                     request.stack_frame_limit as usize,
                 )?;
 
-                let mut frames = vec![];
-                for frame in stack_frames.into_iter() {
-                    frames.push(StackTraceFrame::from(frame));
-                }
-
-                cores.push(StackTrace {
-                    core: idx as u32,
-                    frames,
-                });
+                let frames: Vec<F> = stack_frames.into_iter().map(F::from).collect();
+                cores.push((idx as u32, frames));
             }
-            Ok(StackTraces { cores })
+            Ok(cores)
         })
         .map_err(Into::into)
+}
+
+pub async fn take_stack_trace(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: TakeStackTraceRequest,
+) -> TakeStackTraceResponse {
+    let cores = unwind_all_cores::<StackTraceFrame>(ctx, &request).await?;
+    Ok(StackTraces {
+        cores: cores
+            .into_iter()
+            .map(|(core, frames)| StackTrace { core, frames })
+            .collect(),
+    })
 }
 
 /// A single register, in the wire format used by the rich stack trace.
@@ -244,43 +258,11 @@ pub async fn take_rich_stack_trace(
     _header: VarHeader,
     request: TakeStackTraceRequest,
 ) -> TakeRichStackTraceResponse {
-    let mut session = ctx.session(request.sessid).await;
-
-    let Some(debug_info) = DebugInfo::from_file(&request.path).ok() else {
-        Err("No debug info found.")?
-    };
-
-    session
-        .halted_access(|session| {
-            let mut cores = Vec::new();
-            for (idx, core_type) in session.list_cores() {
-                let mut core = match session.core(idx) {
-                    Ok(core) => core,
-                    Err(Error::CoreDisabled(_)) => continue,
-                    Err(e) => return Err(e),
-                };
-
-                let initial_registers = DebugRegisters::from_core(&mut core);
-                let exception_interface = exception_handler_for_core(core_type);
-                let instruction_set = core.instruction_set().ok();
-                let stack_frames = debug_info.unwind(
-                    &mut core,
-                    initial_registers,
-                    exception_interface.as_ref(),
-                    instruction_set,
-                    request.stack_frame_limit as usize,
-                )?;
-
-                let frames = stack_frames
-                    .into_iter()
-                    .map(RichStackTraceFrame::from)
-                    .collect();
-                cores.push(RichStackTrace {
-                    core: idx as u32,
-                    frames,
-                });
-            }
-            Ok(RichStackTraces { cores })
-        })
-        .map_err(Into::into)
+    let cores = unwind_all_cores::<RichStackTraceFrame>(ctx, &request).await?;
+    Ok(RichStackTraces {
+        cores: cores
+            .into_iter()
+            .map(|(core, frames)| RichStackTrace { core, frames })
+            .collect(),
+    })
 }

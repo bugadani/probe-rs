@@ -41,8 +41,8 @@ use crate::{
                 clean_up_rtt, create_rtt_client, get_rtt_channels, poll_rtt_up, write_rtt_down,
             },
             stack_trace::{
-                TakeStackTraceRequest, TakeStackTraceResponse,
-                TakeRichStackTraceResponse, take_rich_stack_trace, take_stack_trace,
+                TakeRichStackTraceResponse, TakeStackTraceRequest, TakeStackTraceResponse,
+                take_rich_stack_trace, take_stack_trace,
             },
             test::{
                 ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse, list_tests,
