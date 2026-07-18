@@ -445,6 +445,37 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
+    async fn read_memory(
+        &mut self,
+        core_index: usize,
+        address: u64,
+        count: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        client.read_bytes(address, count).await.map_err(rpc_err)
+    }
+
+    async fn write_memory(
+        &mut self,
+        core_index: usize,
+        address: u64,
+        data: Vec<u8>,
+    ) -> Result<(), Error> {
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        client
+            .write_memory_8(address, data)
+            .await
+            .map_err(rpc_err)
+    }
+
     /// Single-round-trip stack unwind: the server unwinds (the round-trip-
     /// heavy part) and returns per-frame registers + metadata; we rebuild
     /// [`StackFrame`]s locally, recomputing `local_variables` and

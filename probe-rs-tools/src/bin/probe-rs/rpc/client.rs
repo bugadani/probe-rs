@@ -40,8 +40,9 @@ use crate::{
             CreateRttClientEndpoint, CreateTempFileEndpoint, EraseEndpoint, FlashEndpoint,
             GetRttChannelsEndpoint, ListChipFamiliesEndpoint, ListProbesEndpoint,
             ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint, PollRttUpEndpoint,
-            ProgressEventTopic, ReadMemory8Endpoint, ReadMemory16Endpoint, ReadMemory32Endpoint,
-            ReadMemory64Endpoint, ResetCoreAndHaltEndpoint, ResetCoreEndpoint,
+            ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
+            ReadMemory32Endpoint, ReadMemory64Endpoint, ResetCoreAndHaltEndpoint,
+            ResetCoreEndpoint,
             ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint,
             SelectProbeEndpoint, TakeRichStackTraceEndpoint, TakeStackTraceEndpoint,
             TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint,
@@ -61,7 +62,7 @@ use crate::{
                 FlashRequest, ProgressEvent, VerifyRequest, VerifyResult,
             },
             info::{InfoEvent, TargetInfoRequest, TargetNameRequest},
-            memory::{ReadMemoryRequest, WriteMemoryRequest},
+            memory::{ReadBytesRequest, ReadMemoryRequest, WriteMemoryRequest},
             monitor::{MonitorExitReason, MonitorMode, MonitorOptions, MonitorRequest},
             probe::{
                 AttachRequest, AttachResult, DebugProbeEntry, DebugProbeSelector,
@@ -795,6 +796,19 @@ impl CoreInterface {
                 core: self.core,
                 address,
                 count: count as u32,
+            })
+            .await
+    }
+
+    /// Lossy bulk byte read: returns as many bytes as are readable starting
+    /// at `address`, stopping at the first unreadable region.
+    pub async fn read_bytes(&self, address: u64, count: usize) -> anyhow::Result<Vec<u8>> {
+        self.client
+            .send_resp::<ReadBytesEndpoint, _>(&ReadBytesRequest {
+                sessid: self.sessid,
+                core: self.core,
+                address,
+                count: count as u64,
             })
             .await
     }

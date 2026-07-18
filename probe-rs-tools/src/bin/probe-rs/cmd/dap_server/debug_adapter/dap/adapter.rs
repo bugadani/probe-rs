@@ -137,9 +137,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response::<DisconnectResponse>(request, Ok(None))
     }
 
-    pub(crate) fn read_memory(
+    pub(crate) async fn read_memory<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: ReadMemoryArguments = get_arguments(self, request)?;
@@ -157,8 +158,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 );
             }
         };
-        let result_buffer = target_core
-            .read_memory_lossy(address, arguments.count as usize)
+        let result_buffer = session_data
+            .backend
+            .read_memory(core_index, address, arguments.count as usize)
+            .await
             .unwrap_or_default();
         let num_bytes_unread = arguments.count as usize - result_buffer.len();
         // Currently, VSCode sends a request with count=0 after the last successful one ... so
@@ -187,9 +190,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         }
     }
 
-    pub(crate) fn write_memory(
+    pub(crate) async fn write_memory<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: WriteMemoryArguments = get_arguments(self, request)?;
@@ -220,7 +224,11 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             }
         };
 
-        if let Err(error) = target_core.write_memory(address, &data_bytes) {
+        if let Err(error) = session_data
+            .backend
+            .write_memory(core_index, address, data_bytes.clone())
+            .await
+        {
             return self.send_response::<()>(request, Err(&DebuggerError::ProbeRs(error)));
         }
 

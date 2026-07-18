@@ -28,7 +28,10 @@ use crate::{
                 VerifyRequest, VerifyResponse, build, erase, flash, verify,
             },
             info::{InfoEvent, TargetInfoRequest, TargetNameRequest, target_info, target_name},
-            memory::{ReadMemoryRequest, WriteMemoryRequest, read_memory, write_memory},
+            memory::{
+                ReadBytesRequest, ReadMemoryRequest, WriteMemoryRequest, read_bytes, read_memory,
+                write_memory,
+            },
             monitor::{MonitorRequest, MonitorResponse, RttEvent, SemihostingEvent, monitor},
             probe::{
                 AttachRequest, AttachResponse, ListProbesRequest, ListProbesResponse,
@@ -467,6 +470,7 @@ type ReadMemory8Response = RpcResult<Vec<u8>>;
 type ReadMemory16Response = RpcResult<Vec<u16>>;
 type ReadMemory32Response = RpcResult<Vec<u32>>;
 type ReadMemory64Response = RpcResult<Vec<u64>>;
+type ReadBytesResponse = RpcResult<Vec<u8>>;
 
 type WriteMemory8Request = WriteMemoryRequest<u8>;
 type WriteMemory16Request = WriteMemoryRequest<u16>;
@@ -541,6 +545,7 @@ endpoints! {
     | ReadMemory16Endpoint      | ReadMemoryRequest       | ReadMemory16Response    | "memory/read16"    |
     | ReadMemory32Endpoint      | ReadMemoryRequest       | ReadMemory32Response    | "memory/read32"    |
     | ReadMemory64Endpoint      | ReadMemoryRequest       | ReadMemory64Response    | "memory/read64"    |
+    | ReadBytesEndpoint         | ReadBytesRequest        | ReadBytesResponse       | "memory/read_bytes" |
 
     | WriteMemory8Endpoint      | WriteMemory8Request     | NoResponse              | "memory/write8"    |
     | WriteMemory16Endpoint     | WriteMemory16Request    | NoResponse              | "memory/write16"   |
@@ -634,6 +639,7 @@ postcard_rpc::define_dispatch! {
         | ReadMemory16Endpoint      | async     | read_memory       |
         | ReadMemory32Endpoint      | async     | read_memory       |
         | ReadMemory64Endpoint      | async     | read_memory       |
+        | ReadBytesEndpoint         | async     | read_bytes        |
 
         | WriteMemory8Endpoint      | async     | write_memory      |
         | WriteMemory16Endpoint     | async     | write_memory      |

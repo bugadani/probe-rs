@@ -211,6 +211,18 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "readMemory" => {
+                debug_adapter
+                    .read_memory(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
+            "writeMemory" => {
+                debug_adapter
+                    .write_memory(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
@@ -898,8 +910,6 @@ fn dispatch_request<P: ProtocolAdapter>(
         "stepIn" => debug_adapter.step_in(target_core, &request)?,
         "stepOut" => debug_adapter.step_out(target_core, &request)?,
         "pause" => debug_adapter.pause(target_core, &request)?,
-        "readMemory" => debug_adapter.read_memory(target_core, &request)?,
-        "writeMemory" => debug_adapter.write_memory(target_core, &request)?,
         "setVariable" => debug_adapter.set_variable(target_core, &request)?,
         "configurationDone" => debug_adapter.configuration_done(target_core, &request)?,
         "threads" => debug_adapter.threads(target_core, &request)?,

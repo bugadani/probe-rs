@@ -16,7 +16,7 @@ pub mod rpc;
 
 use std::path::Path;
 
-use probe_rs::{Core, CoreStatus, CoreType, Error, Session, Target, flashing::FlashError};
+use probe_rs::{Core, CoreStatus, CoreType, Error, MemoryInterface, Session, Target, flashing::FlashError};
 use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
 use tokio::runtime::Handle;
 
@@ -28,6 +28,41 @@ use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
 /// blocking the runtime (via `block_in_place`).
 pub(crate) fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
     tokio::task::block_in_place(|| handle.block_on(fut))
+}
+
+/// Lossy chunked byte read against a [`probe_rs::Core`]: reads as much as
+/// possible, stopping at the first unreadable region. Mirrors the historical
+/// `CoreHandle::read_memory_lossy` so the local `Session` backend path
+/// preserves partial-read behavior.
+fn read_memory_lossy(core: &mut Core<'_>, mut address: u64, count: usize) -> Result<Vec<u8>, Error> {
+    fn chunk_size(count: usize, max_chunk_size: usize) -> usize {
+        (max_chunk_size.min(count) / 2).next_power_of_two()
+    }
+
+    let mut num_bytes_unread = count;
+    let mut result_buffer: Vec<u8> = Vec::new();
+    let mut fast_buff = [0u8; 256];
+    let mut max_chunk_size = fast_buff.len();
+
+    while num_bytes_unread > 0 && max_chunk_size > 0 {
+        let chunk_size = chunk_size(num_bytes_unread, max_chunk_size);
+        let buffer = &mut fast_buff[..chunk_size];
+        match core.read(address, buffer) {
+            Err(e) => {
+                if result_buffer.is_empty() && chunk_size == 1 {
+                    return Err(e);
+                }
+                max_chunk_size = chunk_size / 2;
+            }
+            Ok(()) => {
+                result_buffer.extend_from_slice(buffer);
+                address += chunk_size as u64;
+                num_bytes_unread -= chunk_size;
+            }
+        }
+    }
+
+    Ok(result_buffer)
 }
 
 /// Seed for driving the server-side RTT client over RPC. Only the RPC
@@ -96,6 +131,33 @@ pub trait DapBackend {
             }
         }
         Ok(())
+    }
+
+    /// Lossy bulk byte read: returns as many bytes as are readable starting
+    /// at `address`, stopping at the first unreadable region. Default impl
+    /// loops via [`DapBackend::core`]; the RPC backend overrides this to
+    /// issue a single `memory/read_bytes` round trip.
+    async fn read_memory(
+        &mut self,
+        core_index: usize,
+        address: u64,
+        count: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let mut core = self.core(core_index)?;
+        read_memory_lossy(&mut core, address, count)
+    }
+
+    /// Write `data` to `address`. Default impl uses [`DapBackend::core`];
+    /// the RPC backend overrides this to issue a single `memory/write8`
+    /// round trip.
+    async fn write_memory(
+        &mut self,
+        core_index: usize,
+        address: u64,
+        data: Vec<u8>,
+    ) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        core.write_8(address, &data)
     }
 
     /// If `Some`, drive the server-side RTT client over RPC (RPC backend);
