@@ -36,6 +36,12 @@ pub struct VariablesRequest {
     pub filter: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Schema)]
+pub struct ClearCoreDebugStateRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+}
+
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct WireVariable {
     pub name: String,
@@ -280,4 +286,16 @@ pub async fn variables(
         .collect();
 
     Ok(dap_variables)
+}
+
+pub async fn clear_core_debug_state(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: ClearCoreDebugStateRequest,
+) -> crate::rpc::functions::RpcResult<()> {
+    let mut guard = ctx.debug_states().lock().await;
+    if let Some(state) = guard.get_mut(&request.sessid) {
+        state.clear_core(request.core as usize);
+    }
+    Ok(())
 }

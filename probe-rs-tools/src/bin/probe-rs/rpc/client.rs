@@ -46,7 +46,7 @@ use crate::{
             ScopesEndpoint, SelectProbeEndpoint, TakeRichStackTraceEndpoint, TakeStackTraceEndpoint,
             TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint,
             TokioSpawner, VariablesEndpoint, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
-            WriteMemory32Endpoint, WriteMemory64Endpoint,
+            WriteMemory32Endpoint, WriteMemory64Endpoint, ClearCoreDebugStateEndpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreHaltRequest,
@@ -75,7 +75,8 @@ use crate::{
             },
             stack_trace::{RichStackTraces, StackTraces, TakeStackTraceRequest},
             debug_vars::{
-                ScopesRequest, VariablesRequest, WireScope, WireVariable,
+                ClearCoreDebugStateRequest, ScopesRequest, VariablesRequest, WireScope,
+                WireVariable,
             },
             test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
         },
@@ -774,6 +775,18 @@ impl SessionInterface {
                 core,
                 variables_reference,
                 filter,
+            })
+            .await
+    }
+
+    /// Drop the server-owned `VariableCache` for a core. Called when the
+    /// core resumes (or steps) so stale variable handles are not served
+    /// before the next halt rebuilds them.
+    pub async fn clear_core_debug_state(&self, core: u32) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<ClearCoreDebugStateEndpoint, _>(&ClearCoreDebugStateRequest {
+                sessid: self.sessid,
+                core,
             })
             .await
     }

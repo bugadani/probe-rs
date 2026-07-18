@@ -24,8 +24,8 @@ use crate::{
                 core_step, core_wait_halted, core_write_reg,
             },
             debug_vars::{
-                ScopesRequest, VariablesRequest, scopes as debug_scopes,
-                variables as debug_variables,
+                ClearCoreDebugStateRequest, ScopesRequest, VariablesRequest,
+                clear_core_debug_state, scopes as debug_scopes, variables as debug_variables,
             },
             flash::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
@@ -528,6 +528,7 @@ endpoints! {
     | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
     | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
     | VariablesEndpoint         | VariablesRequest        | VariablesResponse       | "stack_trace/variables" |
+    | ClearCoreDebugStateEndpoint | ClearCoreDebugStateRequest | NoResponse           | "debug_state/clear_core" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
     | EraseEndpoint             | EraseRequest            | NoResponse              | "flash/erase"      |
@@ -620,6 +621,7 @@ postcard_rpc::define_dispatch! {
         | TakeRichStackTraceEndpoint | async    | take_rich_stack_trace |
         | ScopesEndpoint            | async     | debug_scopes      |
         | VariablesEndpoint         | async     | debug_variables   |
+        | ClearCoreDebugStateEndpoint | async   | clear_core_debug_state |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |
         | EraseEndpoint             | async     | erase             |

@@ -500,6 +500,13 @@ impl DapBackend for RpcBackend {
 
     async fn run(&mut self, core_index: usize) -> Result<(), Error> {
         self.invalidate_core_caches(core_index);
+        // The server-owned VariableCache is about to go stale: drop it so
+        // stale variable handles are not served before the next halt
+        // rebuilds them.
+        self.session_interface()
+            .clear_core_debug_state(core_index as u32)
+            .await
+            .map_err(rpc_err)?;
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.run().await.map_err(rpc_err)
