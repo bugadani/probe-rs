@@ -84,6 +84,13 @@ pub struct CoreBreakpointRequest {
 }
 
 #[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct CoreBreakpointsRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    pub addresses: Vec<u64>,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct CoreVectorCatchRequest {
     pub sessid: Key<Session>,
     pub core: u32,
@@ -594,6 +601,48 @@ pub async fn core_clear_hw_bp(
         },
         |core| {
             core.clear_hw_breakpoint(request.address)?;
+            Ok(())
+        }
+    )?;
+    Ok(())
+}
+
+pub async fn core_set_hw_bps(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: CoreBreakpointsRequest,
+) -> NoResponse {
+    with_core!(
+        ctx,
+        CoreAccessRequest {
+            sessid: request.sessid,
+            core: request.core,
+        },
+        |core| {
+            for address in request.addresses {
+                core.set_hw_breakpoint(address)?;
+            }
+            Ok(())
+        }
+    )?;
+    Ok(())
+}
+
+pub async fn core_clear_hw_bps(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: CoreBreakpointsRequest,
+) -> NoResponse {
+    with_core!(
+        ctx,
+        CoreAccessRequest {
+            sessid: request.sessid,
+            core: request.core,
+        },
+        |core| {
+            for address in request.addresses {
+                core.clear_hw_breakpoint(address)?;
+            }
             Ok(())
         }
     )?;

@@ -63,6 +63,34 @@ pub trait DapBackend {
         core.status()
     }
 
+    /// Set hardware breakpoints at all `addresses` in one round trip. Default
+    /// impl loops via [`DapBackend::core`]; the RPC backend overrides this to
+    /// issue a single `core/set_hw_bps` round trip.
+    async fn set_hw_breakpoints(
+        &mut self,
+        core_index: usize,
+        addresses: Vec<u64>,
+    ) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        for address in addresses {
+            core.set_hw_breakpoint(address)?;
+        }
+        Ok(())
+    }
+
+    /// Clear hardware breakpoints at all `addresses` in one round trip.
+    async fn clear_hw_breakpoints(
+        &mut self,
+        core_index: usize,
+        addresses: Vec<u64>,
+    ) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        for address in addresses {
+            core.clear_hw_breakpoint(address)?;
+        }
+        Ok(())
+    }
+
     /// If `Some`, drive the server-side RTT client over RPC (RPC backend);
     /// if `None`, use a local `RttClient` (local `Session` backend).
     fn rtt_remote_seed(&self) -> Option<RttRemoteSeed> {

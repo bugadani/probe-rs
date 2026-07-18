@@ -32,10 +32,11 @@ use crate::{
         Key,
         functions::{
             AttachEndpoint, BuildEndpoint, ChipInfoEndpoint, CleanUpRttEndpoint,
-            CoreAvailableBpUnitsEndpoint, CoreClearHwBpEndpoint, CoreDisableVcEndpoint,
-            CoreEnableVcEndpoint, CoreHaltEndpoint, CoreHaltedEndpoint, CoreInstructionSetEndpoint,
-            CoreReadRegEndpoint, CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint,
-            CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
+            CoreAvailableBpUnitsEndpoint, CoreClearHwBpEndpoint, CoreClearHwBpsEndpoint,
+            CoreDisableVcEndpoint, CoreEnableVcEndpoint, CoreHaltEndpoint, CoreHaltedEndpoint,
+            CoreInstructionSetEndpoint, CoreReadRegEndpoint, CoreReadRegistersEndpoint,
+            CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint, CoreStatusEndpoint,
+            CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
             CreateRttClientEndpoint, CreateTempFileEndpoint, EraseEndpoint, FlashEndpoint,
             GetRttChannelsEndpoint, ListChipFamiliesEndpoint, ListProbesEndpoint,
             ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint, PollRttUpEndpoint,
@@ -48,10 +49,10 @@ use crate::{
             WriteMemory32Endpoint, WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
-                CoreAccessRequest, CoreBreakpointRequest, CoreHaltRequest, CoreReadRegRequest,
-                CoreReadRegistersRequest, CoreVectorCatchRequest, CoreWaitHaltedRequest,
-                CoreWriteRegRequest, WireCoreInformation, WireCoreStatus, WireInstructionSet,
-                WireRegisterId, WireRegisterReadResult, WireRegisterValue,
+                CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreHaltRequest,
+                CoreReadRegRequest, CoreReadRegistersRequest, CoreVectorCatchRequest,
+                CoreWaitHaltedRequest, CoreWriteRegRequest, WireCoreInformation, WireCoreStatus,
+                WireInstructionSet, WireRegisterId, WireRegisterReadResult, WireRegisterValue,
                 WireVectorCatchCondition,
             },
             file::{AppendFileRequest, TempFile},
@@ -980,6 +981,26 @@ impl CoreInterface {
                 sessid: self.sessid,
                 core: self.core,
                 address,
+            })
+            .await
+    }
+
+    pub async fn set_hw_breakpoints(&self, addresses: Vec<u64>) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<CoreSetHwBpsEndpoint, _>(&CoreBreakpointsRequest {
+                sessid: self.sessid,
+                core: self.core,
+                addresses,
+            })
+            .await
+    }
+
+    pub async fn clear_hw_breakpoints(&self, addresses: Vec<u64>) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<CoreClearHwBpsEndpoint, _>(&CoreBreakpointsRequest {
+                sessid: self.sessid,
+                core: self.core,
+                addresses,
             })
             .await
     }

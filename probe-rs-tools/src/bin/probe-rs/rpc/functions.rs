@@ -14,13 +14,14 @@ use crate::{
                 chip_info, list_families, load_chip_family,
             },
             core_ops::{
-                CoreAccessRequest, CoreBreakpointRequest, CoreHaltRequest, CoreReadRegRequest,
-                CoreReadRegistersRequest, CoreVectorCatchRequest, CoreWaitHaltedRequest,
-                CoreWriteRegRequest, WireCoreInformation, WireCoreStatus, WireInstructionSet,
-                WireRegisterReadResult, WireRegisterValue, core_available_bp_units,
-                core_clear_hw_bp, core_disable_vc, core_enable_vc, core_halt, core_halted,
-                core_instruction_set, core_read_reg, core_read_registers, core_run, core_set_hw_bp,
-                core_status, core_step, core_wait_halted, core_write_reg,
+                CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreHaltRequest,
+                CoreReadRegRequest, CoreReadRegistersRequest, CoreVectorCatchRequest,
+                CoreWaitHaltedRequest, CoreWriteRegRequest, WireCoreInformation, WireCoreStatus,
+                WireInstructionSet, WireRegisterReadResult, WireRegisterValue,
+                core_available_bp_units, core_clear_hw_bp, core_clear_hw_bps, core_disable_vc,
+                core_enable_vc, core_halt, core_halted, core_instruction_set, core_read_reg,
+                core_read_registers, core_run, core_set_hw_bp, core_set_hw_bps, core_status,
+                core_step, core_wait_halted, core_write_reg,
             },
             flash::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
@@ -527,11 +528,13 @@ endpoints! {
     | CoreWriteRegEndpoint      | CoreWriteRegRequest     | NoResponse                    | "core/write_reg"          |
     | CoreSetHwBpEndpoint       | CoreBreakpointRequest   | NoResponse                    | "core/set_hw_bp"          |
     | CoreClearHwBpEndpoint     | CoreBreakpointRequest   | NoResponse                    | "core/clear_hw_bp"        |
+    | CoreSetHwBpsEndpoint      | CoreBreakpointsRequest  | NoResponse                    | "core/set_hw_bps"         |
+    | CoreClearHwBpsEndpoint    | CoreBreakpointsRequest  | NoResponse                    | "core/clear_hw_bps"       |
     | CoreAvailableBpUnitsEndpoint | CoreAccessRequest    | CoreU32Response               | "core/available_bp_units" |
     | CoreEnableVcEndpoint      | CoreVectorCatchRequest  | NoResponse                    | "core/enable_vc"          |
     | CoreDisableVcEndpoint     | CoreVectorCatchRequest  | NoResponse                    | "core/disable_vc"         |
     | CoreInstructionSetEndpoint | CoreAccessRequest      | CoreInstructionSetResponse    | "core/instruction_set"    |
-    | CoreReadRegistersEndpoint | CoreReadRegistersRequest | CoreReadRegistersResponse     | "core/read_registers"     |
+    | CoreReadRegistersEndpoint | CoreReadRegistersRequest | CoreReadRegistersResponse    | "core/read_registers"     |
 
     | ReadMemory8Endpoint       | ReadMemoryRequest       | ReadMemory8Response     | "memory/read8"     |
     | ReadMemory16Endpoint      | ReadMemoryRequest       | ReadMemory16Response    | "memory/read16"    |
@@ -618,6 +621,8 @@ postcard_rpc::define_dispatch! {
         | CoreWriteRegEndpoint         | async | core_write_reg         |
         | CoreSetHwBpEndpoint          | async | core_set_hw_bp         |
         | CoreClearHwBpEndpoint        | async | core_clear_hw_bp       |
+        | CoreSetHwBpsEndpoint         | async | core_set_hw_bps        |
+        | CoreClearHwBpsEndpoint       | async | core_clear_hw_bps      |
         | CoreAvailableBpUnitsEndpoint | async | core_available_bp_units |
         | CoreEnableVcEndpoint         | async | core_enable_vc         |
         | CoreDisableVcEndpoint        | async | core_disable_vc        |

@@ -416,6 +416,35 @@ impl DapBackend for RpcBackend {
         Ok(wire.into())
     }
 
+    async fn set_hw_breakpoints(
+        &mut self,
+        core_index: usize,
+        addresses: Vec<u64>,
+    ) -> Result<(), Error> {
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        client.set_hw_breakpoints(addresses).await.map_err(rpc_err)
+    }
+
+    async fn clear_hw_breakpoints(
+        &mut self,
+        core_index: usize,
+        addresses: Vec<u64>,
+    ) -> Result<(), Error> {
+        let client = RpcCoreClient::new_for_backend(
+            self.client.clone(),
+            self.sessid,
+            core_index as u32,
+        );
+        client
+            .clear_hw_breakpoints(addresses)
+            .await
+            .map_err(rpc_err)
+    }
+
     /// Single-round-trip stack unwind: the server unwinds (the round-trip-
     /// heavy part) and returns per-frame registers + metadata; we rebuild
     /// [`StackFrame`]s locally, recomputing `local_variables` and
