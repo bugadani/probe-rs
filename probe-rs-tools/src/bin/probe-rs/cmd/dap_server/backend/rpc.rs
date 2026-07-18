@@ -23,8 +23,8 @@ use probe_rs::{
     semihosting::{Buffer, GetCommandLineRequest, SemihostingCommand},
 };
 use probe_rs_debug::{
-    ColumnType, DebugInfo, DebugRegisters, ObjectRef, StackFrame, SourceLocation as DebugSourceLocation,
-    TypedPath,
+    ColumnType, DebugInfo, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation,
+    StackFrame, TypedPath,
 };
 use tokio::runtime::Handle;
 
@@ -40,12 +40,12 @@ use crate::rpc::{
             WireBreakpointCause, WireCoreStatus, WireHaltReason, WireRegisterValue,
             WireSemihostingCommand, WireVectorCatchCondition,
         },
+        debug_vars::{WireScope, WireVariable},
         flash::{
             DownloadOptions as WireDownloadOptions, ProgressEvent as WireProgressEvent,
             VerifyResult,
         },
         stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
-        debug_vars::{WireScope, WireVariable},
     },
 };
 

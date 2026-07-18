@@ -301,10 +301,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .await
             .map_err(DebuggerError::ProbeRs)?
         {
-            return self.send_response(
-                request,
-                Ok(Some(ScopesResponseBody { scopes })),
-            );
+            return self.send_response(request, Ok(Some(ScopesResponseBody { scopes })));
         }
         let mut target_core = session_data
             .attach_core(core_index)
@@ -329,10 +326,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .await
             .map_err(DebuggerError::ProbeRs)?
         {
-            return self.send_response(
-                request,
-                Ok(Some(VariablesResponseBody { variables })),
-            );
+            return self.send_response(request, Ok(Some(VariablesResponseBody { variables })));
         }
         let mut target_core = session_data
             .attach_core(core_index)
