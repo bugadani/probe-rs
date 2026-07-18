@@ -38,7 +38,7 @@ use gimli::DebuggingInformationEntry;
 use gimli::EvaluationResult;
 use gimli::{AttributeValue, RunTimeEndian};
 use serde::Serialize;
-use typed_path::TypedPathBuf;
+pub use typed_path::{TypedPath, TypedPathBuf};
 
 use std::num::ParseIntError;
 use std::{

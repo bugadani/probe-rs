@@ -22,7 +22,10 @@ use probe_rs::{
     VectorCatchCondition,
     semihosting::{Buffer, GetCommandLineRequest, SemihostingCommand},
 };
-use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, get_object_reference};
+use probe_rs_debug::{
+    ColumnType, DebugInfo, DebugRegisters, ObjectRef, StackFrame, SourceLocation as DebugSourceLocation,
+    TypedPath,
+};
 use tokio::runtime::Handle;
 
 use super::{DapBackend, FlashingBackend, block_on};
@@ -41,7 +44,7 @@ use crate::rpc::{
             DownloadOptions as WireDownloadOptions, ProgressEvent as WireProgressEvent,
             VerifyResult,
         },
-        stack_trace::{RichStackTraces, WireDebugRegister},
+        stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
         debug_vars::{WireScope, WireVariable},
     },
 };
@@ -223,6 +226,19 @@ fn rebuild_debug_registers(
         }
     }
     DebugRegisters::from_core_registers(regs, |rid| lookup.get(rid).copied())
+}
+
+/// Convert a wire [`SourceLocation`] (resolved server-side) back into a
+/// `probe_rs_debug` [`SourceLocation`]. The wire form encodes `LeftEdge`
+/// columns as `1`, so they round-trip as `Column(1)` — a minor, UI-irrelevant
+/// difference for the RPC path.
+fn from_wire_location(w: &WireSourceLocation) -> DebugSourceLocation {
+    DebugSourceLocation {
+        path: TypedPath::derive(w.file.as_bytes()).to_path_buf(),
+        line: w.line,
+        column: w.column.map(ColumnType::Column),
+        address: None,
+    }
 }
 
 /// A DAP backend that drives a remote target over RPC.
@@ -489,18 +505,19 @@ impl DapBackend for RpcBackend {
         client.run().await.map_err(rpc_err)
     }
 
-    /// Single-round-trip stack unwind: the server unwinds (the round-trip-
-    /// heavy part) and returns per-frame registers + metadata; we rebuild
-    /// [`StackFrame`]s locally, recomputing `local_variables` and
-    /// `source_location`s from the DAP server's own [`DebugInfo`].
-    /// Consecutive wire frames sharing a register dump came from one
-    /// server-side `get_stackframe_info` call (an inlined chain), so they
-    /// are grouped and rebuilt with a single local `get_stackframe_info`.
+    /// Single-round-trip stack unwind: the server unwinds AND owns the
+    /// `local_variables`/`static_variables` caches (keyed by `sessid`+core),
+    /// returning per-frame metadata plus the server-assigned frame id. We
+    /// rebuild lightweight [`StackFrame`]s with `local_variables: None` —
+    /// subsequent `scopes`/`variables` requests resolve server-side — so the
+    /// per-memory-read round trips of the old client-side `get_stackframe_info`
+    /// rebuild are gone. Source locations are taken from the wire (the server
+    /// already resolved them).
     async fn unwind_stack(
         &mut self,
         core_index: usize,
         program_binary: Option<&Path>,
-        debug_info: &DebugInfo,
+        _debug_info: &DebugInfo,
         max_frames: usize,
     ) -> Result<Vec<StackFrame>, Error> {
         let path = program_binary
@@ -529,8 +546,6 @@ impl DapBackend for RpcBackend {
             .find_map(|((idx, _), meta)| (*idx == core_index).then_some(meta.clone()))
             .ok_or(Error::CoreNotFound(core_index))?;
 
-        let mut core = self.core(core_index)?;
-
         let wire_frames = rich_core.frames;
         let mut frames: Vec<StackFrame> = Vec::with_capacity(wire_frames.len());
 
@@ -542,42 +557,20 @@ impl DapBackend for RpcBackend {
                 idx += 1;
             }
             let group = &wire_frames[group_start..idx];
-
-            let step_pc: u64 = {
-                let pc: RegisterValue = group[0].program_counter.into();
-                pc.try_into().unwrap_or(0)
-            };
             let cfa = group[0].canonical_frame_address;
             let registers = rebuild_debug_registers(metadata.registers, &group_regs);
 
-            // `get_stackframe_info` returns the inlined chain in DIE order
-            // (outermost first); reverse to match wire order (innermost first).
-            let chain = debug_info
-                .get_stackframe_info(&mut core, step_pc, cfa, &registers)
-                .ok()
-                .unwrap_or_default();
-            let mut chain = chain;
-            chain.reverse();
-
-            for (offset, wf) in group.iter().enumerate() {
+            for wf in group {
                 let pc_value: RegisterValue = wf.program_counter.into();
-                let (source_location, local_variables) = chain
-                    .get(offset)
-                    .map(|cf| (cf.source_location.clone(), cf.local_variables.clone()))
-                    .unwrap_or_else(|| {
-                        let pc_u64: u64 = pc_value.try_into().unwrap_or(0);
-                        (debug_info.get_source_location(pc_u64), None)
-                    });
-
                 frames.push(StackFrame {
-                    id: get_object_reference(),
+                    id: ObjectRef::from(wf.id as i64),
                     function_name: wf.function_name.clone(),
-                    source_location,
+                    source_location: wf.location.as_ref().map(from_wire_location),
                     registers: registers.clone(),
                     pc: pc_value,
                     frame_base: wf.frame_base,
                     is_inlined: wf.is_inlined,
-                    local_variables,
+                    local_variables: None,
                     canonical_frame_address: cfa,
                 });
             }
