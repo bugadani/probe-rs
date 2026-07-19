@@ -37,7 +37,8 @@ use crate::{
             CoreHaltedEndpoint, CoreInstructionSetEndpoint, CoreReadRegEndpoint,
             CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint,
             CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
-            CreateRttClientEndpoint, CreateTempFileEndpoint, EraseEndpoint, FlashEndpoint,
+            CreateRttClientEndpoint, CreateTempFileEndpoint, EraseEndpoint, EvaluateEndpoint,
+            FlashEndpoint,
             GetRttChannelsEndpoint, ListChipFamiliesEndpoint, ListProbesEndpoint,
             ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint, PollRttUpEndpoint,
             ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
@@ -57,8 +58,8 @@ use crate::{
                 WireVectorCatchCondition,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, ScopesRequest, VariablesRequest, WireScope,
-                WireVariable,
+                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, VariablesRequest,
+                WireEvaluateResponse, WireScope, WireVariable,
             },
             file::{AppendFileRequest, TempFile},
             flash::{
@@ -788,6 +789,27 @@ impl SessionInterface {
             .send_resp::<ClearCoreDebugStateEndpoint, _>(&ClearCoreDebugStateRequest {
                 sessid: self.sessid,
                 core,
+            })
+            .await
+    }
+
+    /// Evaluate a watch/hover expression server-side against the cached
+    /// `VariableCache` for the given frame (single round trip, with lazy
+    /// expansion server-side).
+    pub async fn evaluate(
+        &self,
+        core: u32,
+        frame_id: Option<u32>,
+        context: String,
+        expression: String,
+    ) -> anyhow::Result<WireEvaluateResponse> {
+        self.client
+            .send_resp::<EvaluateEndpoint, _>(&EvaluateRequest {
+                sessid: self.sessid,
+                core,
+                frame_id,
+                context,
+                expression,
             })
             .await
     }
