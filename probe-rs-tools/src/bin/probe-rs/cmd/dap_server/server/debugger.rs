@@ -247,6 +247,12 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "evaluate" => {
+                debug_adapter
+                    .evaluate(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
@@ -949,7 +955,6 @@ fn dispatch_request<P: ProtocolAdapter>(
         }
         "stackTrace" => debug_adapter.stack_trace(target_core, &request)?,
         "disassemble" => debug_adapter.disassemble(target_core, &request)?,
-        "evaluate" => debug_adapter.evaluate(target_core, &request)?,
         "completions" => debug_adapter.completions(target_core, &request)?,
 
         unimplemented_command => {

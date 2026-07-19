@@ -334,9 +334,33 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.variables_local(&mut target_core, request)
     }
 
+    /// Lifted `evaluate` handler: resolve watch/hover expressions server-side
+    /// when the backend supports it (RPC), else fall back to the local
+    /// `CoreHandle` path (which also handles `repl`/`clipboard`).
+    pub(crate) async fn evaluate<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+        request: &Request,
+    ) -> Result<()> {
+        let arguments: EvaluateArguments = get_arguments(self, request)?;
+        if let Some(response_body) = session_data
+            .backend
+            .evaluate(core_index, &arguments)
+            .await
+            .map_err(DebuggerError::ProbeRs)?
+        {
+            return self.send_response(request, Ok(Some(response_body)));
+        }
+        let mut target_core = session_data
+            .attach_core(core_index)
+            .context("Unable to connect to target core")?;
+        self.evaluate_local(&mut target_core, request)
+    }
+
     /// Evaluates the given expression in the context of the top most stack frame.
     /// The expression has access to any variables and arguments that are in scope.
-    pub(crate) fn evaluate(
+    pub(crate) fn evaluate_local(
         &mut self,
         target_core: &mut CoreHandle<'_>,
         request: &Request,
