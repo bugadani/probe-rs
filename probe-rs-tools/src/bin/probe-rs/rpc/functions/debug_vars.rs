@@ -61,8 +61,6 @@ pub struct WireEvaluateResponse {
     pub named_variables: Option<i64>,
     pub indexed_variables: Option<i64>,
     pub memory_reference: Option<String>,
-    pub presentation_hint: Option<String>,
-    pub value_location_reference: Option<String>,
 }
 
 pub type EvaluateResponse = crate::rpc::functions::RpcResult<WireEvaluateResponse>;
@@ -361,8 +359,6 @@ fn resolve_expression(
         named_variables: Some(named),
         indexed_variables: Some(indexed),
         memory_reference: Some(variable.memory_location.to_string()),
-        presentation_hint: None,
-        value_location_reference: None,
     })
 }
 
@@ -397,8 +393,6 @@ pub async fn evaluate(
         named_variables: None,
         indexed_variables: None,
         memory_reference: None,
-        presentation_hint: None,
-        value_location_reference: None,
     };
 
     let frame_ref = match request.frame_id {
@@ -433,8 +427,6 @@ pub async fn evaluate(
             named_variables: None,
             indexed_variables: None,
             memory_reference: None,
-            presentation_hint: None,
-            value_location_reference: None,
         });
     }
 

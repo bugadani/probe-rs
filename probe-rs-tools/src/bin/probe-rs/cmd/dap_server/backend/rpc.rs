@@ -30,7 +30,9 @@ use tokio::runtime::Handle;
 
 use super::{DapBackend, FlashingBackend, block_on};
 use crate::cmd::dap_server::DebuggerError;
-use crate::cmd::dap_server::debug_adapter::dap::dap_types::{Scope, Variable};
+use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
+    EvaluateArguments, EvaluateResponseBody, Scope, Variable,
+};
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::{
     Key,
@@ -642,6 +644,39 @@ impl DapBackend for RpcBackend {
                 })
                 .collect(),
         ))
+    }
+
+    async fn evaluate(
+        &mut self,
+        core_index: usize,
+        arguments: &EvaluateArguments,
+    ) -> Result<Option<EvaluateResponseBody>, Error> {
+        // Only watch/hover go server-side; repl/clipboard stay local (the
+        // REPL drives the core directly via the bridge, and clipboard is
+        // just the expression text).
+        if !matches!(arguments.context.as_deref(), Some("watch") | Some("hover")) {
+            return Ok(None);
+        }
+        let session = self.session_interface();
+        let wire = session
+            .evaluate(
+                core_index as u32,
+                arguments.frame_id.map(|id| id as u32),
+                arguments.context.clone().unwrap_or_default(),
+                arguments.expression.clone(),
+            )
+            .await
+            .map_err(rpc_err)?;
+        Ok(Some(EvaluateResponseBody {
+            result: wire.result,
+            type_: wire.type_,
+            variables_reference: wire.variables_reference,
+            named_variables: wire.named_variables,
+            indexed_variables: wire.indexed_variables,
+            memory_reference: wire.memory_reference,
+            presentation_hint: None,
+            value_location_reference: None,
+        }))
     }
 }
 

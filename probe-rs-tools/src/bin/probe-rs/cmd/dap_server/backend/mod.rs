@@ -25,7 +25,9 @@ use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_fo
 use tokio::runtime::Handle;
 
 use crate::cmd::dap_server::DebuggerError;
-use crate::cmd::dap_server::debug_adapter::dap::dap_types::{Scope, Variable};
+use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
+    EvaluateArguments, EvaluateResponseBody, Scope, Variable,
+};
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
 
@@ -235,6 +237,20 @@ pub trait DapBackend {
         _variables_reference: u32,
         _filter: Option<String>,
     ) -> Result<Option<Vec<Variable>>, Error> {
+        Ok(None)
+    }
+
+    /// Evaluate a watch/hover expression server-side. The RPC backend
+    /// overrides this to issue a single `stack_trace/evaluate` round trip
+    /// against its cached `VariableCache`; the local `Session` backend
+    /// returns `Ok(None)` so the existing client-side `evaluate` logic runs.
+    /// Only the `watch`/`hover` contexts are handled server-side; `repl` and
+    /// `clipboard` always fall back to the local path.
+    async fn evaluate(
+        &mut self,
+        _core_index: usize,
+        _arguments: &EvaluateArguments,
+    ) -> Result<Option<EvaluateResponseBody>, Error> {
         Ok(None)
     }
 }
