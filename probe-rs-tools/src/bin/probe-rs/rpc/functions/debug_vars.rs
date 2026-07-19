@@ -434,8 +434,8 @@ pub async fn evaluate(
     let cfa = core_state.stack_frames[frame_index].canonical_frame_address;
     let frame_regs = core_state.stack_frames[frame_index].registers.clone();
 
-    if let Some(cache) = core_state.stack_frames[frame_index].local_variables.as_mut() {
-        if let Some(resp) = resolve_expression(
+    if let Some(cache) = core_state.stack_frames[frame_index].local_variables.as_mut()
+        && let Some(resp) = resolve_expression(
             &debug_info,
             &mut core,
             cache,
@@ -445,30 +445,32 @@ pub async fn evaluate(
                 frame_base,
                 canonical_frame_address: cfa,
             },
-        ) {
-            return Ok(resp);
-        }
+        )
+    {
+        return Ok(resp);
     }
 
-    if let Some(cache) = core_state.static_variables.as_mut() {
-        let (top_base, top_cfa, top_regs) = core_state
-            .stack_frames
-            .first()
-            .map(|f| (f.frame_base, f.canonical_frame_address, f.registers.clone()))
-            .unwrap_or((None, None, DebugRegisters::default()));
-        if let Some(resp) = resolve_expression(
-            &debug_info,
-            &mut core,
-            cache,
-            &request.expression,
-            StackFrameInfo {
-                registers: &top_regs,
-                frame_base: top_base,
-                canonical_frame_address: top_cfa,
-            },
-        ) {
-            return Ok(resp);
+    if let Some(cache) = core_state.static_variables.as_mut()
+        && let Some(resp) = {
+            let (top_base, top_cfa, top_regs) = core_state
+                .stack_frames
+                .first()
+                .map(|f| (f.frame_base, f.canonical_frame_address, f.registers.clone()))
+                .unwrap_or((None, None, DebugRegisters::default()));
+            resolve_expression(
+                &debug_info,
+                &mut core,
+                cache,
+                &request.expression,
+                StackFrameInfo {
+                    registers: &top_regs,
+                    frame_base: top_base,
+                    canonical_frame_address: top_cfa,
+                },
+            )
         }
+    {
+        return Ok(resp);
     }
 
     Ok(invalid())
