@@ -1,4 +1,4 @@
-use probe_rs::MemoryInterface;
+use probe_rs::{CoreInterface, MemoryInterface};
 use probe_rs_debug::{ObjectRef, VariableName};
 
 use crate::cmd::dap_server::{
@@ -108,8 +108,16 @@ pub(crate) fn memory_read(
     target_core: &mut CoreHandle<'_>,
 ) -> EvalResult {
     if gdb_nuf.format_specifier == GdbFormat::Instruction {
+        let instruction_set = target_core.core.instruction_set()?;
+        let core_type = target_core.core.core_type();
+        let endianness = target_core.core.endianness()?;
+        let debug_info = target_core.core_data.debug_info.as_ref();
         let assembly_lines = disassemble_target_memory(
-            target_core,
+            &mut target_core.core,
+            instruction_set,
+            core_type,
+            endianness,
+            debug_info,
             0_i64,
             0_i64,
             address,

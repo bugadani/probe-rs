@@ -26,8 +26,8 @@ use base64::{Engine as _, engine::general_purpose as base64_engine};
 use dap_types::*;
 use parse_int::parse;
 use probe_rs::{
-    Architecture, CoreInformation, CoreRegister, CoreStatus, HaltReason, RegisterDataType,
-    RegisterRole, RegisterValue, UnwindRule,
+    Architecture, CoreInformation, CoreInterface, CoreRegister, CoreStatus, HaltReason,
+    RegisterDataType, RegisterRole, RegisterValue, UnwindRule,
 };
 use probe_rs_debug::{
     ColumnType, ObjectRef, SourceLocation, SteppingMode, VariableName, VerifiedBreakpoint,
@@ -1686,8 +1686,16 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         // The EXACT number of instructions to return in the result.
         instruction_count: i64,
     ) -> Result<Vec<dap_types::DisassembledInstruction>, DebuggerError> {
+        let instruction_set = target_core.core.instruction_set()?;
+        let core_type = target_core.core.core_type();
+        let endianness = target_core.core.endianness()?;
+        let debug_info = target_core.core_data.debug_info.as_ref();
         let assembly_lines = disassemble_target_memory(
-            target_core,
+            &mut target_core.core,
+            instruction_set,
+            core_type,
+            endianness,
+            debug_info,
             instruction_offset,
             byte_offset,
             memory_reference as u64,
