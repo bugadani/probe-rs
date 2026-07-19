@@ -18,8 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use probe_rs::{
-    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error, MemoryInterface,
-    RegisterId, RegisterValue, Session, Target, flashing::FlashError,
+    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Endian, Error,
+    InstructionSet, MemoryInterface, RegisterId, RegisterValue, Session, Target, flashing::FlashError,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
@@ -229,6 +229,60 @@ pub trait DapBackend {
     async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
         let core = self.core(core_index)?;
         Ok(core.architecture())
+    }
+
+    /// Static `CoreType` for the core. Default via [`DapBackend::core`]; the
+    /// RPC backend overrides this to read cached `core_metadata` (no round
+    /// trip), so callers can branch on core type without a `Core`.
+    async fn core_type(&mut self, core_index: usize) -> Result<CoreType, Error> {
+        let core = self.core(core_index)?;
+        Ok(core.core_type())
+    }
+
+    /// Runtime `Endian` of the core. Default via [`DapBackend::core`]; the
+    /// RPC backend overrides this to read cached `core_metadata` (no round
+    /// trip).
+    async fn core_endianness(&mut self, core_index: usize) -> Result<Endian, Error> {
+        let mut core = self.core(core_index)?;
+        core.endianness()
+    }
+
+    /// Runtime `InstructionSet` of the core. Default via
+    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
+    /// `core/instruction_set` round trip.
+    async fn core_instruction_set(&mut self, core_index: usize) -> Result<InstructionSet, Error> {
+        let mut core = self.core(core_index)?;
+        core.instruction_set()
+    }
+
+    /// Static `RegisterId` of the program counter. Default via
+    /// [`DapBackend::core`]; the RPC backend overrides this to read the
+    /// cached per-core register set (no round trip), so callers can read the
+    /// PC via [`DapBackend::read_core_reg`] without a `Core`.
+    async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
+        let core = self.core(core_index)?;
+        Ok(core.program_counter().id)
+    }
+
+    /// Set a single hardware breakpoint. Default via [`DapBackend::core`];
+    /// the RPC backend overrides this to `.await` the `core/set_hw_bp` round
+    /// trip. (Batched set is [`DapBackend::set_hw_breakpoints`].)
+    async fn set_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        core.set_hw_breakpoint(address)
+    }
+
+    /// Clear a single hardware breakpoint. Returns whether a cached
+    /// breakpoint entry was removed. Default via [`DapBackend::core`]; the
+    /// RPC backend overrides this to `.await` the `core/clear_hw_bp` round
+    /// trip. (Batched clear is [`DapBackend::clear_hw_breakpoints`].)
+    async fn clear_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        match core.clear_hw_breakpoint(address) {
+            Ok(()) => Ok(()),
+            Err(Error::BreakpointOperation(probe_rs::BreakpointError::NotFound(_))) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Set a local/static variable's value. Default impl is a no-op error:

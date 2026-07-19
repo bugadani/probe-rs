@@ -555,6 +555,50 @@ impl DapBackend for RpcBackend {
             .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
     }
 
+    async fn core_type(&mut self, core_index: usize) -> Result<CoreType, Error> {
+        self.core_metadata
+            .get(core_index)
+            .map(|m| m.core_type)
+            .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
+    }
+
+    async fn core_endianness(&mut self, core_index: usize) -> Result<Endian, Error> {
+        self.core_metadata
+            .get(core_index)
+            .map(|m| m.endian)
+            .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
+    }
+
+    async fn core_instruction_set(&mut self, core_index: usize) -> Result<InstructionSet, Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client
+            .instruction_set()
+            .await
+            .map_err(rpc_err)
+            .map(InstructionSet::from)
+    }
+
+    async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
+        self.core_metadata
+            .get(core_index)
+            .and_then(|m| m.registers.pc())
+            .map(|r| r.id)
+            .ok_or_else(|| Error::Other(format!("No PC register for core {core_index}")))
+    }
+
+    async fn set_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client.set_hw_breakpoint(address).await.map_err(rpc_err)
+    }
+
+    async fn clear_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client.clear_hw_breakpoint(address).await.map_err(rpc_err)
+    }
+
     async fn set_variable(
         &mut self,
         core_index: usize,
