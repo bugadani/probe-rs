@@ -44,7 +44,7 @@ use crate::{
             ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
             ReadMemory32Endpoint, ReadMemory64Endpoint, ResetCoreAndHaltEndpoint,
             ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint,
-            ScopesEndpoint, SelectProbeEndpoint, TakeRichStackTraceEndpoint,
+            ScopesEndpoint, SelectProbeEndpoint, StackTraceStepEndpoint, TakeRichStackTraceEndpoint,
             TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
             TempFileDataEndpoint, TokioSpawner, VariablesEndpoint, VerifyEndpoint,
             WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
@@ -58,8 +58,9 @@ use crate::{
                 WireVectorCatchCondition,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, VariablesRequest,
-                WireEvaluateResponse, WireScope, WireVariable,
+                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, StepRequest,
+                StepResponse, VariablesRequest, WireEvaluateResponse, WireScope,
+                WireSteppingMode, WireVariable,
             },
             file::{AppendFileRequest, TempFile},
             flash::{
@@ -810,6 +811,23 @@ impl SessionInterface {
                 frame_id,
                 context,
                 expression,
+            })
+            .await
+    }
+
+    /// Full `SteppingMode::step` (over/into/out/instruction) run server-side
+    /// against the cached `DebugInfo` and the live `Core`. Returns the new
+    /// status, program counter, and any `WarnAndContinue` message.
+    pub async fn debug_step(
+        &self,
+        core: u32,
+        mode: WireSteppingMode,
+    ) -> anyhow::Result<StepResponse> {
+        self.client
+            .send_resp::<StackTraceStepEndpoint, _>(&StepRequest {
+                sessid: self.sessid,
+                core,
+                mode,
             })
             .await
     }

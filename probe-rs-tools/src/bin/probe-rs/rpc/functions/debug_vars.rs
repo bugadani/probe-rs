@@ -1,9 +1,13 @@
-use crate::rpc::{Key, functions::RpcContext};
+use crate::rpc::{
+    Key,
+    functions::{RpcContext, RpcResult, core_ops::WireCoreStatus},
+};
 use postcard_rpc::header::VarHeader;
 use postcard_schema::Schema;
-use probe_rs::Session;
+use probe_rs::{RegisterValue, Session};
 use probe_rs_debug::{
-    DebugInfo, DebugRegisters, ObjectRef, StackFrameInfo, Variable, VariableCache, VariableName,
+    DebugError, DebugInfo, DebugRegisters, ObjectRef, StackFrameInfo, SteppingMode, Variable,
+    VariableCache, VariableName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -474,4 +478,77 @@ pub async fn evaluate(
     }
 
     Ok(invalid())
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone, Copy)]
+pub enum WireSteppingMode {
+    StepInstruction,
+    OverStatement,
+    IntoStatement,
+    OutOfStatement,
+}
+
+impl From<WireSteppingMode> for SteppingMode {
+    fn from(mode: WireSteppingMode) -> Self {
+        match mode {
+            WireSteppingMode::StepInstruction => SteppingMode::StepInstruction,
+            WireSteppingMode::OverStatement => SteppingMode::OverStatement,
+            WireSteppingMode::IntoStatement => SteppingMode::IntoStatement,
+            WireSteppingMode::OutOfStatement => SteppingMode::OutOfStatement,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct StepRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    pub mode: WireSteppingMode,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct StepResponse {
+    pub status: WireCoreStatus,
+    pub program_counter: u64,
+    pub warning: Option<String>,
+}
+
+pub type StepResult = RpcResult<StepResponse>;
+
+/// Full `SteppingMode::step` (over/into/out/instruction) run server-side
+/// against the cached `DebugInfo` and the live `Core`. Mirrors the client
+/// `step_impl` error handling: `WarnAndContinue` re-reads status/pc and
+/// surfaces the warning; other errors halt the core and propagate.
+pub async fn step(ctx: &mut RpcContext, _header: VarHeader, request: StepRequest) -> StepResult {
+    let states = ctx.debug_states();
+    let guard = states.lock().await;
+    let debug_info = guard.get(&request.sessid).map(|s| s.debug_info.clone());
+
+    let mut session = ctx.session(request.sessid).await;
+    let mut core = session.core(request.core as usize)?;
+
+    let stepping_mode = SteppingMode::from(request.mode);
+    let debug_info_ref = debug_info.as_ref().map(|di| &**di);
+    match stepping_mode.step(&mut core, debug_info_ref) {
+        Ok((status, pc)) => Ok(StepResponse {
+            status: status.into(),
+            program_counter: pc,
+            warning: None,
+        }),
+        Err(DebugError::WarnAndContinue { message }) => {
+            let status = core.status()?;
+            let pc: u64 = core
+                .read_core_reg::<RegisterValue>(core.program_counter().id())?
+                .try_into()?;
+            Ok(StepResponse {
+                status: status.into(),
+                program_counter: pc,
+                warning: Some(message),
+            })
+        }
+        Err(other) => {
+            core.halt(std::time::Duration::from_millis(100)).ok();
+            Err(other.to_string())?
+        }
+    }
 }
