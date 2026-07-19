@@ -2,7 +2,9 @@ use crate::rpc::{Key, functions::RpcContext};
 use postcard_rpc::header::VarHeader;
 use postcard_schema::Schema;
 use probe_rs::Session;
-use probe_rs_debug::{ObjectRef, StackFrameInfo, Variable, VariableCache, VariableName};
+use probe_rs_debug::{
+    DebugInfo, DebugRegisters, ObjectRef, StackFrameInfo, Variable, VariableCache, VariableName,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -41,6 +43,29 @@ pub struct ClearCoreDebugStateRequest {
     pub sessid: Key<Session>,
     pub core: u32,
 }
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct EvaluateRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    pub frame_id: Option<u32>,
+    pub context: String,
+    pub expression: String,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct WireEvaluateResponse {
+    pub result: String,
+    pub type_: Option<String>,
+    pub variables_reference: i64,
+    pub named_variables: Option<i64>,
+    pub indexed_variables: Option<i64>,
+    pub memory_reference: Option<String>,
+    pub presentation_hint: Option<String>,
+    pub value_location_reference: Option<String>,
+}
+
+pub type EvaluateResponse = crate::rpc::functions::RpcResult<WireEvaluateResponse>;
 
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct WireVariable {
@@ -301,4 +326,158 @@ pub async fn clear_core_debug_state(
         state.clear_core(request.core as usize);
     }
     Ok(())
+}
+
+/// Resolve an evaluate expression (watch/hover) against a `VariableCache`,
+/// expanding the single-root deferred case first. Returns `None` if the
+/// expression names no variable in `cache`.
+fn resolve_expression(
+    debug_info: &DebugInfo,
+    core: &mut probe_rs::Core,
+    cache: &mut VariableCache,
+    expression: &str,
+    frame_info: StackFrameInfo<'_>,
+) -> Option<WireEvaluateResponse> {
+    if cache.len() == 1 {
+        let mut root = cache.root_variable().clone();
+        if root.variable_node_type.is_deferred() && !cache.has_children(&root) {
+            debug_info
+                .cache_deferred_variables(cache, core, &mut root, frame_info)
+                .ok()?;
+        }
+    }
+    let mut variable = if let Ok(key) = expression.parse::<ObjectRef>() {
+        cache.get_variable_by_key(key)
+    } else {
+        cache.get_variable_by_name(&VariableName::Named(expression.to_string()))
+    }?;
+    let (vr, named, indexed) = variable_reference(&variable, cache);
+    variable.extract_value(core, cache);
+    cache.update_variable(&variable).ok()?;
+    Some(WireEvaluateResponse {
+        result: variable.to_string(cache),
+        type_: Some(variable.type_name()),
+        variables_reference: i64::from(vr),
+        named_variables: Some(named),
+        indexed_variables: Some(indexed),
+        memory_reference: Some(variable.memory_location.to_string()),
+        presentation_hint: None,
+        value_location_reference: None,
+    })
+}
+
+pub async fn evaluate(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: EvaluateRequest,
+) -> EvaluateResponse {
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
+    let debug_info = guard.get(&request.sessid).map(|s| s.debug_info.clone());
+    let Some(debug_info) = debug_info else {
+        Err("No debug state for session")?
+    };
+
+    // Acquire the `!Send` `Core` after locking `debug_states` so the spawned
+    // future stays `Send` (same pattern as `variables`).
+    let mut session = ctx.session(request.sessid).await;
+    let mut core = session.core(request.core as usize)?;
+
+    let Some(state) = guard.get_mut(&request.sessid) else {
+        Err("No debug state for session")?
+    };
+    let Some(core_state) = state.per_core.get_mut(&(request.core as usize)) else {
+        Err("No debug state for core")?
+    };
+
+    let invalid = || WireEvaluateResponse {
+        result: format!("<invalid expression {:?}>", request.expression),
+        type_: None,
+        variables_reference: 0,
+        named_variables: None,
+        indexed_variables: None,
+        memory_reference: None,
+        presentation_hint: None,
+        value_location_reference: None,
+    };
+
+    let frame_ref = match request.frame_id {
+        Some(id) => ObjectRef::from(id as i64),
+        None => core_state
+            .stack_frames
+            .first()
+            .map(|f| f.id)
+            .unwrap_or(ObjectRef::Invalid),
+    };
+    if matches!(frame_ref, ObjectRef::Invalid) {
+        return Ok(invalid());
+    }
+    let Some(frame_index) = core_state
+        .stack_frames
+        .iter()
+        .position(|f| f.id == frame_ref)
+    else {
+        return Ok(invalid());
+    };
+
+    // Registers are searched first (no VariableCache for them).
+    if let Some(reg) = core_state.stack_frames[frame_index]
+        .registers
+        .get_register_by_name(&request.expression)
+        .and_then(|r| r.value)
+    {
+        return Ok(WireEvaluateResponse {
+            result: format!("{reg}"),
+            type_: Some(format!("{}", VariableName::RegistersRoot)),
+            variables_reference: 0,
+            named_variables: None,
+            indexed_variables: None,
+            memory_reference: None,
+            presentation_hint: None,
+            value_location_reference: None,
+        });
+    }
+
+    let frame_base = core_state.stack_frames[frame_index].frame_base;
+    let cfa = core_state.stack_frames[frame_index].canonical_frame_address;
+    let frame_regs = core_state.stack_frames[frame_index].registers.clone();
+
+    if let Some(cache) = core_state.stack_frames[frame_index].local_variables.as_mut() {
+        if let Some(resp) = resolve_expression(
+            &debug_info,
+            &mut core,
+            cache,
+            &request.expression,
+            StackFrameInfo {
+                registers: &frame_regs,
+                frame_base,
+                canonical_frame_address: cfa,
+            },
+        ) {
+            return Ok(resp);
+        }
+    }
+
+    if let Some(cache) = core_state.static_variables.as_mut() {
+        let (top_base, top_cfa, top_regs) = core_state
+            .stack_frames
+            .first()
+            .map(|f| (f.frame_base, f.canonical_frame_address, f.registers.clone()))
+            .unwrap_or((None, None, DebugRegisters::default()));
+        if let Some(resp) = resolve_expression(
+            &debug_info,
+            &mut core,
+            cache,
+            &request.expression,
+            StackFrameInfo {
+                registers: &top_regs,
+                frame_base: top_base,
+                canonical_frame_address: top_cfa,
+            },
+        ) {
+            return Ok(resp);
+        }
+    }
+
+    Ok(invalid())
 }

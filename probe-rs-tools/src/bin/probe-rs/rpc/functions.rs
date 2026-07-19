@@ -24,8 +24,9 @@ use crate::{
                 core_step, core_wait_halted, core_write_reg,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, ScopesRequest, VariablesRequest,
-                clear_core_debug_state, scopes as debug_scopes, variables as debug_variables,
+                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, VariablesRequest,
+                clear_core_debug_state, evaluate as debug_evaluate, scopes as debug_scopes,
+                variables as debug_variables,
             },
             flash::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
@@ -501,6 +502,7 @@ type ReadBytesResponse = RpcResult<Vec<u8>>;
 
 type ScopesResponse = RpcResult<Vec<debug_vars::WireScope>>;
 type VariablesResponse = RpcResult<Vec<debug_vars::WireVariable>>;
+type EvaluateResponse = RpcResult<debug_vars::WireEvaluateResponse>;
 
 type WriteMemory8Request = WriteMemoryRequest<u8>;
 type WriteMemory16Request = WriteMemoryRequest<u16>;
@@ -535,6 +537,7 @@ endpoints! {
     | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
     | VariablesEndpoint         | VariablesRequest        | VariablesResponse       | "stack_trace/variables" |
     | ClearCoreDebugStateEndpoint | ClearCoreDebugStateRequest | NoResponse           | "debug_state/clear_core" |
+    | EvaluateEndpoint          | EvaluateRequest          | EvaluateResponse       | "stack_trace/evaluate" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
     | EraseEndpoint             | EraseRequest            | NoResponse              | "flash/erase"      |
@@ -628,6 +631,7 @@ postcard_rpc::define_dispatch! {
         | ScopesEndpoint            | async     | debug_scopes      |
         | VariablesEndpoint         | async     | debug_variables   |
         | ClearCoreDebugStateEndpoint | async   | clear_core_debug_state |
+        | EvaluateEndpoint          | async     | debug_evaluate    |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |
         | EraseEndpoint             | async     | erase             |
