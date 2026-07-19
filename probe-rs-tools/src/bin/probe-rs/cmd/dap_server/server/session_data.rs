@@ -12,7 +12,7 @@ use crate::{
                 dap::{
                     adapter::DebugAdapter,
                     core_status::DapStatus,
-                    dap_types::Source,
+                    dap_types::{MessageSeverity, Source, StoppedEventBody, ContinuedEventBody},
                     repl_commands::{REPL_COMMANDS, embedded_test::EMBEDDED_TEST},
                 },
                 protocol::ProtocolAdapter,
@@ -324,6 +324,86 @@ impl<B: DapBackend> SessionData<B> {
         }
     }
 
+    /// Emit the `stopped` event for a halted core. Lifted from
+    /// `CoreHandle::notify_halted` so it does not need a live `Core`: the PC
+    /// is read via `backend.program_counter_id` + `backend.read_core_reg`
+    /// (one RPC round trip for the register read; the PC id is cached).
+    async fn notify_halted<P: ProtocolAdapter>(
+        &mut self,
+        debug_adapter: &mut DebugAdapter<P>,
+        cd_idx: usize,
+        status: CoreStatus,
+    ) -> Result<(), DebuggerError> {
+        let core_index = self.core_data[cd_idx].core_index;
+        let program_counter = match self.backend.program_counter_id(core_index).await {
+            Ok(id) => self
+                .backend
+                .read_core_reg(core_index, id)
+                .await
+                .ok()
+                .and_then(|v| v.try_into().ok()),
+            Err(_) => None,
+        };
+        let (reason, description) = status.short_long_status(program_counter);
+        let event_body = Some(StoppedEventBody {
+            reason: reason.to_string(),
+            description: Some(description),
+            thread_id: Some(core_index as i64),
+            preserve_focus_hint: Some(false),
+            text: None,
+            all_threads_stopped: Some(debug_adapter.all_cores_halted),
+            hit_breakpoint_ids: None,
+        });
+        debug_adapter.send_event("stopped", event_body)?;
+        tracing::trace!("Notified DAP client that the core halted: {:?}", status);
+        Ok(())
+    }
+
+    /// Update `last_known_status` and emit the appropriate DAP event for a
+    /// status transition. Lifted from `CoreHandle::process_core_status` so it
+    /// does not need a live `Core`; semihosting halts are skipped here (the
+    /// poll loop handles them separately) and the PC for the `stopped` event
+    /// is read via [`Self::notify_halted`].
+    async fn process_core_status<P: ProtocolAdapter>(
+        &mut self,
+        debug_adapter: &mut DebugAdapter<P>,
+        cd_idx: usize,
+        status: CoreStatus,
+    ) -> Result<CoreStatus, DebuggerError> {
+        if status == self.core_data[cd_idx].last_known_status {
+            return Ok(status);
+        }
+        self.core_data[cd_idx].last_known_status = status;
+
+        match status {
+            CoreStatus::Running | CoreStatus::Sleeping => {
+                let event_body = Some(ContinuedEventBody {
+                    all_threads_continued: Some(true),
+                    thread_id: cd_idx as i64,
+                });
+                debug_adapter.send_event("continued", event_body)?;
+                tracing::trace!("Notified DAP client that the core continued: {:?}", status);
+            }
+            CoreStatus::Halted(HaltReason::Step) => {}
+            CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(_))) => {}
+            CoreStatus::Halted(_) => self.notify_halted(debug_adapter, cd_idx, status).await?,
+            CoreStatus::LockedUp => {
+                debug_adapter.show_message(
+                    MessageSeverity::Warning,
+                    format!("Core {} is in locked up state", cd_idx),
+                );
+                self.notify_halted(debug_adapter, cd_idx, status).await?;
+            }
+            CoreStatus::Unknown => {
+                let error =
+                    DebuggerError::Other(anyhow!("Unknown Device status received from Probe-rs"));
+                debug_adapter.show_error_message(&error)?;
+                return Err(error);
+            }
+        }
+        Ok(status)
+    }
+
     /// The target has no way of notifying the debug adapter when things changes, so we have to constantly poll it to determine:
     /// - Whether the target cores are running, and what their actual status is.
     /// - Whether the target cores have data in their RTT buffers that we need to read and pass to the client.
@@ -388,24 +468,43 @@ impl<B: DapBackend> SessionData<B> {
                 CoreStatus::Unknown
             };
 
-            let Ok(mut target_core) = self.attach_core(core_config.core_index) else {
-                tracing::debug!(
-                    "Failed to attach to target core #{}. Cannot poll for RTT data.",
-                    core_config.core_index
-                );
+            let core_index = core_config.core_index;
+            let Some(cd_idx) = self.core_data.iter().position(|c| c.core_index == core_index) else {
+                tracing::debug!("No core data for core #{core_index}; cannot poll.");
                 continue;
             };
+            let previous_core_status = self.core_data[cd_idx].last_known_status;
 
-            let previous_core_status = target_core.core_data.last_known_status;
-
-            let mut current_core_status = target_core
-                .process_core_status(debug_adapter, current_core_status)
+            let mut current_core_status = self
+                .process_core_status(debug_adapter, cd_idx, current_core_status)
+                .await
                 .inspect_err(|error| {
                     let _ = debug_adapter.show_error_message(error);
                 })?;
 
+            let semihosting_command = match current_core_status {
+                CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(c))) => {
+                    Some(c)
+                }
+                _ => None,
+            };
+
+            // RTT polling and semihosting handling need a live `Core`. Acquire
+            // a short-lived `CoreHandle` in a scoped block so the
+            // `&mut self.backend` borrow is released before the deferred
+            // unwind / next iteration.
+            let rtt_enabled = core_config.rtt_config.enabled;
+            if rtt_enabled || semihosting_command.is_some() {
+                let Ok(mut target_core) = self.attach_core(core_index) else {
+                    tracing::debug!(
+                        "Failed to attach to target core #{}. Cannot poll for RTT data.",
+                        core_index
+                    );
+                    continue;
+                };
+
             // If appropriate, check for RTT data.
-            if core_config.rtt_config.enabled {
+            if rtt_enabled {
                 if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
                     // We should poll the target for rtt data, and if any RTT data was processed, we clear the flag.
                     if core_rtt
@@ -432,11 +531,7 @@ impl<B: DapBackend> SessionData<B> {
                 }
             }
 
-            if current_core_status != previous_core_status {
-                if let CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(
-                    command,
-                ))) = current_core_status
-                {
+            if let Some(command) = semihosting_command {
                     // Handle semihosting commands. If the command is handled,
                     // the core will be resumed, so we need to update the status.
                     // If the command is not handled, the core will remain halted and we
@@ -451,18 +546,26 @@ impl<B: DapBackend> SessionData<B> {
                         suggest_delay_required = false;
                     }
                     target_core.core_data.last_known_status = current_core_status;
-                } else {
-                    // The core's status has changed, print it.
-                    let pc = if current_core_status.is_halted() {
-                        target_core
-                            .core
-                            .read_core_reg(target_core.core.program_counter())
-                            .ok()
-                    } else {
-                        None
-                    };
-                    debug_adapter.log_to_console(current_core_status.short_long_status(pc).1);
                 }
+            }
+
+            // Non-semihosting status change: log the new status (with the PC
+            // read via the backend, no live `Core`).
+            if current_core_status != previous_core_status && semihosting_command.is_none() {
+                let pc = if current_core_status.is_halted() {
+                    match self.backend.program_counter_id(core_index).await {
+                        Ok(id) => self
+                            .backend
+                            .read_core_reg(core_index, id)
+                            .await
+                            .ok()
+                            .and_then(|v| v.try_into().ok()),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+                debug_adapter.log_to_console(current_core_status.short_long_status(pc).1);
             }
 
             // If the core is running, we set the flag to indicate that at least one core is not halted.
@@ -470,25 +573,22 @@ impl<B: DapBackend> SessionData<B> {
             if !current_core_status.is_halted() {
                 debug_adapter.all_cores_halted = false;
             } else if !cores_halted_previously
-                && let Some(debug_info) = target_core.core_data.debug_info.as_ref()
+                && let Some(debug_info) = self.core_data[cd_idx].debug_info.as_ref()
             {
                 // If currently halted, and was previously running
                 // update the stack frames
                 let _stackframe_span = tracing::debug_span!("Update Stack Frames").entered();
-                tracing::debug!(
-                    "Updating the stack frame data for core #{}",
-                    target_core.id()
-                );
+                tracing::debug!("Updating the stack frame data for core #{}", core_index);
 
-                if target_core.core_data.static_variables.is_none() {
-                    target_core.core_data.static_variables =
+                if self.core_data[cd_idx].static_variables.is_none() {
+                    self.core_data[cd_idx].static_variables =
                         Some(debug_info.create_static_scope_cache());
                 }
 
                 // Defer the unwind: `DapBackend::unwind_stack` borrows
-                // `&mut self.backend`, which the live `CoreHandle` already
-                // holds.
-                needs_unwind.push(core_config.core_index);
+                // `&mut self.backend`, which is free now (the scoped
+                // `CoreHandle` is dropped).
+                needs_unwind.push(core_index);
             }
         }
 

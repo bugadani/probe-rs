@@ -5,7 +5,7 @@ use std::{ops::Range, path::Path};
 
 use super::session_data::{self, ActiveBreakpoint, BreakpointType, SourceLocationScope};
 use crate::cmd::dap_server::backend::RttRemoteSeed;
-use crate::cmd::dap_server::debug_adapter::dap::dap_types::{MessageSeverity, PromptKind};
+use crate::cmd::dap_server::debug_adapter::dap::dap_types::PromptKind;
 use crate::cmd::dap_server::debug_adapter::dap::repl_commands::ReplCommand;
 use crate::rpc::Key;
 use crate::rpc::functions::rtt_client::ScanRegion as WireScanRegion;
@@ -21,7 +21,7 @@ use crate::{
             dap::{
                 adapter::DebugAdapter,
                 core_status::DapStatus,
-                dap_types::{ContinuedEventBody, Source, StoppedEventBody},
+                dap_types::{Source, StoppedEventBody},
             },
             protocol::ProtocolAdapter,
         },
@@ -116,69 +116,6 @@ impl CoreHandle<'_> {
     ) {
         self.core_data.last_known_status = CoreStatus::Unknown;
         debug_adapter.all_cores_halted = false;
-    }
-
-    /// Process a freshly-fetched [`CoreStatus`]: compare against
-    /// `last_known_status`, update it, and emit the appropriate DAP event.
-    /// The status is fetched by the caller via
-    /// [`crate::cmd::dap_server::backend::DapBackend::status`].
-    pub(crate) fn process_core_status<P: ProtocolAdapter>(
-        &mut self,
-        debug_adapter: &mut DebugAdapter<P>,
-        status: CoreStatus,
-    ) -> Result<CoreStatus, DebuggerError> {
-        if status == self.core_data.last_known_status {
-            return Ok(status);
-        }
-
-        // Update this unconditionally, because halted() can have more than one variant.
-        self.core_data.last_known_status = status;
-
-        match status {
-            CoreStatus::Running | CoreStatus::Sleeping => {
-                let event_body = Some(ContinuedEventBody {
-                    all_threads_continued: Some(true), // TODO: Implement multi-core awareness here
-                    thread_id: self.id() as i64,
-                });
-                debug_adapter.send_event("continued", event_body)?;
-                tracing::trace!("Notified DAP client that the core continued: {:?}", status);
-            }
-
-            CoreStatus::Halted(HaltReason::Step) => {
-                // HaltReason::Step is a special case, where we have to send a custom event to the client that the core halted.
-                // In this case, we don't re-send the "stopped" event, but further down, we will
-                // update the `last_known_status` to the actual HaltReason returned by the core.
-            }
-
-            CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(_))) => {
-                // We handle semihosting calls without sending a "stopped" event. The core will
-                // be resumed after the semihosting command is handled, unless the command
-                // is not handled or indicates that the core should halt.
-            }
-
-            CoreStatus::Halted(_) => self.notify_halted(debug_adapter, status)?,
-            CoreStatus::LockedUp => {
-                // TODO: We can't really continue here, but the debugger should remain working
-                //
-                // Maybe step should be prevented?
-
-                debug_adapter.show_message(
-                    MessageSeverity::Warning,
-                    format!("Core {} is in locked up state", self.core_id),
-                );
-
-                self.notify_halted(debug_adapter, status)?
-            }
-            CoreStatus::Unknown => {
-                let error =
-                    DebuggerError::Other(anyhow!("Unknown Device status received from Probe-rs"));
-                debug_adapter.show_error_message(&error)?;
-
-                return Err(error);
-            }
-        }
-
-        Ok(status)
     }
 
     /// Search available [`probe_rs::debug::StackFrame`]'s for the given `id`
