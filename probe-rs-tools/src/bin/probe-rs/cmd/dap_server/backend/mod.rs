@@ -22,7 +22,10 @@ use probe_rs::{
     RegisterValue, Session, Target,
     flashing::FlashError,
 };
-use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
+use probe_rs_debug::{
+    DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode,
+    exception_handler_for_core,
+};
 use tokio::runtime::Handle;
 
 use crate::cmd::dap_server::DebuggerError;
@@ -242,6 +245,35 @@ pub trait DapBackend {
     ) -> Result<(), Error> {
         let mut core = self.core(core_index)?;
         core.write_core_reg(register_id, value)
+    }
+
+    /// Full `SteppingMode::step` (over/into/out/instruction) run against the
+    /// live `Core` with the supplied `DebugInfo`. Returns the new
+    /// [`CoreStatus`], program counter, and any `WarnAndContinue` message.
+    /// Default impl runs `SteppingMode::step` locally via
+    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
+    /// `stack_trace/step` round trip (the server owns the cached `DebugInfo`).
+    async fn debug_step(
+        &mut self,
+        core_index: usize,
+        mode: SteppingMode,
+        debug_info: Option<&DebugInfo>,
+    ) -> Result<(CoreStatus, u64, Option<String>), Error> {
+        let mut core = self.core(core_index)?;
+        match mode.step(&mut core, debug_info) {
+            Ok((status, pc)) => Ok((status, pc, None)),
+            Err(DebugError::WarnAndContinue { message }) => {
+                let status = core.status()?;
+                let pc: u64 = core
+                    .read_core_reg::<RegisterValue>(core.program_counter().id())?
+                    .try_into()?;
+                Ok((status, pc, Some(message)))
+            }
+            Err(other) => {
+                core.halt(Duration::from_millis(100)).ok();
+                Err(Error::Other(other.to_string()))
+            }
+        }
     }
 
     /// If `Some`, drive the server-side RTT client over RPC (RPC backend);

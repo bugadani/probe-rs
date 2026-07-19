@@ -24,7 +24,7 @@ use probe_rs::{
 };
 use probe_rs_debug::{
     ColumnType, DebugInfo, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation,
-    StackFrame, TypedPath,
+    StackFrame, SteppingMode, TypedPath,
 };
 use tokio::runtime::Handle;
 
@@ -47,6 +47,7 @@ use crate::rpc::{
             VerifyResult,
         },
         stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
+        debug_vars::WireSteppingMode,
     },
 };
 
@@ -573,6 +574,29 @@ impl DapBackend for RpcBackend {
             .write_core_reg(register_id.into(), value.into())
             .await
             .map_err(rpc_err)
+    }
+
+    async fn debug_step(
+        &mut self,
+        core_index: usize,
+        mode: SteppingMode,
+        _debug_info: Option<&DebugInfo>,
+    ) -> Result<(CoreStatus, u64, Option<String>), Error> {
+        self.invalidate_core_caches(core_index);
+        let wire_mode = match mode {
+            SteppingMode::StepInstruction => WireSteppingMode::StepInstruction,
+            SteppingMode::OverStatement => WireSteppingMode::OverStatement,
+            SteppingMode::IntoStatement => WireSteppingMode::IntoStatement,
+            SteppingMode::OutOfStatement => WireSteppingMode::OutOfStatement,
+            // Not exposed over the wire; map to a safe default.
+            SteppingMode::BreakPoint => WireSteppingMode::OverStatement,
+        };
+        let resp = self
+            .session_interface()
+            .debug_step(core_index as u32, wire_mode)
+            .await
+            .map_err(rpc_err)?;
+        Ok((resp.status.into(), resp.program_counter, resp.warning))
     }
 
     /// Single-round-trip stack unwind: the server unwinds AND owns the

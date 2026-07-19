@@ -259,6 +259,24 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "next" => {
+                debug_adapter
+                    .next(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
+            "stepIn" => {
+                debug_adapter
+                    .step_in(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
+            "stepOut" => {
+                debug_adapter
+                    .step_out(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
@@ -945,9 +963,6 @@ fn dispatch_request<P: ProtocolAdapter>(
             debug_adapter.disconnect(target_core, &request)?;
             return Ok(DebugSessionStatus::Terminate);
         }
-        "next" => debug_adapter.next(target_core, &request)?,
-        "stepIn" => debug_adapter.step_in(target_core, &request)?,
-        "stepOut" => debug_adapter.step_out(target_core, &request)?,
         "setVariable" => debug_adapter.set_variable(target_core, &request)?,
         "configurationDone" => debug_adapter.configuration_done(target_core, &request)?,
         "threads" => debug_adapter.threads(target_core, &request)?,

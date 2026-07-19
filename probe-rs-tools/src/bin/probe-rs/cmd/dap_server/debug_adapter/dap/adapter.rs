@@ -1993,9 +1993,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// Steps through the code at the requested granularity.
     /// - [SteppingMode::StepInstruction]: If MS DAP [SteppingGranularity::Instruction] (usually sent from the disassembly view)
     /// - [SteppingMode::OverStatement]: In all other cases.
-    pub(crate) fn next(
+    pub(crate) async fn next<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: NextArguments = get_arguments(self, request)?;
@@ -2005,15 +2006,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             _ => SteppingMode::OverStatement,
         };
 
-        self.debug_step(stepping_granularity, target_core, request)
+        self.debug_step(stepping_granularity, session_data, core_index, request)
+            .await
     }
 
     /// Steps through the code at the requested granularity.
     /// - [SteppingMode::StepInstruction]: If MS DAP [SteppingGranularity::Instruction] (usually sent from the disassembly view)
     /// - [SteppingMode::IntoStatement]: In all other cases.
-    pub(crate) fn step_in(
+    pub(crate) async fn step_in<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: StepInArguments = get_arguments(self, request)?;
@@ -2022,15 +2025,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             Some(SteppingGranularity::Instruction) => SteppingMode::StepInstruction,
             _ => SteppingMode::IntoStatement,
         };
-        self.debug_step(stepping_granularity, target_core, request)
+        self.debug_step(stepping_granularity, session_data, core_index, request)
+            .await
     }
 
     /// Steps through the code at the requested granularity.
     /// - [SteppingMode::StepInstruction]: If MS DAP [SteppingGranularity::Instruction] (usually sent from the disassembly view)
     /// - [SteppingMode::OutOfStatement]: In all other cases.
-    pub(crate) fn step_out(
+    pub(crate) async fn step_out<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: StepOutArguments = get_arguments(self, request)?;
@@ -2040,17 +2045,20 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             _ => SteppingMode::OutOfStatement,
         };
 
-        self.debug_step(stepping_granularity, target_core, request)
+        self.debug_step(stepping_granularity, session_data, core_index, request)
+            .await
     }
 
     /// Common code for the `next`, `step_in`, and `step_out` methods.
-    fn debug_step(
+    async fn debug_step<B: DapBackend>(
         &mut self,
         stepping_mode: SteppingMode,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<(), anyhow::Error> {
-        self.step_impl(stepping_mode, target_core)?;
+        self.step_impl_async(stepping_mode, session_data, core_index)
+            .await?;
         self.send_response::<()>(request, Ok(None))?;
 
         Ok(())
@@ -2309,6 +2317,76 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
         Ok(core_info)
     }
 
+    pub(crate) async fn step_impl_async<B: DapBackend>(
+        &mut self,
+        stepping_mode: SteppingMode,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+    ) -> Result<u64> {
+        // reset_core_status, inlined (no CoreHandle): mark status Unknown and
+        // clear all_cores_halted without notifying the client.
+        {
+            let core_data = session_data
+                .core_data
+                .iter_mut()
+                .find(|cd| cd.core_index == core_index)
+                .ok_or_else(|| anyhow!("No core data for core index {core_index}"))?;
+            core_data.last_known_status = CoreStatus::Unknown;
+        }
+        self.all_cores_halted = false;
+        let debug_info = session_data
+            .core_data
+            .iter()
+            .find(|cd| cd.core_index == core_index)
+            .and_then(|cd| cd.debug_info.as_ref());
+
+        let (new_status, program_counter, warning) = session_data
+            .backend
+            .debug_step(core_index, stepping_mode, debug_info)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        if let Some(message) = warning {
+            self.dyn_show_message(
+                MessageSeverity::Information,
+                format!("Step error @{program_counter:#010X}: {message}"),
+            );
+        }
+
+        let core_data = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+            .ok_or_else(|| anyhow!("No core data for core index {core_index}"))?;
+        // Override the halt reason: stepping uses breakpoints, which would
+        // otherwise surface as a "BreakPoint" halt reason.
+        core_data.last_known_status = CoreStatus::Halted(HaltReason::Step);
+        if matches!(new_status, CoreStatus::Halted(_)) {
+            let event_body = StoppedEventBody {
+                reason: core_data
+                    .last_known_status
+                    .short_long_status(None)
+                    .0
+                    .to_string(),
+                description: Some(
+                    CoreStatus::Halted(HaltReason::Step)
+                        .short_long_status(Some(program_counter))
+                        .1,
+                ),
+                thread_id: Some(core_index as i64),
+                preserve_focus_hint: None,
+                text: None,
+                all_threads_stopped: Some(self.all_cores_halted),
+                hit_breakpoint_ids: None,
+            };
+            self.dyn_send_event("stopped", serde_json::to_value(event_body).ok())?;
+        }
+        Ok(program_counter)
+    }
+
+    /// Per-core `step_impl` used by the REPL `--step` command (which still
+    /// drives a `Core` via the bridge). Lifted DAP `next`/`stepIn`/`stepOut`
+    /// use `step_impl_async` instead; this is removed once the REPL is
+    /// lifted (cluster 6.8).
     pub(crate) fn step_impl(
         &mut self,
         stepping_mode: SteppingMode,
@@ -2336,7 +2414,6 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
             }
         };
 
-        // We override the halt reason because our implementation of stepping uses breakpoints and results in a "BreakPoint" halt reason, which is not appropriate here.
         target_core.core_data.last_known_status = CoreStatus::Halted(HaltReason::Step);
         if matches!(new_status, CoreStatus::Halted(_)) {
             let event_body = StoppedEventBody {
