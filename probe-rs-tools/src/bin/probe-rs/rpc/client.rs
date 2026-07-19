@@ -44,9 +44,10 @@ use crate::{
             ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
             ReadMemory32Endpoint, ReadMemory64Endpoint, ResetCoreAndHaltEndpoint,
             ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint,
-            ScopesEndpoint, SelectProbeEndpoint, StackTraceStepEndpoint, TakeRichStackTraceEndpoint,
-            TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
-            TempFileDataEndpoint, TokioSpawner, VariablesEndpoint, VerifyEndpoint,
+            ScopesEndpoint, SelectProbeEndpoint, SetVariableEndpoint, StackTraceStepEndpoint,
+            TakeRichStackTraceEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic,
+            TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint, TokioSpawner,
+            VariablesEndpoint, VerifyEndpoint,
             WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
             WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
@@ -59,8 +60,8 @@ use crate::{
             },
             debug_vars::{
                 ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, StepRequest,
-                StepResponse, VariablesRequest, WireEvaluateResponse, WireScope,
-                WireSteppingMode, WireVariable,
+                StepResponse, SetVariableRequest, VariablesRequest, WireEvaluateResponse,
+                WireScope, WireSetVariableResponse, WireSteppingMode, WireVariable,
             },
             file::{AppendFileRequest, TempFile},
             flash::{
@@ -828,6 +829,27 @@ impl SessionInterface {
                 sessid: self.sessid,
                 core,
                 mode,
+            })
+            .await
+    }
+
+    /// Set a local/static variable's value server-side (the `VariableCache`
+    /// lives server-side). Returns the response fields for the DAP
+    /// `setVariable` response body.
+    pub async fn set_variable(
+        &self,
+        core: u32,
+        parent_key: i64,
+        name: String,
+        value: String,
+    ) -> anyhow::Result<WireSetVariableResponse> {
+        self.client
+            .send_resp::<SetVariableEndpoint, _>(&SetVariableRequest {
+                sessid: self.sessid,
+                core,
+                parent_key,
+                name,
+                value,
             })
             .await
     }

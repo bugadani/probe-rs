@@ -554,6 +554,19 @@ impl DapBackend for RpcBackend {
             .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
     }
 
+    async fn set_variable(
+        &mut self,
+        core_index: usize,
+        parent_key: i64,
+        name: String,
+        value: String,
+    ) -> Result<crate::rpc::functions::debug_vars::WireSetVariableResponse, Error> {
+        self.session_interface()
+            .set_variable(core_index as u32, parent_key, name, value)
+            .await
+            .map_err(rpc_err)
+    }
+
     async fn read_core_reg(
         &mut self,
         core_index: usize,

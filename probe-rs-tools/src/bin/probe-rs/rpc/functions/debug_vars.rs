@@ -330,6 +330,97 @@ pub async fn clear_core_debug_state(
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Schema)]
+pub struct SetVariableRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    pub parent_key: i64,
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct WireSetVariableResponse {
+    pub value: String,
+    pub type_: Option<String>,
+    pub variables_reference: i64,
+    pub named_variables: Option<i64>,
+    pub indexed_variables: Option<i64>,
+    pub memory_reference: Option<String>,
+}
+
+pub type SetVariableResult = RpcResult<WireSetVariableResponse>;
+
+/// Set a local/static variable's value server-side. The `VariableCache`
+/// lives server-side (Task 4/5); the client only relays the parent key,
+/// name, and new value. Mirrors the client `set_variable` local/static
+/// branch: search per-frame locals then statics by name+parent, run
+/// `Variable::update_value` against the live `Core`, and return the
+/// response fields.
+pub async fn set_variable(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: SetVariableRequest,
+) -> SetVariableResult {
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
+    let debug_info = guard.get(&request.sessid).map(|s| s.debug_info.clone());
+    let Some(_debug_info) = debug_info else {
+        Err("No debug state for session")?
+    };
+
+    let mut session = ctx.session(request.sessid).await;
+    let mut core = session.core(request.core as usize)?;
+
+    let Some(state) = guard.get_mut(&request.sessid) else {
+        Err("No debug state for session")?
+    };
+    let Some(core_state) = state.per_core.get_mut(&(request.core as usize)) else {
+        Err("No debug state for core")?
+    };
+
+    let parent_key = ObjectRef::from(request.parent_key);
+    let variable_name = VariableName::Named(request.name.clone());
+
+    let mut cache_variable: Option<Variable> = None;
+    let mut variable_cache: Option<&mut VariableCache> = None;
+    for frame in core_state.stack_frames.iter_mut() {
+        if let Some(search_cache) = frame.local_variables.as_mut()
+            && let Some(search_variable) =
+                search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
+        {
+            cache_variable = Some(search_variable);
+            variable_cache = Some(search_cache);
+            break;
+        }
+    }
+    if cache_variable.is_none()
+        && let Some(search_cache) = core_state.static_variables.as_mut()
+        && let Some(search_variable) =
+            search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
+    {
+        cache_variable = Some(search_variable);
+        variable_cache = Some(search_cache);
+    }
+
+    let (Some(cache_variable), Some(variable_cache)) = (cache_variable, variable_cache) else {
+        Err(format!("No variable information found for {variable_name}!"))?
+    };
+
+    cache_variable
+        .update_value(&mut core, variable_cache, request.value.clone())
+        .map_err(|e| e.to_string())?;
+    let (vr, named, indexed) = variable_reference(&cache_variable, variable_cache);
+    Ok(WireSetVariableResponse {
+        value: request.value,
+        type_: Some(format!("{:?}", cache_variable.type_name())),
+        variables_reference: i64::from(vr),
+        named_variables: Some(named),
+        indexed_variables: Some(indexed),
+        memory_reference: Some(cache_variable.memory_location.to_string()),
+    })
+}
+
 /// Resolve an evaluate expression (watch/hover) against a `VariableCache`,
 /// expanding the single-root deferred case first. Returns `None` if the
 /// expression names no variable in `cache`.

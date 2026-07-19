@@ -31,7 +31,6 @@ use probe_rs::{
 };
 use probe_rs_debug::{
     ColumnType, ObjectRef, SourceLocation, SteppingMode, VariableName, VerifiedBreakpoint,
-    exception_handler_for_core,
     registers::{DebugRegister, DebugRegisters},
     stack_frame::StackFrameInfo,
 };
@@ -687,9 +686,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Set the variable with the given name in the variable container to a new value.
-    pub(crate) fn set_variable(
+    pub(crate) async fn set_variable<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: SetVariableArguments = get_arguments(self, request)?;
@@ -709,91 +709,107 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         // - The `StackFrame.id` for register variables.
         // - The `Variable.parent_key` for a local or static variable - If these are base data types, we will attempt to update their value, otherwise we will warn the user that updating complex / structure variables are not yet supported.
         let parent_key: ObjectRef = arguments.variables_reference.into();
-        let new_value = &arguments.value;
+        let new_value = arguments.value.clone();
+
+        let Some(cd_idx) = session_data
+            .core_data
+            .iter()
+            .position(|cd| cd.core_index == core_index)
+        else {
+            return self.send_response::<SetVariableResponseBody>(
+                request,
+                Err(&DebuggerError::Other(anyhow!(
+                    "No core data for core {core_index}"
+                ))),
+            );
+        };
 
         // TODO: Check for, and prevent SVD Peripheral/Register/Field values from being updated, until such time as we can do it safely.
 
-        match target_core
-            .core_data
+        let register_path = session_data.core_data[cd_idx]
             .stack_frames
             .iter()
-            .position(|stack_frame| stack_frame.id == parent_key)
-        {
-            Some(stack_frame_index) => {
-                // The variable is a register value in this StackFrame. Only the top frame maps to
-                // actual core registers; older frames are reconstructed by unwinding.
-                let is_top_stack_frame = target_core
-                    .core_data
-                    .stack_frames
-                    .first()
-                    .is_some_and(|stack_frame| stack_frame.id == parent_key);
-                if !is_top_stack_frame {
+            .position(|stack_frame| stack_frame.id == parent_key);
+
+        if let Some(stack_frame_index) = register_path {
+            // The variable is a register value in this StackFrame. Only the top frame maps to
+            // actual core registers; older frames are reconstructed by unwinding.
+            let is_top_stack_frame = session_data.core_data[cd_idx]
+                .stack_frames
+                .first()
+                .is_some_and(|stack_frame| stack_frame.id == parent_key);
+            if !is_top_stack_frame {
+                return self.send_response::<SetVariableResponseBody>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Register writes are only supported for the top stack frame."
+                    ))),
+                );
+            }
+
+            let Some(register) = find_register_by_dap_name(
+                &session_data.core_data[cd_idx].stack_frames[stack_frame_index].registers,
+                arguments.name.as_str(),
+            ) else {
+                return self.send_response::<SetVariableResponseBody>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Register '{}' was not found in this stack frame.",
+                        arguments.name
+                    ))),
+                );
+            };
+
+            let register_name = register.get_register_name();
+            let register_id = register.core_register.id;
+
+            let register_value = match parse_register_value(&new_value, register.core_register) {
+                Ok(register_value) => register_value,
+                Err(error) => {
                     return self.send_response::<SetVariableResponseBody>(
                         request,
                         Err(&DebuggerError::Other(anyhow!(
-                            "Register writes are only supported for the top stack frame."
+                            "Failed to parse value for register {register_name}: {error}"
                         ))),
                     );
                 }
+            };
 
-                let Some(register) = find_register_by_dap_name(
-                    &target_core.core_data.stack_frames[stack_frame_index].registers,
-                    arguments.name.as_str(),
-                ) else {
+            match session_data.backend.core_halted(core_index).await {
+                Ok(true) => {}
+                Ok(false) => {
                     return self.send_response::<SetVariableResponseBody>(
                         request,
                         Err(&DebuggerError::Other(anyhow!(
-                            "Register '{}' was not found in this stack frame.",
-                            arguments.name
+                            "Register writes require the target core to be halted."
                         ))),
                     );
-                };
-
-                let register_name = register.get_register_name();
-                let register_id = register.core_register.id;
-
-                let register_value = match parse_register_value(new_value, register.core_register) {
-                    Ok(register_value) => register_value,
-                    Err(error) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Failed to parse value for register {register_name}: {error}"
-                            ))),
-                        );
-                    }
-                };
-
-                match target_core.core.core_halted() {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Register writes require the target core to be halted."
-                            ))),
-                        );
-                    }
-                    Err(error) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Failed to read core status before writing register {register_name}: {error}"
-                            ))),
-                        );
-                    }
                 }
-
-                if let Err(error) = target_core.core.write_core_reg(register_id, register_value) {
+                Err(error) => {
                     return self.send_response::<SetVariableResponseBody>(
                         request,
                         Err(&DebuggerError::Other(anyhow!(
-                            "Failed to write register {register_name}: {error}"
+                            "Failed to read core status before writing register {register_name}: {error}"
                         ))),
                     );
                 }
+            }
 
-                let written_register_value = match target_core.core.read_core_reg(register_id) {
+            if let Err(error) = session_data
+                .backend
+                .write_core_reg(core_index, register_id, register_value)
+                .await
+            {
+                return self.send_response::<SetVariableResponseBody>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Failed to write register {register_name}: {error}"
+                    ))),
+                );
+            }
+
+            let written_register_value =
+                match session_data.backend.read_core_reg(core_index, register_id).await {
                     Ok(written_register_value) => written_register_value,
                     Err(error) => {
                         return self.send_response::<SetVariableResponseBody>(
@@ -805,88 +821,160 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     }
                 };
 
-                if register_requires_exact_readback(register.core_register)
-                    && written_register_value != register_value
-                {
-                    return self.send_response::<SetVariableResponseBody>(
-                        request,
-                        Err(&DebuggerError::Other(anyhow!(
-                            "Register {register_name} read back as {written_register_value} after writing {register_value}."
-                        ))),
-                    );
-                }
-
-                if register_write_requires_stack_frame_refresh(register.core_register) {
-                    if let Err(error) = refresh_stack_frames(target_core, parent_key) {
-                        let message = format!(
-                            "Register {register_name} was written, but stack frames could not be refreshed: {error}"
-                        );
-                        tracing::warn!("{message}");
-                        target_core.core_data.stack_frames.clear();
-                        self.show_message(MessageSeverity::Warning, message);
-                    }
-                } else {
-                    let stack_frame = &mut target_core.core_data.stack_frames[stack_frame_index];
-                    if let Some(cached_register) =
-                        stack_frame.registers.get_register_mut(register_id)
-                    {
-                        cached_register.value = Some(written_register_value);
-                    }
-                }
-
-                response_body.indexed_variables = Some(0);
-                response_body.named_variables = Some(0);
-                response_body.type_ = Some(format!("{:?}", register.core_register.data_type()));
-                response_body.value = written_register_value.to_string();
-                response_body.variables_reference = Some(0);
+            if register_requires_exact_readback(register.core_register)
+                && written_register_value != register_value
+            {
+                return self.send_response::<SetVariableResponseBody>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Register {register_name} read back as {written_register_value} after writing {register_value}."
+                    ))),
+                );
             }
-            None => {
-                let variable_name = VariableName::Named(arguments.name.clone());
 
-                // The parent_key refers to a local or static variable in one of the in-scope StackFrames.
-                let mut cache_variable: Option<probe_rs_debug::Variable> = None;
-                let mut variable_cache: Option<&mut probe_rs_debug::VariableCache> = None;
-                for search_frame in target_core.core_data.stack_frames.iter_mut() {
-                    if let Some(search_cache) = &mut search_frame.local_variables
-                        && let Some(search_variable) =
-                            search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
+            if register_write_requires_stack_frame_refresh(register.core_register) {
+                if let Some(debug_info) = &session_data.core_data[cd_idx].debug_info {
+                    match session_data
+                        .backend
+                        .unwind_stack(core_index, None, debug_info, 500)
+                        .await
                     {
-                        cache_variable = Some(search_variable);
-                        variable_cache = Some(search_cache);
-                        break;
-                    }
-                }
-
-                if let (Some(cache_variable), Some(variable_cache)) =
-                    (cache_variable, variable_cache)
-                {
-                    // We have found the variable that needs to be updated.
-                    match cache_variable.update_value(
-                        &mut target_core.core,
-                        variable_cache,
-                        new_value.clone(),
-                    ) {
-                        Ok(()) => {
-                            let (
-                                variables_reference,
-                                named_child_variables_cnt,
-                                indexed_child_variables_cnt,
-                            ) = get_variable_reference(&cache_variable, variable_cache);
-                            response_body.variables_reference = Some(variables_reference.into());
-                            response_body.named_variables = Some(named_child_variables_cnt);
-                            response_body.indexed_variables = Some(indexed_child_variables_cnt);
-                            response_body.type_ = Some(format!("{:?}", cache_variable.type_name));
-                            response_body.value.clone_from(new_value);
+                        Ok(mut frames) => {
+                            if let Some(top) = frames.first_mut() {
+                                top.id = parent_key;
+                            }
+                            session_data.core_data[cd_idx].stack_frames = frames;
                         }
                         Err(error) => {
-                            return self.send_response::<SetVariableResponseBody>(
-                                request,
-                                Err(&DebuggerError::Other(anyhow!(
-                                    "Failed to update variable: {}, with new value {new_value:?}: {error:?}",
-                                    cache_variable.name,
-                                ))),
+                            let message = format!(
+                                "Register {register_name} was written, but stack frames could not be refreshed: {error}"
                             );
+                            tracing::warn!("{message}");
+                            session_data.core_data[cd_idx].stack_frames.clear();
+                            self.show_message(MessageSeverity::Warning, message);
                         }
+                    }
+                } else {
+                    session_data.core_data[cd_idx].stack_frames.clear();
+                }
+            } else if let Some(cached_register) = session_data.core_data[cd_idx]
+                .stack_frames
+                .get_mut(stack_frame_index)
+                .and_then(|f| f.registers.get_register_mut(register_id))
+            {
+                cached_register.value = Some(written_register_value);
+            }
+
+            response_body.indexed_variables = Some(0);
+            response_body.named_variables = Some(0);
+            response_body.type_ = Some(format!("{:?}", register.core_register.data_type()));
+            response_body.value = written_register_value.to_string();
+            response_body.variables_reference = Some(0);
+        } else {
+            // Variable path: local backends resolve against the client-side
+            // `VariableCache` (in `CoreData`) via `backend.core()`; the RPC
+            // backend has no client-side cache (it lives server-side), so it
+            // falls through to `backend.set_variable` which `.await`s the
+            // `stack_trace/set_variable` round trip.
+            let variable_name = VariableName::Named(arguments.name.clone());
+
+            let mut found_local: Option<(probe_rs_debug::Variable, usize)> = None;
+            for (i, frame) in session_data.core_data[cd_idx]
+                .stack_frames
+                .iter()
+                .enumerate()
+            {
+                if let Some(search_cache) = &frame.local_variables
+                    && let Some(search_variable) =
+                        search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
+                {
+                    found_local = Some((search_variable, i));
+                    break;
+                }
+            }
+
+            let mut found_static: Option<probe_rs_debug::Variable> = None;
+            if found_local.is_none()
+                && let Some(search_cache) = &session_data.core_data[cd_idx].static_variables
+                && let Some(search_variable) =
+                    search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
+            {
+                found_static = Some(search_variable);
+            }
+
+            if let Some((cache_variable, frame_index)) = found_local {
+                let mut core = session_data.backend.core(core_index)?;
+                let cache = session_data.core_data[cd_idx].stack_frames[frame_index]
+                    .local_variables
+                    .as_mut()
+                    .expect("local_variables was Some during search");
+                match cache_variable.update_value(&mut core, cache, new_value.clone()) {
+                    Ok(()) => {
+                        let (vr, named, indexed) = get_variable_reference(&cache_variable, cache);
+                        response_body.variables_reference = Some(vr.into());
+                        response_body.named_variables = Some(named);
+                        response_body.indexed_variables = Some(indexed);
+                        response_body.type_ = Some(format!("{:?}", cache_variable.type_name()));
+                        response_body.value = new_value;
+                    }
+                    Err(error) => {
+                        return self.send_response::<SetVariableResponseBody>(
+                            request,
+                            Err(&DebuggerError::Other(anyhow!(
+                                "Failed to update variable: {}, with new value {new_value:?}: {error:?}",
+                                cache_variable.name,
+                            ))),
+                        );
+                    }
+                }
+            } else if let Some(cache_variable) = found_static {
+                let mut core = session_data.backend.core(core_index)?;
+                let cache = session_data.core_data[cd_idx]
+                    .static_variables
+                    .as_mut()
+                    .expect("static_variables was Some during search");
+                match cache_variable.update_value(&mut core, cache, new_value.clone()) {
+                    Ok(()) => {
+                        let (vr, named, indexed) = get_variable_reference(&cache_variable, cache);
+                        response_body.variables_reference = Some(vr.into());
+                        response_body.named_variables = Some(named);
+                        response_body.indexed_variables = Some(indexed);
+                        response_body.type_ = Some(format!("{:?}", cache_variable.type_name()));
+                        response_body.value = new_value;
+                    }
+                    Err(error) => {
+                        return self.send_response::<SetVariableResponseBody>(
+                            request,
+                            Err(&DebuggerError::Other(anyhow!(
+                                "Failed to update variable: {}, with new value {new_value:?}: {error:?}",
+                                cache_variable.name,
+                            ))),
+                        );
+                    }
+                }
+            } else {
+                // RPC path: no client-side cache — defer to the server.
+                match session_data
+                    .backend
+                    .set_variable(core_index, parent_key.into(), arguments.name.clone(), new_value.clone())
+                    .await
+                {
+                    Ok(resp) => {
+                        response_body.value = resp.value;
+                        response_body.type_ = resp.type_;
+                        response_body.variables_reference = Some(resp.variables_reference);
+                        response_body.named_variables = resp.named_variables;
+                        response_body.indexed_variables = resp.indexed_variables;
+                        response_body.memory_reference = resp.memory_reference;
+                    }
+                    Err(error) => {
+                        return self.send_response::<SetVariableResponseBody>(
+                            request,
+                            Err(&DebuggerError::Other(anyhow!(
+                                "Failed to update variable: {}, with new value {new_value:?}: {error}",
+                                variable_name,
+                            ))),
+                        );
                     }
                 }
             }
@@ -2592,35 +2680,6 @@ fn register_write_requires_stack_frame_refresh(register: &CoreRegister) -> bool 
         || register.register_has_role(RegisterRole::MainStackPointer)
         || register.register_has_role(RegisterRole::ProcessStackPointer)
         || register.register_has_role(RegisterRole::ReturnAddress)
-}
-
-fn refresh_stack_frames(
-    target_core: &mut CoreHandle<'_>,
-    preserved_top_frame_id: ObjectRef,
-) -> Result<()> {
-    let Some(debug_info) = target_core.core_data.debug_info.as_ref() else {
-        target_core.core_data.stack_frames.clear();
-        return Ok(());
-    };
-
-    let initial_registers = DebugRegisters::from_core(&mut target_core.core);
-    let exception_interface = exception_handler_for_core(target_core.core.core_type());
-    let instruction_set = target_core.core.instruction_set().ok();
-
-    let mut stack_frames = debug_info.unwind(
-        &mut target_core.core,
-        initial_registers,
-        exception_interface.as_ref(),
-        instruction_set,
-        500,
-    )?;
-
-    if let Some(top_frame) = stack_frames.first_mut() {
-        top_frame.id = preserved_top_frame_id;
-    }
-
-    target_core.core_data.stack_frames = stack_frames;
-    Ok(())
 }
 
 pub fn get_arguments<T: DeserializeOwned, P: ProtocolAdapter>(

@@ -24,9 +24,10 @@ use crate::{
                 core_step, core_wait_halted, core_write_reg,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, StepRequest,
-                VariablesRequest, clear_core_debug_state, evaluate as debug_evaluate,
-                scopes as debug_scopes, step as debug_step, variables as debug_variables,
+                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, SetVariableRequest,
+                StepRequest, VariablesRequest, clear_core_debug_state, evaluate as debug_evaluate,
+                scopes as debug_scopes, set_variable as debug_set_variable, step as debug_step,
+                variables as debug_variables,
             },
             flash::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
@@ -504,6 +505,7 @@ type ScopesResponse = RpcResult<Vec<debug_vars::WireScope>>;
 type VariablesResponse = RpcResult<Vec<debug_vars::WireVariable>>;
 type EvaluateResponse = RpcResult<debug_vars::WireEvaluateResponse>;
 type StepResponse = RpcResult<debug_vars::StepResponse>;
+type SetVariableResponse = RpcResult<debug_vars::WireSetVariableResponse>;
 
 type WriteMemory8Request = WriteMemoryRequest<u8>;
 type WriteMemory16Request = WriteMemoryRequest<u16>;
@@ -541,6 +543,7 @@ endpoints! {
     | ClearCoreDebugStateEndpoint | ClearCoreDebugStateRequest | NoResponse           | "debug_state/clear_core" |
     | EvaluateEndpoint          | EvaluateRequest          | EvaluateResponse       | "stack_trace/evaluate" |
     | StackTraceStepEndpoint    | StepRequest             | StepResponse            | "stack_trace/step" |
+    | SetVariableEndpoint       | SetVariableRequest      | SetVariableResponse     | "stack_trace/set_variable" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
     | EraseEndpoint             | EraseRequest            | NoResponse              | "flash/erase"      |
@@ -636,6 +639,7 @@ postcard_rpc::define_dispatch! {
         | ClearCoreDebugStateEndpoint | async   | clear_core_debug_state |
         | EvaluateEndpoint          | async     | debug_evaluate    |
         | StackTraceStepEndpoint    | async     | debug_step        |
+        | SetVariableEndpoint       | async     | debug_set_variable |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |
         | EraseEndpoint             | async     | erase             |

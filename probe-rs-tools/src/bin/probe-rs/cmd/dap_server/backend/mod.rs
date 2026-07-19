@@ -233,6 +233,24 @@ pub trait DapBackend {
         Ok(core.architecture())
     }
 
+    /// Set a local/static variable's value. Default impl is a no-op error:
+    /// the local `Session` path resolves variables against the
+    /// client-side `VariableCache` (in `CoreData`) directly in the
+    /// `set_variable` handler, so this method is only reached by the RPC
+    /// backend, whose override `.await`s the `stack_trace/set_variable`
+    /// round trip (the `VariableCache` lives server-side).
+    async fn set_variable(
+        &mut self,
+        _core_index: usize,
+        _parent_key: i64,
+        _name: String,
+        _value: String,
+    ) -> Result<crate::rpc::functions::debug_vars::WireSetVariableResponse, Error> {
+        Err(Error::Other(
+            "Variable not found in any client-side cache.".to_string(),
+        ))
+    }
+
     /// Read a single core register. Default via [`DapBackend::core`]; the RPC
     /// backend overrides this to `.await` the `core/read_reg` round trip.
     async fn read_core_reg(
