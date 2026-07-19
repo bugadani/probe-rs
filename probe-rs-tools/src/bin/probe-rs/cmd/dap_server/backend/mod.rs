@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use probe_rs::{
-    Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, RegisterId,
+    Architecture, Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, RegisterId,
     RegisterValue, Session, Target,
     flashing::FlashError,
 };
@@ -222,6 +222,15 @@ pub trait DapBackend {
     async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
         let mut core = self.core(core_index)?;
         core.core_halted()
+    }
+
+    /// Static core architecture. The default impl queries the live `Core`;
+    /// the RPC backend overrides this to read its cached per-core metadata
+    /// (no round trip), so callers can branch on architecture without a
+    /// `Core` (e.g. `reapply_breakpoints` after reset).
+    async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
+        let core = self.core(core_index)?;
+        Ok(core.architecture())
     }
 
     /// Read a single core register. Default via [`DapBackend::core`]; the RPC

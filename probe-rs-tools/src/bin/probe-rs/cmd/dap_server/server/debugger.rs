@@ -636,14 +636,17 @@ impl Debugger {
                 };
         }
 
+        // `restart_async` borrows `session_data` directly, so the attached
+        // `CoreHandle` must be released first.
+        drop(target_core);
+
         if requested_target_session_type == TargetSessionType::LaunchRequest {
             // This will effectively do a `reset` and `halt` of the core, which is what we want until after the `configuration_done` request.
             debug_adapter
-                .restart(&mut target_core, None)
+                .restart_async(&mut session_data, target_core_config.core_index, None)
+                .await
                 .context("Failed to restart core")?;
         }
-
-        drop(target_core);
 
         session_data.poll_cores(&self.config, debug_adapter).await?;
 
@@ -715,12 +718,10 @@ impl Debugger {
 
         session_data.poll_cores(&self.config, debug_adapter).await?;
 
-        // Re-attach
-        let mut target_core = session_data.attach_core(target_core_config.core_index)?;
-
         // After completing optional flashing and other config, we can run the debug adapter's restart logic.
         debug_adapter
-            .restart(&mut target_core, Some(request))
+            .restart_async(session_data, target_core_config.core_index, Some(request))
+            .await
             .context("Failed to restart core")?;
 
         Ok(())

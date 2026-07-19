@@ -26,8 +26,8 @@ use base64::{Engine as _, engine::general_purpose as base64_engine};
 use dap_types::*;
 use parse_int::parse;
 use probe_rs::{
-    CoreInformation, CoreRegister, CoreStatus, HaltReason, RegisterDataType, RegisterRole,
-    RegisterValue, UnwindRule,
+    Architecture, CoreInformation, CoreRegister, CoreStatus, HaltReason, RegisterDataType,
+    RegisterRole, RegisterValue, UnwindRule,
 };
 use probe_rs_debug::{
     ColumnType, ObjectRef, SourceLocation, SteppingMode, VariableName, VerifiedBreakpoint,
@@ -903,74 +903,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             Ok(Some(response_body))
         };
         self.send_response(request, response)
-    }
-
-    pub(crate) fn restart(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-        request: Option<&Request>,
-    ) -> Result<()> {
-        // The DAP Client will always do a `reset_and_halt`, and then will consider `halt_after_reset` value after the `configuration_done` request.
-        // Otherwise the probe will run past the `main()` before the DAP Client has had a chance to set breakpoints in `main()`.
-        let core_info = match self.reset_and_halt_core(target_core) {
-            Ok(core_info) => core_info,
-            Err(error) => {
-                return self.show_error_message(&DebuggerError::Other(anyhow!("{error}")));
-            }
-        };
-
-        // Different code paths if we invoke this from a request, versus an internal function.
-        if let Some(request) = request {
-            // Now we can decide if it is appropriate to resume the core.
-            if !self.halt_after_reset {
-                if let Err(error) = self.continue_impl(target_core) {
-                    return self.send_response::<()>(
-                        request,
-                        Err(&DebuggerError::Other(anyhow!("{error}"))),
-                    );
-                }
-
-                self.send_response::<()>(request, Ok(None))?;
-                let event_body = Some(ContinuedEventBody {
-                    all_threads_continued: Some(false), // TODO: Implement multi-core logic here
-                    thread_id: target_core.id() as i64,
-                });
-                self.send_event("continued", event_body)?;
-            } else {
-                self.send_response::<()>(request, Ok(None))?;
-                let event_body = Some(StoppedEventBody {
-                    reason: "restart".to_owned(),
-                    description: Some(
-                        CoreStatus::Halted(HaltReason::External)
-                            .short_long_status(None)
-                            .1,
-                    ),
-                    thread_id: Some(target_core.id() as i64),
-                    preserve_focus_hint: None,
-                    text: None,
-                    all_threads_stopped: Some(self.all_cores_halted),
-                    hit_breakpoint_ids: None,
-                });
-                self.send_event("stopped", event_body)?;
-            }
-        } else if self.configuration_is_done() {
-            // Only notify the DAP client if we are NOT in initialization stage ([`DebugAdapter::configuration_done`]).
-            let event_body = Some(StoppedEventBody {
-                reason: "restart".to_owned(),
-                description: Some(
-                    CoreStatus::Halted(HaltReason::External)
-                        .short_long_status(Some(core_info.pc))
-                        .1,
-                ),
-                thread_id: Some(target_core.id() as i64),
-                preserve_focus_hint: None,
-                text: None,
-                all_threads_stopped: Some(self.all_cores_halted),
-                hit_breakpoint_ids: None,
-            });
-            self.send_event("stopped", event_body)?;
-        }
-        Ok(())
     }
 
     #[tracing::instrument(level = "debug", skip_all, name = "Handle configuration done")]
@@ -2061,6 +1993,126 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .await?;
         self.send_response::<()>(request, Ok(None))?;
 
+        Ok(())
+    }
+
+    /// Session-level `reset_and_halt` for the lifted `restart` path. Uses
+    /// `backend.reset_and_halt` + `backend.core_architecture` (cached, no
+    /// round trip) to re-apply breakpoints on Riscv/Xtensa, then resets
+    /// `core_data.last_known_status`. The per-core `reset_and_halt_core`
+    /// remains for the REPL path until cluster 6.8.
+    pub(crate) async fn reset_and_halt_core_async<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+    ) -> Result<CoreInformation> {
+        let core_info = session_data
+            .backend
+            .reset_and_halt(core_index, Duration::from_millis(500))
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+
+        let arch = session_data
+            .backend
+            .core_architecture(core_index)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        if [Architecture::Riscv, Architecture::Xtensa].contains(&arch) {
+            let addrs: Vec<u64> = session_data
+                .core_data
+                .iter()
+                .find(|cd| cd.core_index == core_index)
+                .map(|cd| cd.breakpoints.iter().map(|bp| bp.address).collect())
+                .unwrap_or_default();
+            if !addrs.is_empty() {
+                session_data
+                    .backend
+                    .set_hw_breakpoints(core_index, addrs)
+                    .await
+                    .map_err(|e| {
+                        DebuggerError::Other(anyhow!(
+                            "Failed to re-apply breakpoints after reset: {e}"
+                        ))
+                    })?;
+            }
+        }
+
+        if let Some(cd) = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            cd.last_known_status = CoreStatus::Unknown;
+        }
+        self.all_cores_halted = false;
+        Ok(core_info)
+    }
+
+    /// Session-level `restart` for the lifted path. Mirrors the per-core
+    /// `restart`: reset-and-halt (+ reapply breakpoints), then optionally
+    /// resume via `continue_impl_async`, emitting the `stopped`/`continued`
+    /// DAP events. Called from `Debugger::restart`.
+    pub(crate) async fn restart_async<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+        request: Option<&Request>,
+    ) -> Result<()> {
+        let core_info = match self.reset_and_halt_core_async(session_data, core_index).await {
+            Ok(core_info) => core_info,
+            Err(error) => {
+                return self.show_error_message(&DebuggerError::Other(anyhow!("{error}")));
+            }
+        };
+
+        if let Some(request) = request {
+            if !self.halt_after_reset {
+                if let Err(error) = self.continue_impl_async(session_data, core_index).await {
+                    return self.send_response::<()>(
+                        request,
+                        Err(&DebuggerError::Other(anyhow!("{error}"))),
+                    );
+                }
+
+                self.send_response::<()>(request, Ok(None))?;
+                let event_body = Some(ContinuedEventBody {
+                    all_threads_continued: Some(false),
+                    thread_id: core_index as i64,
+                });
+                self.send_event("continued", event_body)?;
+            } else {
+                self.send_response::<()>(request, Ok(None))?;
+                let event_body = Some(StoppedEventBody {
+                    reason: "restart".to_owned(),
+                    description: Some(
+                        CoreStatus::Halted(HaltReason::External)
+                            .short_long_status(None)
+                            .1,
+                    ),
+                    thread_id: Some(core_index as i64),
+                    preserve_focus_hint: None,
+                    text: None,
+                    all_threads_stopped: Some(self.all_cores_halted),
+                    hit_breakpoint_ids: None,
+                });
+                self.send_event("stopped", event_body)?;
+            }
+        } else if self.configuration_is_done() {
+            let event_body = Some(StoppedEventBody {
+                reason: "restart".to_owned(),
+                description: Some(
+                    CoreStatus::Halted(HaltReason::External)
+                        .short_long_status(Some(core_info.pc))
+                        .1,
+                ),
+                thread_id: Some(core_index as i64),
+                preserve_focus_hint: None,
+                text: None,
+                all_threads_stopped: Some(self.all_cores_halted),
+                hit_breakpoint_ids: None,
+            });
+            self.send_event("stopped", event_body)?;
+        }
         Ok(())
     }
 

@@ -547,6 +547,13 @@ impl DapBackend for RpcBackend {
         client.core_halted().await.map_err(rpc_err)
     }
 
+    async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
+        self.core_metadata
+            .get(core_index)
+            .map(|m| m.architecture)
+            .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
+    }
+
     async fn read_core_reg(
         &mut self,
         core_index: usize,
