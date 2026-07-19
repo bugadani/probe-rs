@@ -29,6 +29,7 @@ use crate::{
                 scopes as debug_scopes, set_variable as debug_set_variable, step as debug_step,
                 variables as debug_variables,
             },
+            disassemble::{DisassembleRequest, disassemble as disassemble_handler},
             flash::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
                 VerifyRequest, VerifyResponse, build, erase, flash, verify,
@@ -85,6 +86,7 @@ use tokio_util::sync::CancellationToken;
 pub mod chip;
 pub mod core_ops;
 pub mod debug_vars;
+pub mod disassemble;
 pub mod file;
 pub mod flash;
 pub mod info;
@@ -506,6 +508,7 @@ type VariablesResponse = RpcResult<Vec<debug_vars::WireVariable>>;
 type EvaluateResponse = RpcResult<debug_vars::WireEvaluateResponse>;
 type StepResponse = RpcResult<debug_vars::StepResponse>;
 type SetVariableResponse = RpcResult<debug_vars::WireSetVariableResponse>;
+type DisassembleResponse = RpcResult<Vec<disassemble::WireDisassembledInstruction>>;
 
 type WriteMemory8Request = WriteMemoryRequest<u8>;
 type WriteMemory16Request = WriteMemoryRequest<u16>;
@@ -544,6 +547,7 @@ endpoints! {
     | EvaluateEndpoint          | EvaluateRequest          | EvaluateResponse       | "stack_trace/evaluate" |
     | StackTraceStepEndpoint    | StepRequest             | StepResponse            | "stack_trace/step" |
     | SetVariableEndpoint       | SetVariableRequest      | SetVariableResponse     | "stack_trace/set_variable" |
+    | DisassembleEndpoint       | DisassembleRequest      | DisassembleResponse     | "core/disassemble" |
     | BuildEndpoint             | BuildRequest            | BuildResponse           | "flash/build"      |
     | FlashEndpoint             | FlashRequest            | NoResponse              | "flash/flash"      |
     | EraseEndpoint             | EraseRequest            | NoResponse              | "flash/erase"      |
@@ -640,6 +644,7 @@ postcard_rpc::define_dispatch! {
         | EvaluateEndpoint          | async     | debug_evaluate    |
         | StackTraceStepEndpoint    | async     | debug_step        |
         | SetVariableEndpoint       | async     | debug_set_variable |
+        | DisassembleEndpoint       | async     | disassemble_handler |
         | BuildEndpoint             | async     | build             |
         | FlashEndpoint             | async     | flash             |
         | EraseEndpoint             | async     | erase             |

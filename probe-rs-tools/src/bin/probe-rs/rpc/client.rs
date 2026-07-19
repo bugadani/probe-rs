@@ -43,6 +43,7 @@ use crate::{
             ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
             ReadMemory32Endpoint, ReadMemory64Endpoint, ResetCoreAndHaltEndpoint,
             ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint,
+            DisassembleEndpoint,
             ScopesEndpoint, SelectProbeEndpoint, SetVariableEndpoint, StackTraceStepEndpoint,
             TakeRichStackTraceEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic,
             TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint, TokioSpawner,
@@ -61,6 +62,7 @@ use crate::{
                 StepRequest, StepResponse, VariablesRequest, WireEvaluateResponse, WireScope,
                 WireSetVariableResponse, WireSteppingMode, WireVariable,
             },
+            disassemble::{DisassembleRequest, WireDisassembledInstruction},
             file::{AppendFileRequest, TempFile},
             flash::{
                 BootInfo, BuildRequest, BuildResult, DownloadOptions, EraseCommand, EraseRequest,
@@ -848,6 +850,26 @@ impl SessionInterface {
                 parent_key,
                 name,
                 value,
+            })
+            .await
+    }
+
+    pub async fn disassemble(
+        &self,
+        core: u32,
+        memory_reference: u64,
+        byte_offset: i64,
+        instruction_offset: i64,
+        instruction_count: i64,
+    ) -> anyhow::Result<Vec<WireDisassembledInstruction>> {
+        self.client
+            .send_resp::<DisassembleEndpoint, _>(&DisassembleRequest {
+                sessid: self.sessid,
+                core,
+                memory_reference,
+                byte_offset,
+                instruction_offset,
+                instruction_count,
             })
             .await
     }

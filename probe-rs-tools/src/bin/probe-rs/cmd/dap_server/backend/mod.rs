@@ -18,8 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use probe_rs::{
-    Architecture, Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, RegisterId,
-    RegisterValue, Session, Target, flashing::FlashError,
+    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error, MemoryInterface,
+    RegisterId, RegisterValue, Session, Target, flashing::FlashError,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
@@ -247,6 +247,41 @@ pub trait DapBackend {
         Err(Error::Other(
             "Variable not found in any client-side cache.".to_string(),
         ))
+    }
+
+    /// Disassemble target memory. Default impl runs the shared
+    /// `disassemble_target_memory` against a local `Core` + the supplied
+    /// `DebugInfo`; the RPC backend overrides this to `.await` the
+    /// `core/disassemble` round trip (the server owns the `DebugInfo` and
+    /// does the capstone work, so the `debug_info` arg is ignored).
+    async fn disassemble(
+        &mut self,
+        core_index: usize,
+        debug_info: Option<&probe_rs_debug::DebugInfo>,
+        memory_reference: u64,
+        byte_offset: i64,
+        instruction_offset: i64,
+        instruction_count: i64,
+    ) -> Result<Vec<crate::cmd::dap_server::debug_adapter::dap::dap_types::DisassembledInstruction>, Error> {
+        use crate::cmd::dap_server::debug_adapter::dap::request_helpers::{
+            DisassemblyAmount, disassemble_target_memory,
+        };
+        let mut core = self.core(core_index)?;
+        let instruction_set = core.instruction_set()?;
+        let core_type = core.core_type();
+        let endianness = core.endianness()?;
+        disassemble_target_memory(
+            &mut core,
+            instruction_set,
+            core_type,
+            endianness,
+            debug_info,
+            instruction_offset,
+            byte_offset,
+            memory_reference,
+            DisassemblyAmount::Instructions(instruction_count),
+        )
+        .map_err(|e| Error::Other(e.to_string()))
     }
 
     /// Read a single core register. Default via [`DapBackend::core`]; the RPC

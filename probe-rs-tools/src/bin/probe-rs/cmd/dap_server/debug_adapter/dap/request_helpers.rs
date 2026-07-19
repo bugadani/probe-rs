@@ -23,6 +23,7 @@ pub(crate) enum DisassemblyAmount {
     Bytes(u64),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn disassemble_target_memory<M: MemoryInterface<Error>>(
     mem: &mut M,
     instruction_set: InstructionSet,

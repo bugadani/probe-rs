@@ -3,8 +3,7 @@ use super::{
     dap_types,
     repl_commands_helpers::{build_expanded_commands, command_completions},
     request_helpers::{
-        DisassemblyAmount, disassemble_target_memory, get_dap_source, get_svd_variable_reference,
-        get_variable_reference,
+        get_dap_source, get_svd_variable_reference, get_variable_reference,
     },
 };
 use crate::cmd::dap_server::backend::DapBackend;
@@ -26,8 +25,8 @@ use base64::{Engine as _, engine::general_purpose as base64_engine};
 use dap_types::*;
 use parse_int::parse;
 use probe_rs::{
-    Architecture, CoreInformation, CoreInterface, CoreRegister, CoreStatus, HaltReason,
-    RegisterDataType, RegisterRole, RegisterValue, UnwindRule,
+    Architecture, CoreInformation, CoreRegister, CoreStatus, HaltReason, RegisterDataType,
+    RegisterRole, RegisterValue, UnwindRule,
 };
 use probe_rs_debug::{
     ColumnType, ObjectRef, SourceLocation, SteppingMode, VariableName, VerifiedBreakpoint,
@@ -1673,44 +1672,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(ScopesResponseBody { scopes: dap_scopes })))
     }
 
-    /// Attempt to extract disassembled source code to supply the instruction_count required.
-    pub(crate) fn get_disassembled_source(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-        // The program_counter where our desired instruction range is based.
-        memory_reference: i64,
-        // The number of bytes offset from the memory reference. Can be zero.
-        byte_offset: i64,
-        // The number of instruction offset from the memory reference. Can be zero.
-        instruction_offset: i64,
-        // The EXACT number of instructions to return in the result.
-        instruction_count: i64,
-    ) -> Result<Vec<dap_types::DisassembledInstruction>, DebuggerError> {
-        let instruction_set = target_core.core.instruction_set()?;
-        let core_type = target_core.core.core_type();
-        let endianness = target_core.core.endianness()?;
-        let debug_info = target_core.core_data.debug_info.as_ref();
-        let assembly_lines = disassemble_target_memory(
-            &mut target_core.core,
-            instruction_set,
-            core_type,
-            endianness,
-            debug_info,
-            instruction_offset,
-            byte_offset,
-            memory_reference as u64,
-            DisassemblyAmount::Instructions(instruction_count),
-        )?;
-
-        if assembly_lines.is_empty() {
-            Err(DebuggerError::Other(anyhow::anyhow!(
-                "No valid instructions found at memory reference {memory_reference:#010x?}"
-            )))
-        } else {
-            Ok(assembly_lines)
-        }
-    }
-
     /// Implementing the MS DAP for `request Disassemble` has a number of problems:
     /// - The api requires that we return EXACTLY the instruction_count specified.
     ///   - From testing, if we provide slightly fewer or more instructions, the current versions of VSCode will behave in unpredictable ways (frequently causes runaway renderer processes).
@@ -1726,21 +1687,32 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     ///   - Reached the required number of instructions.
     ///   - We encounter 'unreadable' memory on the target.
     ///     - In this case, pad the results with, as the api requires, "implementation defined invalid instructions"
-    pub(crate) fn disassemble(
+    pub(crate) async fn disassemble<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: DisassembleArguments = get_arguments(self, request)?;
 
         if let Ok(memory_reference) = parse_int::parse::<u64>(&arguments.memory_reference) {
-            match self.get_disassembled_source(
-                target_core,
-                memory_reference as i64,
-                arguments.offset.unwrap_or(0_i64),
-                arguments.instruction_offset.unwrap_or(0_i64),
-                arguments.instruction_count,
-            ) {
+            let debug_info: Option<&probe_rs_debug::DebugInfo> = session_data
+                .core_data
+                .iter()
+                .find(|cd| cd.core_index == core_index)
+                .and_then(|cd| cd.debug_info.as_ref());
+            match session_data
+                .backend
+                .disassemble(
+                    core_index,
+                    debug_info,
+                    memory_reference,
+                    arguments.offset.unwrap_or(0_i64),
+                    arguments.instruction_offset.unwrap_or(0_i64),
+                    arguments.instruction_count,
+                )
+                .await
+            {
                 Ok(disassembled_instructions) => self.send_response(
                     request,
                     Ok(Some(DisassembleResponseBody {

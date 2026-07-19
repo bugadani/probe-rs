@@ -283,6 +283,12 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "disassemble" => {
+                debug_adapter
+                    .disassemble(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
@@ -980,7 +986,6 @@ fn dispatch_request<P: ProtocolAdapter>(
 
             return Ok(DebugSessionStatus::Restart(request));
         }
-        "disassemble" => debug_adapter.disassemble(target_core, &request)?,
         "completions" => debug_adapter.completions(target_core, &request)?,
 
         unimplemented_command => {

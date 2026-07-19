@@ -31,7 +31,7 @@ use tokio::runtime::Handle;
 use super::{DapBackend, FlashingBackend, block_on};
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
-    EvaluateArguments, EvaluateResponseBody, Scope, Variable,
+    DisassembledInstruction, EvaluateArguments, EvaluateResponseBody, Scope, Source, Variable,
 };
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::{
@@ -43,6 +43,7 @@ use crate::rpc::{
             WireSemihostingCommand, WireVectorCatchCondition,
         },
         debug_vars::WireSteppingMode,
+        disassemble::{WireDisassembledInstruction, WireSource},
         flash::{
             DownloadOptions as WireDownloadOptions, ProgressEvent as WireProgressEvent,
             VerifyResult,
@@ -565,6 +566,29 @@ impl DapBackend for RpcBackend {
             .set_variable(core_index as u32, parent_key, name, value)
             .await
             .map_err(rpc_err)
+    }
+
+    async fn disassemble(
+        &mut self,
+        core_index: usize,
+        _debug_info: Option<&probe_rs_debug::DebugInfo>,
+        memory_reference: u64,
+        byte_offset: i64,
+        instruction_offset: i64,
+        instruction_count: i64,
+    ) -> Result<Vec<crate::cmd::dap_server::debug_adapter::dap::dap_types::DisassembledInstruction>, Error> {
+        let wire = self
+            .session_interface()
+            .disassemble(
+                core_index as u32,
+                memory_reference,
+                byte_offset,
+                instruction_offset,
+                instruction_count,
+            )
+            .await
+            .map_err(rpc_err)?;
+        Ok(wire.into_iter().map(Into::into).collect())
     }
 
     async fn read_core_reg(
@@ -1398,5 +1422,37 @@ mod tests {
         let b8 = [1u8, 2, 3, 4, 5, 6, 7, 8];
         assert_eq!(interpret_word(&b8, Endian::Little), 0x0807_0605_0403_0201);
         assert_eq!(interpret_word(&b8, Endian::Big), 0x0102_0304_0506_0708);
+    }
+}
+
+impl From<WireSource> for Source {
+    fn from(s: WireSource) -> Self {
+        Source {
+            name: s.name,
+            path: s.path,
+            source_reference: None,
+            presentation_hint: None,
+            origin: None,
+            sources: None,
+            adapter_data: None,
+            checksums: None,
+        }
+    }
+}
+
+impl From<WireDisassembledInstruction> for DisassembledInstruction {
+    fn from(i: WireDisassembledInstruction) -> Self {
+        DisassembledInstruction {
+            address: i.address,
+            column: i.column,
+            end_column: None,
+            end_line: None,
+            instruction: i.instruction,
+            instruction_bytes: i.instruction_bytes,
+            line: i.line,
+            location: i.location.map(Source::from),
+            symbol: None,
+            presentation_hint: None,
+        }
     }
 }
