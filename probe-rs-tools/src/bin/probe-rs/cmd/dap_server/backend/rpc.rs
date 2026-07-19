@@ -42,12 +42,12 @@ use crate::rpc::{
             WireBreakpointCause, WireCoreStatus, WireHaltReason, WireRegisterValue,
             WireSemihostingCommand, WireVectorCatchCondition,
         },
+        debug_vars::WireSteppingMode,
         flash::{
             DownloadOptions as WireDownloadOptions, ProgressEvent as WireProgressEvent,
             VerifyResult,
         },
         stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
-        debug_vars::WireSteppingMode,
     },
 };
 

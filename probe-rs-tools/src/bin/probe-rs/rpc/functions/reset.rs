@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::rpc::functions::core_ops::WireCoreInformation;
 use crate::rpc::{
     Key,
     functions::{NoResponse, RpcContext, RpcResult},
@@ -7,7 +8,6 @@ use crate::rpc::{
 use postcard_rpc::header::VarHeader;
 use postcard_schema::Schema;
 use probe_rs::Session;
-use crate::rpc::functions::core_ops::WireCoreInformation;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Schema)]

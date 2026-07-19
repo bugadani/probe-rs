@@ -808,18 +808,21 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 );
             }
 
-            let written_register_value =
-                match session_data.backend.read_core_reg(core_index, register_id).await {
-                    Ok(written_register_value) => written_register_value,
-                    Err(error) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Failed to read register {register_name} after writing it: {error}"
-                            ))),
-                        );
-                    }
-                };
+            let written_register_value = match session_data
+                .backend
+                .read_core_reg(core_index, register_id)
+                .await
+            {
+                Ok(written_register_value) => written_register_value,
+                Err(error) => {
+                    return self.send_response::<SetVariableResponseBody>(
+                        request,
+                        Err(&DebuggerError::Other(anyhow!(
+                            "Failed to read register {register_name} after writing it: {error}"
+                        ))),
+                    );
+                }
+            };
 
             if register_requires_exact_readback(register.core_register)
                 && written_register_value != register_value
@@ -956,7 +959,12 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 // RPC path: no client-side cache — defer to the server.
                 match session_data
                     .backend
-                    .set_variable(core_index, parent_key.into(), arguments.name.clone(), new_value.clone())
+                    .set_variable(
+                        core_index,
+                        parent_key.into(),
+                        arguments.name.clone(),
+                        new_value.clone(),
+                    )
                     .await
                 {
                     Ok(resp) => {
@@ -2146,7 +2154,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         core_index: usize,
         request: Option<&Request>,
     ) -> Result<()> {
-        let core_info = match self.reset_and_halt_core_async(session_data, core_index).await {
+        let core_info = match self
+            .reset_and_halt_core_async(session_data, core_index)
+            .await
+        {
             Ok(core_info) => core_info,
             Err(error) => {
                 return self.show_error_message(&DebuggerError::Other(anyhow!("{error}")));

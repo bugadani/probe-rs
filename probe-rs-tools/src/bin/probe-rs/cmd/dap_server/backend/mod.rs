@@ -19,12 +19,10 @@ use std::time::Duration;
 
 use probe_rs::{
     Architecture, Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, RegisterId,
-    RegisterValue, Session, Target,
-    flashing::FlashError,
+    RegisterValue, Session, Target, flashing::FlashError,
 };
 use probe_rs_debug::{
-    DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode,
-    exception_handler_for_core,
+    DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
 };
 use tokio::runtime::Handle;
 

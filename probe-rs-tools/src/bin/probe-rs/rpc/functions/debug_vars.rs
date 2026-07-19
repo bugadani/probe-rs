@@ -404,7 +404,9 @@ pub async fn set_variable(
     }
 
     let (Some(cache_variable), Some(variable_cache)) = (cache_variable, variable_cache) else {
-        Err(format!("No variable information found for {variable_name}!"))?
+        Err(format!(
+            "No variable information found for {variable_name}!"
+        ))?
     };
 
     cache_variable
@@ -529,7 +531,9 @@ pub async fn evaluate(
     let cfa = core_state.stack_frames[frame_index].canonical_frame_address;
     let frame_regs = core_state.stack_frames[frame_index].registers.clone();
 
-    if let Some(cache) = core_state.stack_frames[frame_index].local_variables.as_mut()
+    if let Some(cache) = core_state.stack_frames[frame_index]
+        .local_variables
+        .as_mut()
         && let Some(resp) = resolve_expression(
             &debug_info,
             &mut core,

@@ -38,8 +38,7 @@ use crate::{
             CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint,
             CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
             CreateRttClientEndpoint, CreateTempFileEndpoint, EraseEndpoint, EvaluateEndpoint,
-            FlashEndpoint,
-            GetRttChannelsEndpoint, ListChipFamiliesEndpoint, ListProbesEndpoint,
+            FlashEndpoint, GetRttChannelsEndpoint, ListChipFamiliesEndpoint, ListProbesEndpoint,
             ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint, PollRttUpEndpoint,
             ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint,
             ReadMemory32Endpoint, ReadMemory64Endpoint, ResetCoreAndHaltEndpoint,
@@ -47,9 +46,8 @@ use crate::{
             ScopesEndpoint, SelectProbeEndpoint, SetVariableEndpoint, StackTraceStepEndpoint,
             TakeRichStackTraceEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic,
             TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint, TokioSpawner,
-            VariablesEndpoint, VerifyEndpoint,
-            WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
-            WriteMemory64Endpoint,
+            VariablesEndpoint, VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint,
+            WriteMemory32Endpoint, WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreHaltRequest,
@@ -59,9 +57,9 @@ use crate::{
                 WireVectorCatchCondition,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, StepRequest,
-                StepResponse, SetVariableRequest, VariablesRequest, WireEvaluateResponse,
-                WireScope, WireSetVariableResponse, WireSteppingMode, WireVariable,
+                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, SetVariableRequest,
+                StepRequest, StepResponse, VariablesRequest, WireEvaluateResponse, WireScope,
+                WireSetVariableResponse, WireSteppingMode, WireVariable,
             },
             file::{AppendFileRequest, TempFile},
             flash::{
@@ -1001,10 +999,7 @@ impl CoreInterface {
             .await
     }
 
-    pub async fn reset_and_halt(
-        &self,
-        timeout: Duration,
-    ) -> anyhow::Result<WireCoreInformation> {
+    pub async fn reset_and_halt(&self, timeout: Duration) -> anyhow::Result<WireCoreInformation> {
         self.client
             .send_resp::<ResetCoreAndHaltEndpoint, _>(&ResetCoreAndHaltRequest {
                 sessid: self.sessid,
