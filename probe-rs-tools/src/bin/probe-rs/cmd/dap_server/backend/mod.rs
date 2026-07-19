@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use probe_rs::{
     Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Endian, Error,
-    InstructionSet, MemoryInterface, RegisterId, RegisterValue, Session, Target, flashing::FlashError,
+    InstructionSet, MemoryInterface, RegisterId, RegisterValue, Session, Target,
+    flashing::FlashError,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
@@ -316,7 +317,10 @@ pub trait DapBackend {
         byte_offset: i64,
         instruction_offset: i64,
         instruction_count: i64,
-    ) -> Result<Vec<crate::cmd::dap_server::debug_adapter::dap::dap_types::DisassembledInstruction>, Error> {
+    ) -> Result<
+        Vec<crate::cmd::dap_server::debug_adapter::dap::dap_types::DisassembledInstruction>,
+        Error,
+    > {
         use crate::cmd::dap_server::debug_adapter::dap::request_helpers::{
             DisassemblyAmount, disassemble_target_memory,
         };

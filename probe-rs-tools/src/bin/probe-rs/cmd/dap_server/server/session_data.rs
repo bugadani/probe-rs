@@ -12,7 +12,7 @@ use crate::{
                 dap::{
                     adapter::DebugAdapter,
                     core_status::DapStatus,
-                    dap_types::{MessageSeverity, Source, StoppedEventBody, ContinuedEventBody},
+                    dap_types::{ContinuedEventBody, MessageSeverity, Source, StoppedEventBody},
                     repl_commands::{REPL_COMMANDS, embedded_test::EMBEDDED_TEST},
                 },
                 protocol::ProtocolAdapter,
@@ -469,7 +469,11 @@ impl<B: DapBackend> SessionData<B> {
             };
 
             let core_index = core_config.core_index;
-            let Some(cd_idx) = self.core_data.iter().position(|c| c.core_index == core_index) else {
+            let Some(cd_idx) = self
+                .core_data
+                .iter()
+                .position(|c| c.core_index == core_index)
+            else {
                 tracing::debug!("No core data for core #{core_index}; cannot poll.");
                 continue;
             };
@@ -503,35 +507,35 @@ impl<B: DapBackend> SessionData<B> {
                     continue;
                 };
 
-            // If appropriate, check for RTT data.
-            if rtt_enabled {
-                if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
-                    // We should poll the target for rtt data, and if any RTT data was processed, we clear the flag.
-                    if core_rtt
-                        .process_rtt_data(debug_adapter, &mut target_core.core)
-                        .await
-                    {
-                        suggest_delay_required = false;
-                    }
-                } else if debug_adapter.configuration_is_done() {
-                    // Make sure we only attempt attaching when we're ready.
-                    if let Err(error) = target_core
-                        .attach_to_rtt(
-                            debug_adapter,
-                            core_config.program_binary.as_deref(),
-                            &core_config.rtt_config,
-                            timestamp_offset,
-                        )
-                        .await
-                    {
-                        debug_adapter
-                            .show_error_message(&DebuggerError::Other(error))
-                            .ok();
+                // If appropriate, check for RTT data.
+                if rtt_enabled {
+                    if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
+                        // We should poll the target for rtt data, and if any RTT data was processed, we clear the flag.
+                        if core_rtt
+                            .process_rtt_data(debug_adapter, &mut target_core.core)
+                            .await
+                        {
+                            suggest_delay_required = false;
+                        }
+                    } else if debug_adapter.configuration_is_done() {
+                        // Make sure we only attempt attaching when we're ready.
+                        if let Err(error) = target_core
+                            .attach_to_rtt(
+                                debug_adapter,
+                                core_config.program_binary.as_deref(),
+                                &core_config.rtt_config,
+                                timestamp_offset,
+                            )
+                            .await
+                        {
+                            debug_adapter
+                                .show_error_message(&DebuggerError::Other(error))
+                                .ok();
+                        }
                     }
                 }
-            }
 
-            if let Some(command) = semihosting_command {
+                if let Some(command) = semihosting_command {
                     // Handle semihosting commands. If the command is handled,
                     // the core will be resumed, so we need to update the status.
                     // If the command is not handled, the core will remain halted and we

@@ -2,9 +2,7 @@ use super::{
     core_status::DapStatus,
     dap_types,
     repl_commands_helpers::{build_expanded_commands, command_completions},
-    request_helpers::{
-        get_dap_source, get_svd_variable_reference, get_variable_reference,
-    },
+    request_helpers::{get_dap_source, get_svd_variable_reference, get_variable_reference},
 };
 use crate::cmd::dap_server::backend::DapBackend;
 use crate::cmd::dap_server::{

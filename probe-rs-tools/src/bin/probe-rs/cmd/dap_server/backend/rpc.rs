@@ -620,7 +620,10 @@ impl DapBackend for RpcBackend {
         byte_offset: i64,
         instruction_offset: i64,
         instruction_count: i64,
-    ) -> Result<Vec<crate::cmd::dap_server::debug_adapter::dap::dap_types::DisassembledInstruction>, Error> {
+    ) -> Result<
+        Vec<crate::cmd::dap_server::debug_adapter::dap::dap_types::DisassembledInstruction>,
+        Error,
+    > {
         let wire = self
             .session_interface()
             .disassemble(

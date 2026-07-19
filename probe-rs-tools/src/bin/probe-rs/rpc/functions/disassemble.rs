@@ -72,7 +72,10 @@ pub async fn disassemble(
         DisassemblyAmount::Instructions(request.instruction_count),
     )
     .map_err(|e| e.to_string())?;
-    Ok(instructions.into_iter().map(WireDisassembledInstruction::from).collect())
+    Ok(instructions
+        .into_iter()
+        .map(WireDisassembledInstruction::from)
+        .collect())
 }
 
 impl From<Source> for WireSource {
