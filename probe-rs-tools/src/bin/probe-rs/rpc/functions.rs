@@ -512,6 +512,7 @@ type WriteMemory64Request = WriteMemoryRequest<u64>;
 type CoreStatusResponse = RpcResult<WireCoreStatus>;
 type CoreHaltedResponse = RpcResult<bool>;
 type CoreInfoResponse = RpcResult<WireCoreInformation>;
+type ResetAndHaltResponse = RpcResult<WireCoreInformation>;
 type CoreRegValueResponse = RpcResult<WireRegisterValue>;
 type CoreU32Response = RpcResult<u32>;
 type CoreInstructionSetResponse = RpcResult<WireInstructionSet>;
@@ -557,7 +558,7 @@ endpoints! {
     | TargetNameEndpoint        | TargetNameRequest       | TargetNameResponse      | "target"      |
     | TargetInfoEndpoint        | TargetInfoRequest       | NoResponse              | "info"             |
     | ResetCoreEndpoint         | ResetCoreRequest        | NoResponse              | "reset"            |
-    | ResetCoreAndHaltEndpoint  | ResetCoreAndHaltRequest | NoResponse              | "reset_and_halt"   |
+    | ResetCoreAndHaltEndpoint  | ResetCoreAndHaltRequest | ResetAndHaltResponse        | "reset_and_halt"   |
 
     | CoreStatusEndpoint        | CoreAccessRequest       | CoreStatusResponse            | "core/status"             |
     | CoreHaltedEndpoint        | CoreAccessRequest       | CoreHaltedResponse            | "core/halted"             |

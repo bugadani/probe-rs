@@ -18,7 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use probe_rs::{
-    Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, Session, Target,
+    Core, CoreInformation, CoreStatus, CoreType, Error, MemoryInterface, RegisterId,
+    RegisterValue, Session, Target,
     flashing::FlashError,
 };
 use probe_rs_debug::{DebugInfo, DebugRegisters, StackFrame, exception_handler_for_core};
@@ -183,6 +184,64 @@ pub trait DapBackend {
     async fn run(&mut self, core_index: usize) -> Result<(), Error> {
         let mut core = self.core(core_index)?;
         core.run()
+    }
+
+    /// Reset the core (no halt). Default via [`DapBackend::core`]; the RPC
+    /// backend overrides this to `.await` the `reset` round trip.
+    async fn reset(&mut self, core_index: usize) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        core.reset()
+    }
+
+    /// Reset and halt the core, returning [`CoreInformation`]. Default via
+    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
+    /// `reset_and_halt` round trip (which returns the wire `CoreInformation`).
+    async fn reset_and_halt(
+        &mut self,
+        core_index: usize,
+        timeout: Duration,
+    ) -> Result<CoreInformation, Error> {
+        let mut core = self.core(core_index)?;
+        core.reset_and_halt(timeout)
+    }
+
+    /// Single-instruction step, returning [`CoreInformation`]. Default via
+    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
+    /// `core/step` round trip. (Full `SteppingMode` stepping is a separate
+    /// server-side endpoint — see `stack_trace/step`.)
+    async fn step(&mut self, core_index: usize) -> Result<CoreInformation, Error> {
+        let mut core = self.core(core_index)?;
+        core.step()
+    }
+
+    /// Whether the core is halted. Default via [`DapBackend::core`]; the RPC
+    /// backend overrides this to `.await` the `core/halted` round trip.
+    async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
+        let mut core = self.core(core_index)?;
+        core.core_halted()
+    }
+
+    /// Read a single core register. Default via [`DapBackend::core`]; the RPC
+    /// backend overrides this to `.await` the `core/read_reg` round trip.
+    async fn read_core_reg(
+        &mut self,
+        core_index: usize,
+        register_id: RegisterId,
+    ) -> Result<RegisterValue, Error> {
+        let mut core = self.core(core_index)?;
+        core.read_core_reg(register_id)
+    }
+
+    /// Write a single core register. Default via [`DapBackend::core`]; the
+    /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
+    async fn write_core_reg(
+        &mut self,
+        core_index: usize,
+        register_id: RegisterId,
+        value: RegisterValue,
+    ) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        core.write_core_reg(register_id, value)
     }
 
     /// If `Some`, drive the server-side RTT client over RPC (RPC backend);

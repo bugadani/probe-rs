@@ -961,7 +961,10 @@ impl CoreInterface {
             .await
     }
 
-    pub async fn reset_and_halt(&self, timeout: Duration) -> anyhow::Result<()> {
+    pub async fn reset_and_halt(
+        &self,
+        timeout: Duration,
+    ) -> anyhow::Result<WireCoreInformation> {
         self.client
             .send_resp::<ResetCoreAndHaltEndpoint, _>(&ResetCoreAndHaltRequest {
                 sessid: self.sessid,

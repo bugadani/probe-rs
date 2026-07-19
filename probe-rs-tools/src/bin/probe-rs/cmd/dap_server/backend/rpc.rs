@@ -513,6 +513,68 @@ impl DapBackend for RpcBackend {
         client.run().await.map_err(rpc_err)
     }
 
+    async fn reset(&mut self, core_index: usize) -> Result<(), Error> {
+        self.invalidate_core_caches(core_index);
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client.reset().await.map_err(rpc_err)
+    }
+
+    async fn reset_and_halt(
+        &mut self,
+        core_index: usize,
+        timeout: Duration,
+    ) -> Result<CoreInformation, Error> {
+        self.invalidate_core_caches(core_index);
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        let info = client.reset_and_halt(timeout).await.map_err(rpc_err)?;
+        Ok(info.into())
+    }
+
+    async fn step(&mut self, core_index: usize) -> Result<CoreInformation, Error> {
+        self.invalidate_core_caches(core_index);
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        let info = client.step().await.map_err(rpc_err)?;
+        Ok(info.into())
+    }
+
+    async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client.core_halted().await.map_err(rpc_err)
+    }
+
+    async fn read_core_reg(
+        &mut self,
+        core_index: usize,
+        register_id: RegisterId,
+    ) -> Result<RegisterValue, Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        let wire = client
+            .read_core_reg(register_id.into())
+            .await
+            .map_err(rpc_err)?;
+        Ok(wire.into())
+    }
+
+    async fn write_core_reg(
+        &mut self,
+        core_index: usize,
+        register_id: RegisterId,
+        value: RegisterValue,
+    ) -> Result<(), Error> {
+        self.invalidate_core_caches(core_index);
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client
+            .write_core_reg(register_id.into(), value.into())
+            .await
+            .map_err(rpc_err)
+    }
+
     /// Single-round-trip stack unwind: the server unwinds AND owns the
     /// `local_variables`/`static_variables` caches (keyed by `sessid`+core),
     /// returning per-frame metadata plus the server-assigned frame id. We
