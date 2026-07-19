@@ -253,6 +253,12 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "stackTrace" => {
+                debug_adapter
+                    .stack_trace(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
@@ -953,7 +959,6 @@ fn dispatch_request<P: ProtocolAdapter>(
 
             return Ok(DebugSessionStatus::Restart(request));
         }
-        "stackTrace" => debug_adapter.stack_trace(target_core, &request)?,
         "disassemble" => debug_adapter.disassemble(target_core, &request)?,
         "completions" => debug_adapter.completions(target_core, &request)?,
 

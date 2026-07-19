@@ -1424,47 +1424,54 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(ThreadsResponseBody { threads })))
     }
 
-    pub(crate) fn stack_trace(
+    pub(crate) async fn stack_trace<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        match target_core.core.status() {
-            Ok(status) => {
-                if !status.is_halted() {
-                    return self.send_response::<()>(
-                        request,
-                        Err(&DebuggerError::Other(anyhow!(
-                            "Core must be halted before requesting a stack trace"
-                        ))),
-                    );
-                }
-            }
-            Err(error) => {
-                return self.send_response::<()>(request, Err(&DebuggerError::ProbeRs(error)));
-            }
-        };
+        let status = session_data
+            .backend
+            .status(core_index)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        if !status.is_halted() {
+            return self.send_response::<()>(
+                request,
+                Err(&DebuggerError::Other(anyhow!(
+                    "Core must be halted before requesting a stack trace"
+                ))),
+            );
+        }
 
         let arguments: StackTraceArguments = get_arguments(self, request)?;
 
-        // Determine the correct 'slice' of available [StackFrame]s to serve up ...
-        let total_frames = target_core.core_data.stack_frames.len() as i64;
+        let Some(core_data) = session_data
+            .core_data
+            .iter()
+            .find(|cd| cd.core_index == core_index)
+        else {
+            return self.send_response::<()>(
+                request,
+                Err(&DebuggerError::Other(anyhow!(
+                    "No core data for core index {core_index}"
+                ))),
+            );
+        };
 
-        // The DAP spec says that the `levels` is optional if `None` or `Some(0)`, then all available frames should be returned.
+        let total_frames = core_data.stack_frames.len() as i64;
+
         let mut levels = arguments.levels.unwrap_or(0);
-        // The DAP spec says that the `startFrame` is optional and should be 0 if not specified.
         let start_frame = arguments.start_frame.unwrap_or(0);
 
         tracing::debug!("Start frame: {} Levels: {}", start_frame, levels);
 
-        // Update the `levels` to the number of available frames if it is 0.
         if levels == 0 {
             levels = total_frames;
         }
 
         const PAGE_SIZE: i64 = 50;
 
-        // If we have less than PAGE_SIZE frames in total, return all of them
         let first_frame = start_frame as usize;
         let last_frame = if total_frames < PAGE_SIZE {
             total_frames
@@ -1472,11 +1479,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             start_frame + levels
         } as usize;
 
-        let Some(frames) = target_core
-            .core_data
-            .stack_frames
-            .get(first_frame..last_frame)
-        else {
+        let Some(frames) = core_data.stack_frames.get(first_frame..last_frame) else {
             return self.send_response::<()>(
                 request,
                 Err(&DebuggerError::Other(anyhow!(
@@ -1510,7 +1513,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     frame.function_name.clone()
                 };
 
-                // Create the appropriate [`dap_types::Source`] for the response
                 let source = if let Some(source_location) = &frame.source_location {
                     get_dap_source(source_location)
                 } else {
@@ -1518,7 +1520,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     None
                 };
 
-                // TODO: Can we add more meaningful info to `module_id`, etc.
                 StackFrame {
                     id: frame.id.into(),
                     name: function_display_name,
@@ -1535,7 +1536,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             })
             .collect();
 
-        // Return the frame list. NOTE: we could manipulate total_frames to page results instead of returning all frames at once
         let body = StackTraceResponseBody {
             stack_frames: frame_list,
             total_frames: Some(total_frames),
