@@ -17,7 +17,6 @@ use crate::{
                     InitializeRequestArguments, MessageSeverity, Request,
                     TerminatedEventBody,
                 },
-                request_helpers::halt_core,
             },
             protocol::ProtocolAdapter,
         },
@@ -659,35 +658,40 @@ impl Debugger {
             .await?;
         }
 
-        // First, attach to the core
-        let mut target_core = session_data.attach_core(target_core_config.core_index)?;
-
-        // Immediately after attaching, halt the core, so that we can finish initialization without bumping into user code.
-        // Depending on supplied `config`, the core will be restarted at the end of initialization in the `configuration_done` request.
-        halt_core(&mut target_core.core)?;
+        // First, halt the core so we can finish initialization without
+        // bumping into user code. (Depending on `config`, the core is
+        // restarted at the end of initialization in `configuration_done`.)
+        let core_index = target_core_config.core_index;
+        session_data
+            .backend
+            .halt(core_index, Duration::from_millis(100))
+            .await
+            .map_err(DebuggerError::from)?;
 
         // Before we complete, load the (optional) CMSIS-SVD file and its variable cache.
         // Configure the [CorePeripherals].
         if let Some(svd_file) = &target_core_config.svd_file {
-            target_core.core_data.core_peripherals =
-                match SvdCache::new(svd_file, debug_adapter, launch_attach_request.seq) {
-                    Ok(core_peripherals) => Some(core_peripherals),
-                    Err(error) => {
-                        // This is not a fatal error. We can continue the debug session without the SVD file.
-                        tracing::warn!("{:?}", error);
-                        None
-                    }
-                };
+            let cd_idx = session_data
+                .core_data
+                .iter()
+                .position(|c| c.core_index == core_index);
+            if let Some(cd_idx) = cd_idx {
+                session_data.core_data[cd_idx].core_peripherals =
+                    match SvdCache::new(svd_file, debug_adapter, launch_attach_request.seq) {
+                        Ok(core_peripherals) => Some(core_peripherals),
+                        Err(error) => {
+                            // This is not a fatal error. We can continue the debug session without the SVD file.
+                            tracing::warn!("{:?}", error);
+                            None
+                        }
+                    };
+            }
         }
-
-        // `restart_async` borrows `session_data` directly, so the attached
-        // `CoreHandle` must be released first.
-        drop(target_core);
 
         if requested_target_session_type == TargetSessionType::LaunchRequest {
             // This will effectively do a `reset` and `halt` of the core, which is what we want until after the `configuration_done` request.
             debug_adapter
-                .restart_async(&mut session_data, target_core_config.core_index, None)
+                .restart_async(&mut session_data, core_index, None)
                 .await
                 .context("Failed to restart core")?;
         }
@@ -746,17 +750,23 @@ impl Debugger {
             }
         }
 
-        // First, attach to the core
-        let mut target_core = session_data.attach_core(target_core_config.core_index)?;
-
-        // Immediately after attaching, halt the core, so that we can finish restart logic without bumping into user code.
-        halt_core(&mut target_core.core)?;
+        // First, halt the core so we can finish restart logic without
+        // bumping into user code.
+        let core_index = target_core_config.core_index;
+        session_data
+            .backend
+            .halt(core_index, Duration::from_millis(100))
+            .await
+            .map_err(DebuggerError::from)?;
 
         // Reset RTT so that the link can be re-established.
-        target_core.core_data.rtt_connection = None;
-
-        // We can't keep the reference for borrow checker reasons.
-        drop(target_core);
+        if let Some(cd) = session_data
+            .core_data
+            .iter_mut()
+            .find(|c| c.core_index == core_index)
+        {
+            cd.rtt_connection = None;
+        }
 
         session_data.clear_rtt_blocks()?;
 
@@ -764,7 +774,7 @@ impl Debugger {
 
         // After completing optional flashing and other config, we can run the debug adapter's restart logic.
         debug_adapter
-            .restart_async(session_data, target_core_config.core_index, Some(request))
+            .restart_async(session_data, core_index, Some(request))
             .await
             .context("Failed to restart core")?;
 
