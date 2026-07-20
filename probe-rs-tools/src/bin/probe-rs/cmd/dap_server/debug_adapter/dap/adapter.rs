@@ -809,6 +809,12 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
+            "x" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::inspect::examine_memory_async(
+                    self, session_data, core_index, argument_string, arguments,
+                )
+                .await
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)

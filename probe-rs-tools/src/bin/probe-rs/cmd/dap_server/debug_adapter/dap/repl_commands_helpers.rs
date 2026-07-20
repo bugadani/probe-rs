@@ -1,10 +1,13 @@
-use probe_rs::{CoreInterface, MemoryInterface};
 use probe_rs_debug::{ObjectRef, VariableName};
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    debug_adapter::dap::repl_commands::{EvalResponse, EvalResult},
-    server::core_data::CoreHandle,
+    backend::DapBackend,
+    debug_adapter::{
+        dap::{adapter::DebugAdapter, repl_commands::{EvalResponse, EvalResult}},
+        protocol::ProtocolAdapter,
+    },
+    server::{core_data::CoreHandle, session_data::SessionData},
 };
 
 use super::{
@@ -14,7 +17,6 @@ use super::{
     },
     repl_commands::ReplCommand,
     repl_types::*,
-    request_helpers::{DisassemblyAmount, disassemble_target_memory},
 };
 
 /// Format the `variable` and add it to the `response_body.result` for display to the user.
@@ -102,52 +104,58 @@ pub(crate) fn get_local_variable(
 }
 
 /// Read memory at the specified address (hex), using the [`GdbNuf`] specifiers to determine size and format.
-pub(crate) fn memory_read(
+pub(crate) async fn memory_read_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     address: u64,
     gdb_nuf: GdbNuf,
-    target_core: &mut CoreHandle<'_>,
 ) -> EvalResult {
     if gdb_nuf.format_specifier == GdbFormat::Instruction {
-        let instruction_set = target_core.core.instruction_set()?;
-        let core_type = target_core.core.core_type();
-        let endianness = target_core.core.endianness()?;
-        let debug_info = target_core.core_data.debug_info.as_ref();
-        let assembly_lines = disassemble_target_memory(
-            &mut target_core.core,
-            instruction_set,
-            core_type,
-            endianness,
-            debug_info,
-            0_i64,
-            0_i64,
-            address,
-            DisassemblyAmount::Instructions(gdb_nuf.unit_count as i64),
-        )?;
+        let debug_info = session_data
+            .core_data
+            .iter()
+            .find(|c| c.core_index == core_index)
+            .and_then(|c| c.debug_info.as_ref());
+        let assembly_lines = session_data
+            .backend
+            .disassemble(
+                core_index,
+                debug_info,
+                address,
+                0,
+                0,
+                gdb_nuf.unit_count as i64,
+            )
+            .await?;
         if assembly_lines.is_empty() {
             return Err(DebuggerError::UserMessage(format!(
                 "Cannot disassemble memory at address {address:#010x}"
             )));
         }
-        let mut formatted_output = "".to_string();
+        let mut formatted_output = String::new();
         for assembly_line in &assembly_lines {
             formatted_output.push_str(&assembly_line.to_string());
         }
 
         Ok(EvalResponse::Message(formatted_output))
     } else {
-        let mut memory_result = vec![0u8; gdb_nuf.get_size()];
-        match target_core.core.read_8(address, &mut memory_result) {
-            Ok(()) => Ok(EvalResponse::Message(
-                GdbNufMemoryResult {
-                    nuf: &gdb_nuf,
-                    memory: &memory_result,
-                }
-                .to_string(),
-            )),
-            Err(err) => Err(DebuggerError::UserMessage(format!(
-                "Cannot read memory at address {address:#010x}: {err:?}"
-            ))),
-        }
+        let memory = session_data
+            .backend
+            .read_memory_8(core_index, address, gdb_nuf.get_size())
+            .await
+            .map_err(|err| {
+                DebuggerError::UserMessage(format!(
+                    "Cannot read memory at address {address:#010x}: {err:?}"
+                ))
+            })?;
+        Ok(EvalResponse::Message(
+            GdbNufMemoryResult {
+                nuf: &gdb_nuf,
+                memory: &memory,
+            }
+            .to_string(),
+        ))
     }
 }
 

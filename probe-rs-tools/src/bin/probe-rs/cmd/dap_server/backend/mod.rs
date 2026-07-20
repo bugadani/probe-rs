@@ -380,6 +380,19 @@ pub trait DapBackend {
         Ok(core.registers())
     }
 
+    /// Read `count` bytes of target memory at `address` into a fresh buffer.
+    async fn read_memory_8(
+        &mut self,
+        core_index: usize,
+        address: u64,
+        count: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let mut core = self.core(core_index)?;
+        let mut buf = vec![0u8; count];
+        core.read_8(address, &mut buf)?;
+        Ok(buf)
+    }
+
     /// Write a single core register. Default via [`DapBackend::core`]; the
     /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
     async fn write_core_reg(

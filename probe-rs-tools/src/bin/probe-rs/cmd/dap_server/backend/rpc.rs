@@ -692,6 +692,20 @@ impl DapBackend for RpcBackend {
         Ok(self.core_metadata[core_index].registers)
     }
 
+    async fn read_memory_8(
+        &mut self,
+        core_index: usize,
+        address: u64,
+        count: usize,
+    ) -> Result<Vec<u8>, Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client
+            .read_memory_8(address, count)
+            .await
+            .map_err(rpc_err)
+    }
+
     async fn debug_step(
         &mut self,
         core_index: usize,
