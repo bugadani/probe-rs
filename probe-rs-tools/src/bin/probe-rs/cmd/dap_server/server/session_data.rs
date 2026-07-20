@@ -1,6 +1,6 @@
 use super::{
     configuration::{self, CoreConfig, SessionConfig},
-    core_data::{CoreData, CoreHandle, SemihostingFile},
+    core_data::{ChannelNames, CoreData, CoreHandle, SemihostingFile, wire_scan_region},
 };
 use crate::{
     FormatKind,
@@ -24,6 +24,10 @@ use crate::{
     util::{cli::attach_probe as attach_probe_rpc, common_options::OperationError},
 };
 use anyhow::{Result, anyhow};
+use crate::cmd::dap_server::debug_adapter::dap::dap_types::PromptKind;
+use crate::cmd::dap_server::server::debug_rtt;
+use crate::util::rtt::client::RttClient;
+use crate::util::rtt::{DefmtProcessor, DefmtState, RttDecoder};
 use probe_rs::{
     BreakpointCause, CoreStatus, HaltReason, Session, VectorCatchCondition,
     config::{Registry, TargetSelector},
@@ -32,10 +36,10 @@ use probe_rs::{
     semihosting::SemihostingCommand,
 };
 use probe_rs_debug::{SourceLocation, debug_info::DebugInfo};
-use std::{any::Any, collections::HashMap, env::set_current_dir, num::NonZeroU32, time::Duration};
+use std::{any::Any, collections::HashMap, env::set_current_dir, num::NonZeroU32, path::Path, time::Duration};
 use time::UtcOffset;
 
-use crate::util::rtt::DataFormat;
+use crate::util::rtt::{self, DataFormat};
 
 /// The supported breakpoint types
 #[derive(Clone, Debug, PartialEq)]
@@ -535,6 +539,192 @@ impl<B: DapBackend> SessionData<B> {
         Ok(CoreStatus::Running)
     }
 
+    /// Attach to the target's RTT interface. Lifted from
+    /// `CoreHandle::attach_to_rtt` so it does not need a `CoreHandle`: the
+    /// local path acquires a `Core` via `self.backend.core()` (disjoint from
+    /// `self.core_data`); the remote path drives the server-side `RttClient`
+    /// via the cached `RttRemoteSeed` and needs no `Core`.
+    async fn attach_to_rtt<P: ProtocolAdapter>(
+        &mut self,
+        debug_adapter: &mut DebugAdapter<P>,
+        cd_idx: usize,
+        program_binary: Option<&Path>,
+        rtt_config: &rtt::RttConfig,
+        timestamp_offset: UtcOffset,
+    ) -> Result<()> {
+        if self.core_data[cd_idx].rtt_connection.is_some() {
+            return Ok(());
+        }
+
+        let core_index = self.core_data[cd_idx].core_index;
+
+        let mut defmt_data = None;
+        let use_auto_formats = rtt_config.channels.is_empty();
+
+        let mut build_up_channel = |debug_adapter: &mut DebugAdapter<P>,
+                                    number: u32,
+                                    channel_name: &str|
+         -> Result<debug_rtt::DebuggerRttChannel> {
+            let mut channel_config = rtt_config.channel_config(number).clone();
+
+            if use_auto_formats {
+                channel_config.data_format = if channel_name == "defmt" {
+                    DataFormat::Defmt
+                } else {
+                    DataFormat::String
+                };
+            }
+
+            let show_timestamps = channel_config.show_timestamps;
+            let show_location = channel_config.show_location;
+            let log_format = channel_config.log_format.clone();
+
+            let channel_data_format = match channel_config.data_format {
+                DataFormat::String => RttDecoder::String {
+                    timestamp_offset: Some(timestamp_offset),
+                    last_line_done: false,
+                    show_timestamps,
+                },
+                DataFormat::BinaryLE => RttDecoder::BinaryLE,
+                DataFormat::Defmt => {
+                    let defmt_state = if let Some(data) = defmt_data.as_ref() {
+                        data
+                    } else if let Some(program_binary) = program_binary {
+                        let elf = std::fs::read(program_binary)
+                            .map_err(|error| anyhow!("Error attempting to attach to RTT: {error}"))?;
+                        defmt_data.insert(DefmtState::try_from_bytes(&elf)?)
+                    } else {
+                        defmt_data.insert(None)
+                    };
+
+                    match defmt_state {
+                        Some(defmt_state) => RttDecoder::Defmt {
+                            processor: DefmtProcessor::new(
+                                defmt_state.clone(),
+                                show_timestamps,
+                                show_location,
+                                log_format.as_deref(),
+                            ),
+                        },
+                        None => RttDecoder::BinaryLE,
+                    }
+                }
+            };
+
+            let data_format = DataFormat::from(&channel_data_format);
+
+            debug_adapter.rtt_window(number, channel_name.to_string(), data_format);
+
+            Ok(debug_rtt::DebuggerRttChannel {
+                channel_number: number,
+                has_client_window: false,
+                channel_data_format,
+            })
+        };
+
+        let (client, up_channels, down_channels): (
+            debug_rtt::RttClientHandle,
+            ChannelNames,
+            ChannelNames,
+        ) = if let Some(seed) = self.core_data[cd_idx].rtt_remote_seed.clone() {
+            let rtt_key = if let Some(k) = self.core_data[cd_idx].rtt_remote_handle {
+                k
+            } else {
+                let wire_scan = wire_scan_region(&self.core_data[cd_idx].rtt_scan_ranges);
+                let data = seed
+                    .session
+                    .create_rtt_client(
+                        wire_scan,
+                        rtt_config.channels.clone(),
+                        rtt_config.default_config.clone(),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("Failed to create remote RTT client: {e}"))?;
+                self.core_data[cd_idx].rtt_remote_handle = Some(data.handle);
+                data.handle
+            };
+
+            let channels = seed
+                .session
+                .get_rtt_channels(rtt_key)
+                .await
+                .map_err(|e| anyhow!("Failed to query remote RTT channels: {e}"))?;
+
+            if channels.up.is_empty() && channels.down.is_empty() {
+                return Ok(());
+            }
+
+            let up = channels.up.into_iter().map(|m| (m.number, m.name)).collect();
+            let down = channels
+                .down
+                .into_iter()
+                .map(|m| (m.number, m.name))
+                .collect();
+
+            let handle = debug_rtt::RttClientHandle::Remote(debug_rtt::RemoteRttClient::new(
+                seed.handle.clone(),
+                seed.session.clone(),
+                rtt_key,
+            ));
+
+            (handle, up, down)
+        } else {
+            let mut core = self.backend.core(core_index)?;
+            let core_data = &mut self.core_data[cd_idx];
+            let client = if let Some(client) = core_data.rtt_client.as_mut() {
+                client
+            } else {
+                core_data.rtt_client.insert(RttClient::new(
+                    rtt_config.clone(),
+                    core_data.rtt_scan_ranges.clone(),
+                    core.target(),
+                ))
+            };
+
+            if client.core_id() != core_index {
+                return Ok(());
+            }
+
+            let Ok(true) = client.try_attach(&mut core) else {
+                return Ok(());
+            };
+
+            let Some(client) = core_data.rtt_client.take() else {
+                return Ok(());
+            };
+
+            let up = client
+                .up_channels()
+                .iter()
+                .map(|c| (c.number(), c.channel_name()))
+                .collect();
+            let down = client
+                .down_channels()
+                .iter()
+                .map(|c| (c.number(), c.channel_name()))
+                .collect();
+
+            let handle = debug_rtt::RttClientHandle::Local(client);
+            (handle, up, down)
+        };
+
+        let mut debugger_rtt_channels = vec![];
+        for (number, name) in &up_channels {
+            debugger_rtt_channels.push(build_up_channel(debug_adapter, *number, name)?);
+        }
+
+        for (number, name) in &down_channels {
+            debug_adapter.open_prompt(PromptKind::Rtt, name, *number);
+        }
+
+        self.core_data[cd_idx].rtt_connection = Some(debug_rtt::RttConnection {
+            client,
+            debugger_rtt_channels,
+        });
+
+        Ok(())
+    }
+
     /// The target has no way of notifying the debug adapter when things changes, so we have to constantly poll it to determine:
     /// - Whether the target cores are running, and what their actual status is.
     /// - Whether the target cores have data in their RTT buffers that we need to read and pass to the client.
@@ -645,27 +835,20 @@ impl<B: DapBackend> SessionData<B> {
                     {
                         suggest_delay_required = false;
                     }
-                } else if debug_adapter.configuration_is_done() {
-                    let Ok(mut target_core) = self.attach_core(core_index) else {
-                        tracing::debug!(
-                            "Failed to attach to target core #{}. Cannot attach to RTT.",
-                            core_index
-                        );
-                        continue;
-                    };
-                    if let Err(error) = target_core
+                } else if debug_adapter.configuration_is_done()
+                    && let Err(error) = self
                         .attach_to_rtt(
                             debug_adapter,
+                            cd_idx,
                             core_config.program_binary.as_deref(),
                             &core_config.rtt_config,
                             timestamp_offset,
                         )
                         .await
-                    {
-                        debug_adapter
-                            .show_error_message(&DebuggerError::Other(error))
-                            .ok();
-                    }
+                {
+                    debug_adapter
+                        .show_error_message(&DebuggerError::Other(error))
+                        .ok();
                 }
             }
 

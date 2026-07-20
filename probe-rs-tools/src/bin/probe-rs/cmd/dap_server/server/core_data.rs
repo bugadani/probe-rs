@@ -1,19 +1,17 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
-use std::{ops::Range, path::Path};
+use std::{ops::Range};
 
 use super::session_data::{self, ActiveBreakpoint, BreakpointType, SourceLocationScope};
 use crate::cmd::dap_server::backend::RttRemoteSeed;
-use crate::cmd::dap_server::debug_adapter::dap::dap_types::PromptKind;
 use crate::cmd::dap_server::debug_adapter::dap::repl_commands::ReplCommand;
 use crate::rpc::Key;
 use crate::rpc::functions::rtt_client::ScanRegion as WireScanRegion;
 use crate::util::rtt::client::RttClient;
 
 /// `(channel number, channel name)` pairs returned while attaching to RTT.
-type ChannelNames = Vec<(u32, String)>;
-use crate::util::rtt::{self, DataFormat, DefmtProcessor, DefmtState};
+pub(crate) type ChannelNames = Vec<(u32, String)>;
 use crate::{
     cmd::dap_server::{
         DebuggerError,
@@ -27,7 +25,6 @@ use crate::{
         peripherals::svd_variables::SvdCache,
         server::debug_rtt,
     },
-    util::rtt::RttDecoder,
 };
 use anyhow::{Result, anyhow};
 use probe_rs::{Architecture, BreakpointError};
@@ -36,11 +33,10 @@ use probe_rs_debug::VerifiedBreakpoint;
 use probe_rs_debug::{
     ColumnType, ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo,
 };
-use time::UtcOffset;
 use typed_path::TypedPath;
 
 /// Convert [`ScanRegion`] (probe-rs) into the wire [`WireScanRegion`].
-fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
+pub(crate) fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
     match scan {
         ScanRegion::Ram => WireScanRegion::Ram,
         ScanRegion::Ranges(ranges) => {
@@ -125,203 +121,6 @@ impl CoreHandle<'_> {
             .stack_frames
             .iter()
             .find(|stack_frame| stack_frame.id == id)
-    }
-
-    /// Confirm RTT initialization on the target, and use the RTT channel configurations to initialize the output windows on the DAP Client.
-    pub async fn attach_to_rtt<P: ProtocolAdapter>(
-        &mut self,
-        debug_adapter: &mut DebugAdapter<P>,
-        program_binary: Option<&Path>,
-        rtt_config: &rtt::RttConfig,
-        timestamp_offset: UtcOffset,
-    ) -> Result<()> {
-        // We're done already, don't process everything again for no good reason.
-        if self.core_data.rtt_connection.is_some() {
-            return Ok(());
-        }
-
-        let core_id = self.id();
-
-        let mut defmt_data = None;
-        let use_auto_formats = rtt_config.channels.is_empty();
-
-        // Build a `DebuggerRttChannel` for one up channel identified by
-        // `(number, name)` and notify the DAP client of the new window.
-        // Shared by the local and remote (RPC) paths so the decoder setup
-        // (notably the defmt state) stays identical.
-        let mut build_up_channel = |debug_adapter: &mut DebugAdapter<P>,
-                                    number: u32,
-                                    channel_name: &str|
-         -> Result<debug_rtt::DebuggerRttChannel> {
-            let mut channel_config = rtt_config.channel_config(number).clone();
-
-            if use_auto_formats {
-                channel_config.data_format = if channel_name == "defmt" {
-                    DataFormat::Defmt
-                } else {
-                    DataFormat::String
-                };
-            }
-
-            // Where `channel_config` is unspecified, apply default from `default_channel_config`.
-            let show_timestamps = channel_config.show_timestamps;
-            let show_location = channel_config.show_location;
-            let log_format = channel_config.log_format.clone();
-
-            let channel_data_format = match channel_config.data_format {
-                DataFormat::String => RttDecoder::String {
-                    timestamp_offset: Some(timestamp_offset),
-                    last_line_done: false,
-                    show_timestamps,
-                },
-                DataFormat::BinaryLE => RttDecoder::BinaryLE,
-                DataFormat::Defmt => {
-                    let defmt_state = if let Some(data) = defmt_data.as_ref() {
-                        data
-                    } else if let Some(program_binary) = program_binary {
-                        // Create the RTT client using the RTT control block address from the ELF file.
-                        let elf = std::fs::read(program_binary).map_err(|error| {
-                            anyhow!("Error attempting to attach to RTT: {error}")
-                        })?;
-                        defmt_data.insert(DefmtState::try_from_bytes(&elf)?)
-                    } else {
-                        defmt_data.insert(None)
-                    };
-
-                    match defmt_state {
-                        Some(defmt_state) => RttDecoder::Defmt {
-                            processor: DefmtProcessor::new(
-                                defmt_state.clone(),
-                                show_timestamps,
-                                show_location,
-                                log_format.as_deref(),
-                            ),
-                        },
-                        None => RttDecoder::BinaryLE,
-                    }
-                }
-            };
-
-            let data_format = DataFormat::from(&channel_data_format);
-
-            debug_adapter.rtt_window(number, channel_name.to_string(), data_format);
-
-            Ok(debug_rtt::DebuggerRttChannel {
-                channel_number: number,
-                // This value will eventually be set to true by a VSCode client request "rttWindowOpened"
-                has_client_window: false,
-                channel_data_format,
-            })
-        };
-
-        // Resolve the RTT client handle + up/down channel metadata. The
-        // remote path drives the server-side `RttClient`; the local path
-        // reads the target directly via `self.core`.
-        let (client, up_channels, down_channels): (
-            debug_rtt::RttClientHandle,
-            ChannelNames,
-            ChannelNames,
-        ) = if let Some(seed) = self.core_data.rtt_remote_seed.clone() {
-            let rtt_key = if let Some(k) = self.core_data.rtt_remote_handle {
-                k
-            } else {
-                let wire_scan = wire_scan_region(&self.core_data.rtt_scan_ranges);
-                let data = seed
-                    .session
-                    .create_rtt_client(
-                        wire_scan,
-                        rtt_config.channels.clone(),
-                        rtt_config.default_config.clone(),
-                    )
-                    .await
-                    .map_err(|e| anyhow!("Failed to create remote RTT client: {e}"))?;
-                self.core_data.rtt_remote_handle = Some(data.handle);
-                data.handle
-            };
-
-            let channels = seed
-                .session
-                .get_rtt_channels(rtt_key)
-                .await
-                .map_err(|e| anyhow!("Failed to query remote RTT channels: {e}"))?;
-
-            if channels.up.is_empty() && channels.down.is_empty() {
-                // Not attached yet; retry next poll (keep the cached handle).
-                return Ok(());
-            }
-
-            let up = channels
-                .up
-                .into_iter()
-                .map(|m| (m.number, m.name))
-                .collect();
-            let down = channels
-                .down
-                .into_iter()
-                .map(|m| (m.number, m.name))
-                .collect();
-
-            let handle = debug_rtt::RttClientHandle::Remote(debug_rtt::RemoteRttClient::new(
-                seed.handle.clone(),
-                seed.session.clone(),
-                rtt_key,
-            ));
-
-            (handle, up, down)
-        } else {
-            // Local path.
-            let client = if let Some(client) = self.core_data.rtt_client.as_mut() {
-                client
-            } else {
-                self.core_data.rtt_client.insert(RttClient::new(
-                    rtt_config.clone(),
-                    self.core_data.rtt_scan_ranges.clone(),
-                    self.core.target(),
-                ))
-            };
-
-            if client.core_id() != core_id {
-                return Ok(());
-            }
-
-            let Ok(true) = client.try_attach(&mut self.core) else {
-                return Ok(());
-            };
-
-            let Some(client) = self.core_data.rtt_client.take() else {
-                return Ok(());
-            };
-
-            let up = client
-                .up_channels()
-                .iter()
-                .map(|c| (c.number(), c.channel_name()))
-                .collect();
-            let down = client
-                .down_channels()
-                .iter()
-                .map(|c| (c.number(), c.channel_name()))
-                .collect();
-
-            let handle = debug_rtt::RttClientHandle::Local(client);
-            (handle, up, down)
-        };
-
-        let mut debugger_rtt_channels = vec![];
-        for (number, name) in &up_channels {
-            debugger_rtt_channels.push(build_up_channel(debug_adapter, *number, name)?);
-        }
-
-        for (number, name) in &down_channels {
-            debug_adapter.open_prompt(PromptKind::Rtt, name, *number);
-        }
-
-        self.core_data.rtt_connection = Some(debug_rtt::RttConnection {
-            client,
-            debugger_rtt_channels,
-        });
-
-        Ok(())
     }
 
     /// Check if a breakpoint address is already cached in [`CoreData::breakpoints`].
