@@ -728,6 +728,19 @@ impl DapBackend for RpcBackend {
         client.kickoff_test(address).await.map_err(rpc_err)
     }
 
+    async fn enable_vector_catch(
+        &mut self,
+        core_index: usize,
+        condition: VectorCatchCondition,
+    ) -> Result<(), Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client
+            .enable_vector_catch(condition.into())
+            .await
+            .map_err(rpc_err)
+    }
+
     async fn debug_step(
         &mut self,
         core_index: usize,

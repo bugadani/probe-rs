@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use probe_rs::{
     Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error, MemoryInterface,
-    RegisterId, RegisterValue, Session, Target, flashing::FlashError,
+    RegisterId, RegisterValue, Session, Target, VectorCatchCondition, flashing::FlashError,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
@@ -572,6 +572,59 @@ pub trait DapBackend {
         };
         cmd.write_command_line_to_target(&mut core, &format!("run_addr {address}"))?;
         core.run()?;
+        Ok(())
+    }
+
+    /// Enable a single vector-catch condition. Default via
+    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
+    /// `core/enable_vc` round trip.
+    async fn enable_vector_catch(
+        &mut self,
+        core_index: usize,
+        condition: VectorCatchCondition,
+    ) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        match core.enable_vector_catch(condition) {
+            Ok(()) | Err(Error::NotImplemented(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Apply the per-core vector-catch configuration: halt if running, enable
+    /// each requested condition, then resume if it was halted. Default via
+    /// [`DapBackend::core`]; the RPC backend overrides this to drive the
+    /// `core/halt`/`core/enable_vc`/`core/run` round trips (no `block_on`
+    /// bridge).
+    async fn apply_vector_catch(
+        &mut self,
+        core_index: usize,
+        config: &crate::cmd::dap_server::server::configuration::CoreConfig,
+    ) -> Result<(), Error> {
+        let needs_vector_catch =
+            config.catch_hardfault || config.catch_reset || config.catch_svc || config.catch_hlt;
+        if !needs_vector_catch {
+            return Ok(());
+        }
+        let was_halted = self.core_halted(core_index).await?;
+        if !was_halted {
+            self.halt(core_index, Duration::from_millis(100)).await?;
+        }
+        let requested: [(bool, VectorCatchCondition); 4] = [
+            (config.catch_hardfault, VectorCatchCondition::HardFault),
+            (config.catch_reset, VectorCatchCondition::CoreReset),
+            (config.catch_svc, VectorCatchCondition::Svc),
+            (config.catch_hlt, VectorCatchCondition::Hlt),
+        ];
+        for (enabled, condition) in requested {
+            if enabled
+                && let Err(e) = self.enable_vector_catch(core_index, condition).await
+            {
+                tracing::error!("Failed to enable_vector_catch: {:?}", e);
+            }
+        }
+        if was_halted {
+            self.run(core_index).await?;
+        }
         Ok(())
     }
 

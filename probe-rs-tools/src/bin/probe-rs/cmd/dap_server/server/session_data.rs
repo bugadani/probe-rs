@@ -121,6 +121,10 @@ impl SessionData<Session> {
         apply_session_cwd(config)?;
 
         let core_data_vec = initialize_core_data(&mut target_session, config)?;
+        for core_config in config.core_configs.iter() {
+            let mut core = target_session.core(core_config.core_index)?;
+            apply_vector_catch(&mut core, core_config)?;
+        }
 
         let mut this = SessionData {
             backend: target_session,
@@ -212,6 +216,11 @@ impl SessionData<RpcBackend> {
         );
 
         let core_data_vec = initialize_core_data(&mut backend, config)?;
+        for core_config in config.core_configs.iter() {
+            backend
+                .apply_vector_catch(core_config.core_index, core_config)
+                .await?;
+        }
 
         let mut this = SessionData {
             backend,
@@ -1054,10 +1063,6 @@ fn initialize_core_data<B: DapBackend>(
 
     let mut core_data_vec = vec![];
     for core_configuration in valid_core_configs {
-        {
-            let mut core = backend.core(core_configuration.core_index)?;
-            apply_vector_catch(&mut core, core_configuration)?;
-        }
         let mut core_data = build_core_data(core_configuration, &target_name)?;
         core_data.rtt_remote_seed = backend.rtt_remote_seed();
         core_data_vec.push(core_data);
