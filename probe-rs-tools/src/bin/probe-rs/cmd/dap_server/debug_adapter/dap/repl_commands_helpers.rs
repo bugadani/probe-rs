@@ -7,7 +7,7 @@ use crate::cmd::dap_server::{
         dap::{adapter::DebugAdapter, repl_commands::{EvalResponse, EvalResult}},
         protocol::ProtocolAdapter,
     },
-    server::{core_data::CoreHandle, session_data::SessionData},
+    server::session_data::SessionData,
 };
 
 use super::{
@@ -23,21 +23,20 @@ use super::{
 /// - If the `variable_name` is `VariableName::LocalScopeRoot`, then all local variables will be printed.
 pub(crate) fn get_local_variable(
     evaluate_arguments: &EvaluateArguments,
-    target_core: &mut CoreHandle<'_>,
+    core_data: &mut crate::cmd::dap_server::server::core_data::CoreData,
     variable_name: VariableName,
     gdb_nuf: GdbNuf,
 ) -> EvalResult {
     let frame_ref = evaluate_arguments.frame_id.map(ObjectRef::from);
 
     let stack_frame = match frame_ref {
-        Some(frame_id) => target_core
-            .core_data
+        Some(frame_id) => core_data
             .stack_frames
             .iter_mut()
             .find(|stack_frame| stack_frame.id == frame_id),
         None => {
             // Use the current frame_id
-            target_core.core_data.stack_frames.first_mut()
+            core_data.stack_frames.first_mut()
         }
     };
 

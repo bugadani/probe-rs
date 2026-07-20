@@ -10,6 +10,7 @@ use crate::cmd::dap_server::{
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
+            dap_types::EvaluateArguments,
             repl_commands::{
                 EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, need_subcommand,
                 unimplemented_repl,
@@ -43,14 +44,7 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: true,
             sub_commands: &[],
             args: &[],
-            handler: |target_core, _, evaluate_arguments, _| {
-                let gdb_nuf = GdbNuf {
-                    format_specifier: GdbFormat::Native,
-                    ..Default::default()
-                };
-                let variable_name = VariableName::LocalScopeRoot;
-                get_local_variable(evaluate_arguments, target_core, variable_name, gdb_nuf)
-            },
+            handler: unimplemented_repl,
         },
         ReplCommand {
             command: "reg",
@@ -158,6 +152,28 @@ pub(crate) async fn print_breakpoints_async<B: DapBackend, P: ProtocolAdapter>(
     }
 
     Ok(EvalResponse::Message(response_message))
+}
+
+pub(crate) async fn info_locals_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
+    _command_arguments: &str,
+    evaluate_arguments: &EvaluateArguments,
+) -> EvalResult {
+    let gdb_nuf = GdbNuf {
+        format_specifier: GdbFormat::Native,
+        ..Default::default()
+    };
+    let variable_name = VariableName::LocalScopeRoot;
+    let Some(core_data) = session_data
+        .core_data
+        .iter_mut()
+        .find(|c| c.core_index == core_index)
+    else {
+        return Err(DebuggerError::UserMessage("No core data".to_string()));
+    };
+    get_local_variable(evaluate_arguments, core_data, variable_name, gdb_nuf)
 }
 
 fn reg_table(results: &[(String, String)], max_line_length: usize) -> String {

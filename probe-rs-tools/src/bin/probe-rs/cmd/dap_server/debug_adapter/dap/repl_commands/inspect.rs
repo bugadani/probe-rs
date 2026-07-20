@@ -31,7 +31,7 @@ static PRINT: ReplCommand = ReplCommand {
         ReplCommandArgs::Optional("/f (f=format[n|v])"),
         ReplCommandArgs::Required("<local variable name>"),
     ],
-    handler: print_variables,
+    handler: unimplemented_repl,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -61,11 +61,12 @@ static DUMP: ReplCommand = ReplCommand {
     handler: dump_core,
 };
 
-fn print_variables(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn print_variables_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     command_arguments: &str,
     evaluate_arguments: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     let input_arguments = command_arguments.split_whitespace();
     let mut gdb_nuf = GdbNuf {
@@ -94,7 +95,14 @@ fn print_variables(
         }
     }
 
-    get_local_variable(evaluate_arguments, target_core, variable_name, gdb_nuf)
+    let Some(core_data) = session_data
+        .core_data
+        .iter_mut()
+        .find(|c| c.core_index == core_index)
+    else {
+        return Err(DebuggerError::UserMessage("No core data".to_string()));
+    };
+    get_local_variable(evaluate_arguments, core_data, variable_name, gdb_nuf)
 }
 
 pub(crate) async fn examine_memory_async<B: DapBackend, P: ProtocolAdapter>(

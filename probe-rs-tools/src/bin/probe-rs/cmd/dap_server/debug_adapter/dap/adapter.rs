@@ -815,6 +815,18 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
+            "p" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::inspect::print_variables_async(
+                    self, session_data, core_index, argument_string, arguments,
+                )
+                .await
+            }
+            "info locals" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::info::info_locals_async(
+                    self, session_data, core_index, argument_string, arguments,
+                )
+                .await
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
