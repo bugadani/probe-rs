@@ -393,6 +393,19 @@ pub trait DapBackend {
         Ok(buf)
     }
 
+    /// Dump the core (all registers + the supplied memory ranges) to a
+    /// [`probe_rs::CoreDump`]. Default via [`DapBackend::core`]; the RPC
+    /// backend overrides this to `.await` a `core/dump` round trip and
+    /// reconstruct the `CoreDump` client-side.
+    async fn dump_core(
+        &mut self,
+        core_index: usize,
+        ranges: Vec<std::ops::Range<u64>>,
+    ) -> Result<probe_rs::CoreDump, Error> {
+        let mut core = self.core(core_index)?;
+        probe_rs::CoreDump::dump_core(&mut core, ranges)
+    }
+
     /// Write a single core register. Default via [`DapBackend::core`]; the
     /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
     async fn write_core_reg(

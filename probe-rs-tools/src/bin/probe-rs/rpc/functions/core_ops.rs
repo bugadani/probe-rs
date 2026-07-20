@@ -5,13 +5,14 @@
 //! endpoints so that a remote DAP server can drive a target through the same
 //! [`probe_rs::Core`] API as a local one.
 
+use std::ops::Range;
 use std::time::Duration;
 
 use postcard_rpc::header::VarHeader;
 use postcard_schema::Schema;
 use probe_rs::{
-    CoreInformation, CoreStatus, HaltReason, InstructionSet, RegisterId, RegisterValue, Session,
-    VectorCatchCondition,
+    CoreDump, CoreInformation, CoreStatus, HaltReason, InstructionSet, RegisterId, RegisterValue,
+    Session, VectorCatchCondition,
     semihosting::{ExitErrorDetails, SemihostingCommand, UnknownCommandDetails},
 };
 use serde::{Deserialize, Serialize};
@@ -769,4 +770,101 @@ pub async fn core_read_registers(
             value: value.map(Into::into),
         })
         .collect())
+}
+
+// -- core dump ---------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct CoreDumpRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    pub ranges: Vec<Range<u64>>,
+}
+
+/// Wire form of [`probe_rs::CoreDump`]. The client reconstructs a `CoreDump`
+/// from these fields and stores it locally.
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct WireCoreDump {
+    pub registers: Vec<(WireRegisterId, WireRegisterValue)>,
+    pub data: Vec<(Range<u64>, Vec<u8>)>,
+    pub instruction_set: WireInstructionSet,
+    pub supports_native_64bit_access: bool,
+    pub core_type: WireCoreType,
+    pub fpu_support: bool,
+    pub floating_point_register_count: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone, Copy, PartialEq, Eq)]
+pub enum WireCoreType {
+    Armv6m,
+    Armv7a,
+    Armv7r,
+    Armv7m,
+    Armv7em,
+    Armv8a,
+    Armv8m,
+    Riscv,
+    Riscv64,
+    Xtensa,
+}
+
+impl From<probe_rs::CoreType> for WireCoreType {
+    fn from(value: probe_rs::CoreType) -> Self {
+        use probe_rs::CoreType::*;
+        match value {
+            Armv6m => WireCoreType::Armv6m,
+            Armv7a => WireCoreType::Armv7a,
+            Armv7r => WireCoreType::Armv7r,
+            Armv7m => WireCoreType::Armv7m,
+            Armv7em => WireCoreType::Armv7em,
+            Armv8a => WireCoreType::Armv8a,
+            Armv8m => WireCoreType::Armv8m,
+            Riscv => WireCoreType::Riscv,
+            Riscv64 => WireCoreType::Riscv64,
+            Xtensa => WireCoreType::Xtensa,
+        }
+    }
+}
+
+impl From<WireCoreType> for probe_rs::CoreType {
+    fn from(value: WireCoreType) -> Self {
+        use probe_rs::CoreType::*;
+        match value {
+            WireCoreType::Armv6m => Armv6m,
+            WireCoreType::Armv7a => Armv7a,
+            WireCoreType::Armv7r => Armv7r,
+            WireCoreType::Armv7m => Armv7m,
+            WireCoreType::Armv7em => Armv7em,
+            WireCoreType::Armv8a => Armv8a,
+            WireCoreType::Armv8m => Armv8m,
+            WireCoreType::Riscv => Riscv,
+            WireCoreType::Riscv64 => Riscv64,
+            WireCoreType::Xtensa => Xtensa,
+        }
+    }
+}
+
+pub async fn core_dump(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: CoreDumpRequest,
+) -> RpcResult<WireCoreDump> {
+    let mut session = ctx.session(request.sessid).await;
+    let mut core = session.core(request.core as usize)?;
+
+    let dump = CoreDump::dump_core(&mut core, request.ranges)?;
+
+    Ok(WireCoreDump {
+        registers: dump
+            .registers
+            .into_iter()
+            .map(|(id, v)| (id.into(), v.into()))
+            .collect(),
+        data: dump.data,
+        instruction_set: dump.instruction_set.into(),
+        supports_native_64bit_access: dump.supports_native_64bit_access,
+        core_type: dump.core_type.into(),
+        fpu_support: dump.fpu_support,
+        floating_point_register_count: dump.floating_point_register_count.map(|c| c as u64),
+    })
 }

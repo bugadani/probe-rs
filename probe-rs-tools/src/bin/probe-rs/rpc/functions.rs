@@ -14,14 +14,15 @@ use crate::{
                 chip_info, list_families, load_chip_family,
             },
             core_ops::{
-                CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreHaltRequest,
-                CoreReadRegRequest, CoreReadRegistersRequest, CoreVectorCatchRequest,
-                CoreWaitHaltedRequest, CoreWriteRegRequest, WireCoreInformation, WireCoreStatus,
-                WireInstructionSet, WireRegisterReadResult, WireRegisterValue,
-                core_available_bp_units, core_clear_hw_bp, core_clear_hw_bps, core_disable_vc,
-                core_enable_vc, core_halt, core_halted, core_instruction_set, core_read_reg,
-                core_read_registers, core_run, core_set_hw_bp, core_set_hw_bps, core_status,
-                core_step, core_wait_halted, core_write_reg,
+                CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
+                CoreHaltRequest, CoreReadRegRequest, CoreReadRegistersRequest,
+                CoreVectorCatchRequest, CoreWaitHaltedRequest, CoreWriteRegRequest,
+                WireCoreInformation, WireCoreStatus, WireCoreDump, WireInstructionSet,
+                WireRegisterReadResult, WireRegisterValue, core_available_bp_units,
+                core_clear_hw_bp, core_clear_hw_bps, core_disable_vc, core_enable_vc, core_dump,
+                core_halt, core_halted, core_instruction_set, core_read_reg, core_read_registers,
+                core_run, core_set_hw_bp, core_set_hw_bps, core_status, core_step, core_wait_halted,
+                core_write_reg,
             },
             debug_vars::{
                 ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, SetVariableRequest,
@@ -523,6 +524,7 @@ type CoreRegValueResponse = RpcResult<WireRegisterValue>;
 type CoreU32Response = RpcResult<u32>;
 type CoreInstructionSetResponse = RpcResult<WireInstructionSet>;
 type CoreReadRegistersResponse = RpcResult<Vec<WireRegisterReadResult>>;
+type CoreDumpResponse = RpcResult<WireCoreDump>;
 type CoreSetHwBpsResponse = RpcResult<Vec<bool>>;
 
 endpoints! {
@@ -586,6 +588,7 @@ endpoints! {
     | CoreDisableVcEndpoint     | CoreVectorCatchRequest  | NoResponse                    | "core/disable_vc"         |
     | CoreInstructionSetEndpoint | CoreAccessRequest      | CoreInstructionSetResponse    | "core/instruction_set"    |
     | CoreReadRegistersEndpoint | CoreReadRegistersRequest | CoreReadRegistersResponse    | "core/read_registers"     |
+    | CoreDumpEndpoint          | CoreDumpRequest         | CoreDumpResponse             | "core/dump"                |
 
     | ReadMemory8Endpoint       | ReadMemoryRequest       | ReadMemory8Response     | "memory/read8"     |
     | ReadMemory16Endpoint      | ReadMemoryRequest       | ReadMemory16Response    | "memory/read16"    |
@@ -687,6 +690,7 @@ postcard_rpc::define_dispatch! {
         | CoreDisableVcEndpoint        | async | core_disable_vc        |
         | CoreInstructionSetEndpoint   | async | core_instruction_set   |
         | CoreReadRegistersEndpoint    | async | core_read_registers    |
+        | CoreDumpEndpoint             | async | core_dump             |
 
         | ReadMemory8Endpoint       | async     | read_memory       |
         | ReadMemory16Endpoint      | async     | read_memory       |

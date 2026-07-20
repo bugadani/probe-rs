@@ -33,10 +33,11 @@ use crate::{
         functions::{
             AttachEndpoint, BuildEndpoint, ChipInfoEndpoint, CleanUpRttEndpoint,
             ClearCoreDebugStateEndpoint, CoreAvailableBpUnitsEndpoint, CoreClearHwBpEndpoint,
-            CoreClearHwBpsEndpoint, CoreDisableVcEndpoint, CoreEnableVcEndpoint, CoreHaltEndpoint,
-            CoreHaltedEndpoint, CoreInstructionSetEndpoint, CoreReadRegEndpoint,
-            CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint,
-            CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
+            CoreClearHwBpsEndpoint, CoreDisableVcEndpoint, CoreDumpEndpoint,
+            CoreEnableVcEndpoint, CoreHaltEndpoint, CoreHaltedEndpoint,
+            CoreInstructionSetEndpoint, CoreReadRegEndpoint, CoreReadRegistersEndpoint,
+            CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint, CoreStatusEndpoint,
+            CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
             CreateRttClientEndpoint, CreateTempFileEndpoint, DisassembleEndpoint, EraseEndpoint,
             EvaluateEndpoint, FlashEndpoint, GetRttChannelsEndpoint, ListChipFamiliesEndpoint,
             ListProbesEndpoint, ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint,
@@ -51,10 +52,11 @@ use crate::{
             WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
-                CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreHaltRequest,
-                CoreReadRegRequest, CoreReadRegistersRequest, CoreVectorCatchRequest,
-                CoreWaitHaltedRequest, CoreWriteRegRequest, WireCoreInformation, WireCoreStatus,
-                WireInstructionSet, WireRegisterId, WireRegisterReadResult, WireRegisterValue,
+                CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
+                CoreHaltRequest, CoreReadRegRequest, CoreReadRegistersRequest,
+                CoreVectorCatchRequest, CoreWaitHaltedRequest, CoreWriteRegRequest,
+                WireCoreDump, WireCoreInformation, WireCoreStatus, WireInstructionSet,
+                WireRegisterId, WireRegisterReadResult, WireRegisterValue,
                 WireVectorCatchCondition,
             },
             debug_vars::{
@@ -1199,6 +1201,21 @@ impl CoreInterface {
                 sessid: self.sessid,
                 core: self.core,
                 ids,
+            })
+            .await
+    }
+
+    /// Dump the core (registers + the supplied memory ranges) server-side and
+    /// return the wire fields so the caller can reconstruct a `CoreDump`.
+    pub async fn dump_core(
+        &self,
+        ranges: Vec<std::ops::Range<u64>>,
+    ) -> anyhow::Result<WireCoreDump> {
+        self.client
+            .send_resp::<CoreDumpEndpoint, _>(&CoreDumpRequest {
+                sessid: self.sessid,
+                core: self.core,
+                ranges,
             })
             .await
     }

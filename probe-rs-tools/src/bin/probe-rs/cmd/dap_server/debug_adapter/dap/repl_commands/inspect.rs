@@ -1,7 +1,6 @@
 use std::{fmt::Write as _, ops::Range, path::Path, str::FromStr};
 
 use linkme::distributed_slice;
-use probe_rs::CoreDump;
 use probe_rs_debug::{ObjectRef, VariableName};
 
 use crate::cmd::dap_server::{
@@ -17,7 +16,7 @@ use crate::cmd::dap_server::{
         },
         protocol::ProtocolAdapter,
     },
-    server::{core_data::CoreHandle, session_data::SessionData},
+    server::session_data::SessionData,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -58,7 +57,7 @@ static DUMP: ReplCommand = ReplCommand {
         ReplCommandArgs::Optional("memory size in bytes"),
         ReplCommandArgs::Optional("path (default: ./coredump)"),
     ],
-    handler: dump_core,
+    handler: unimplemented_repl,
 };
 
 pub(crate) async fn print_variables_async<B: DapBackend, P: ProtocolAdapter>(
@@ -208,11 +207,11 @@ pub(crate) async fn examine_memory_async<B: DapBackend, P: ProtocolAdapter>(
     .await
 }
 
-fn dump_core(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn dump_core_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     command_arguments: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     let mut args = command_arguments.split_whitespace().collect::<Vec<_>>();
 
@@ -228,10 +227,31 @@ fn dump_core(
     );
 
     let ranges = if args.is_empty() {
-        // No specific memory ranges were requested, so we will dump the
-        // memory ranges we know are specifically referenced by the variables
-        // in the current scope.
-        target_core.get_memory_ranges()
+        // No specific memory ranges were requested. Auto-detect uses the
+        // client-side variable cache, which only the local backend
+        // populates; for RPC the variable cache is server-side, so
+        // auto-detect is unavailable client-side (fall through with empty
+        // ranges → registers-only dump).
+        let Some(cd_idx) = session_data
+            .core_data
+            .iter()
+            .position(|c| c.core_index == core_index)
+        else {
+            return Err(DebuggerError::UserMessage("No core data".to_string()));
+        };
+        let has_client_cache = session_data.core_data[cd_idx]
+            .stack_frames
+            .iter()
+            .any(|f| f.local_variables.is_some())
+            || session_data.core_data[cd_idx].static_variables.is_some();
+        if has_client_cache {
+            let mut target_core = session_data
+                .attach_core(core_index)
+                .map_err(|e| DebuggerError::Other(anyhow::anyhow!(e)))?;
+            target_core.get_memory_ranges()
+        } else {
+            Vec::new()
+        }
     } else {
         args
             .chunks(2)
@@ -262,7 +282,12 @@ fn dump_core(
     } else {
         format!("(Includes memory ranges: {range_string})")
     };
-    CoreDump::dump_core(&mut target_core.core, ranges)?.store(location)?;
+    let dump = session_data
+        .backend
+        .dump_core(core_index, ranges)
+        .await
+        .map_err(DebuggerError::from)?;
+    dump.store(location)?;
 
     Ok(EvalResponse::Message(format!(
         "Core dump {range_string} successfully stored at {location:?}.",

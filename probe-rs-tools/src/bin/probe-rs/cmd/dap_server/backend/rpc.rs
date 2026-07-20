@@ -706,6 +706,32 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
+    async fn dump_core(
+        &mut self,
+        core_index: usize,
+        ranges: Vec<std::ops::Range<u64>>,
+    ) -> Result<probe_rs::CoreDump, Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        let wire = client
+            .dump_core(ranges)
+            .await
+            .map_err(rpc_err)?;
+        Ok(probe_rs::CoreDump {
+            registers: wire
+                .registers
+                .into_iter()
+                .map(|(id, v)| (id.into(), v.into()))
+                .collect(),
+            data: wire.data,
+            instruction_set: wire.instruction_set.into(),
+            supports_native_64bit_access: wire.supports_native_64bit_access,
+            core_type: wire.core_type.into(),
+            fpu_support: wire.fpu_support,
+            floating_point_register_count: wire.floating_point_register_count.map(|c| c as usize),
+        })
+    }
+
     async fn debug_step(
         &mut self,
         core_index: usize,

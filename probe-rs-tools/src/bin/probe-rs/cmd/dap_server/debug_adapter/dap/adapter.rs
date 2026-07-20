@@ -834,6 +834,12 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 .await
             }
             "info frame" | "info var" => Err(DebuggerError::Unimplemented),
+            "dump" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::inspect::dump_core_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
