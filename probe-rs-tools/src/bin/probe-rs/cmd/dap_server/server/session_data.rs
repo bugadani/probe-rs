@@ -532,7 +532,6 @@ impl<B: DapBackend> SessionData<B> {
                 .collect();
 
             let handle = debug_rtt::RttClientHandle::Remote(debug_rtt::RemoteRttClient::new(
-                seed.handle.clone(),
                 seed.session.clone(),
                 rtt_key,
             ));
@@ -699,10 +698,25 @@ impl<B: DapBackend> SessionData<B> {
             // block.
             if rtt_enabled {
                 if self.core_data[cd_idx].rtt_connection.is_some() {
-                    let mut core = self.backend.core(core_index)?;
-                    if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut()
-                        && core_rtt.process_rtt_data(debug_adapter, &mut core).await
-                    {
+                    let is_remote = self.core_data[cd_idx]
+                        .rtt_connection
+                        .as_ref()
+                        .is_some_and(|c| c.is_remote());
+                    let had_data = if is_remote {
+                        match self.core_data[cd_idx].rtt_connection.as_mut() {
+                            Some(core_rtt) => core_rtt.process_rtt_data_remote(debug_adapter).await,
+                            None => false,
+                        }
+                    } else {
+                        let mut core = self.backend.core(core_index)?;
+                        match self.core_data[cd_idx].rtt_connection.as_mut() {
+                            Some(core_rtt) => {
+                                core_rtt.process_rtt_data(debug_adapter, &mut core).await
+                            }
+                            None => false,
+                        }
+                    };
+                    if had_data {
                         suggest_delay_required = false;
                     }
                 } else if debug_adapter.configuration_is_done()
@@ -844,7 +858,10 @@ impl<B: DapBackend> SessionData<B> {
         Ok(suggest_delay_required)
     }
 
-    pub(crate) fn clean_up(&mut self, session_config: &SessionConfig) -> Result<(), DebuggerError> {
+    pub(crate) async fn clean_up(
+        &mut self,
+        session_config: &SessionConfig,
+    ) -> Result<(), DebuggerError> {
         for core_config in session_config.core_configs.iter() {
             if core_config.rtt_config.enabled {
                 let Some(cd_idx) = self
@@ -855,9 +872,19 @@ impl<B: DapBackend> SessionData<B> {
                     continue;
                 };
                 if self.core_data[cd_idx].rtt_connection.is_some() {
-                    let mut core = self.backend.core(core_config.core_index)?;
-                    if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
-                        core_rtt.clean_up(&mut core)?;
+                    let is_remote = self.core_data[cd_idx]
+                        .rtt_connection
+                        .as_ref()
+                        .is_some_and(|c| c.is_remote());
+                    if is_remote {
+                        if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
+                            core_rtt.clean_up_async(None).await?;
+                        }
+                    } else {
+                        let mut core = self.backend.core(core_config.core_index)?;
+                        if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
+                            core_rtt.clean_up_async(Some(&mut core)).await?;
+                        }
                     }
                 }
             }
@@ -1037,3 +1064,4 @@ fn initialize_core_data<B: DapBackend>(
     }
     Ok(core_data_vec)
 }
+

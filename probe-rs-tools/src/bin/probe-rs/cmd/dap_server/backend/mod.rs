@@ -236,7 +236,6 @@ fn handle_semihosting_local(
 /// [`Session`] backend returns `None` and uses a local `RttClient` instead.
 #[derive(Clone)]
 pub struct RttRemoteSeed {
-    pub handle: Handle,
     pub session: crate::rpc::client::SessionInterface,
 }
 use crate::util::flash::build_loader;

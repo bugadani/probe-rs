@@ -414,7 +414,6 @@ impl DapBackend for RpcBackend {
 
     fn rtt_remote_seed(&self) -> Option<super::RttRemoteSeed> {
         Some(super::RttRemoteSeed {
-            handle: self.handle.clone(),
             session: self.session_interface(),
         })
     }

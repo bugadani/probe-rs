@@ -4,7 +4,6 @@ use crate::util::rtt::client::RttClient;
 use crate::{
     cmd::dap_server::{
         DebuggerError,
-        backend::block_on,
         debug_adapter::{dap::adapter::*, protocol::ProtocolAdapter},
     },
     rpc::{Key, client::SessionInterface},
@@ -12,10 +11,11 @@ use crate::{
 };
 use anyhow::anyhow;
 use probe_rs::{Core, rtt::Error as RttError};
-use tokio::runtime::Handle;
 
 /// Per-channel result of a batched [`RttClientHandle::poll_channels`] call.
-pub(crate) type ChannelPollResults<'c> = Vec<(u32, Result<Cow<'c, [u8]>, RttError>)>;
+/// The data is always owned (`Cow::Owned`), so the results do not borrow from
+/// the RTT client and can be passed to a separate method on `RttConnection`.
+pub(crate) type ChannelPollResults = Vec<(u32, Result<Cow<'static, [u8]>, RttError>)>;
 
 /// The RTT client the DAP server drives. `Local` reads the target directly
 /// through a [`Core`]; `Remote` drives the server-side `RttClient` so each
@@ -27,22 +27,13 @@ pub enum RttClientHandle {
 
 /// Handle to the server-side [`RttClient`].
 pub struct RemoteRttClient {
-    handle: Handle,
     session: SessionInterface,
     rtt_client: Key<RttClient>,
 }
 
 impl RemoteRttClient {
-    pub(crate) fn new(
-        handle: Handle,
-        session: SessionInterface,
-        rtt_client: Key<RttClient>,
-    ) -> Self {
-        Self {
-            handle,
-            session,
-            rtt_client,
-        }
+    pub(crate) fn new(session: SessionInterface, rtt_client: Key<RttClient>) -> Self {
+        Self { session, rtt_client }
     }
 
     /// Async write to a down channel over the RPC session — no local `Core`
@@ -64,11 +55,11 @@ impl RttClientHandle {
     /// channel's bytes (its `poll_channel` buffer can't span channels); the
     /// remote path `.await`s a single `rtt/poll_up` round trip. Per-channel
     /// errors are reported inline; a top-level `Err` means the batch failed.
-    async fn poll_channels<'c>(
-        &'c mut self,
+    async fn poll_channels(
+        &mut self,
         core: &mut Core<'_>,
         channels: &[u32],
-    ) -> Result<ChannelPollResults<'c>, RttError> {
+    ) -> Result<ChannelPollResults, RttError> {
         match self {
             RttClientHandle::Local(client) => {
                 let mut out = Vec::with_capacity(channels.len());
@@ -100,15 +91,53 @@ impl RttClientHandle {
         }
     }
 
-    /// Restore the original mode of every up channel.
-    fn clean_up(&mut self, core: &mut Core<'_>) -> Result<(), RttError> {
+    /// Remote-only poll: a single `rtt/poll_up` round trip with no local
+    /// `Core` (and no `block_on` bridge). Panics for the `Local` variant —
+    /// callers must branch on [`RttConnection::is_remote`].
+    async fn poll_channels_remote(
+        &mut self,
+        channels: &[u32],
+    ) -> Result<ChannelPollResults, RttError> {
         match self {
-            RttClientHandle::Local(client) => client.clean_up(core),
-            RttClientHandle::Remote(remote) => block_on(
-                &remote.handle,
-                remote.session.clean_up_rtt(remote.rtt_client),
-            )
-            .map_err(RttError::Other),
+            RttClientHandle::Remote(remote) => {
+                let results = remote
+                    .session
+                    .poll_rtt_up(remote.rtt_client, channels.to_vec())
+                    .await
+                    .map_err(RttError::Other)?;
+                Ok(results
+                    .into_iter()
+                    .map(|r| {
+                        let res = match r.result {
+                            Ok(data) => Ok(Cow::Owned(data)),
+                            Err(e) => Err(RttError::Other(anyhow!(e))),
+                        };
+                        (r.channel, res)
+                    })
+                    .collect())
+            }
+            RttClientHandle::Local(_) => Err(RttError::Other(anyhow!(
+                "poll_channels_remote called on a local RTT client"
+            ))),
+        }
+    }
+
+    /// Restore the original mode of every up channel. The `Local` variant
+    /// needs a live `Core`; the `Remote` variant `.await`s the
+    /// `rtt/clean_up` round trip directly (no `block_on` bridge).
+    async fn clean_up_async(&mut self, core: Option<&mut Core<'_>>) -> Result<(), RttError> {
+        match self {
+            RttClientHandle::Local(client) => {
+                let core = core.ok_or_else(|| {
+                    RttError::Other(anyhow!("local RTT clean_up needs a live Core"))
+                })?;
+                client.clean_up(core)
+            }
+            RttClientHandle::Remote(remote) => remote
+                .session
+                .clean_up_rtt(remote.rtt_client)
+                .await
+                .map_err(RttError::Other),
         }
     }
 
@@ -146,6 +175,11 @@ pub struct RttConnection {
 }
 
 impl RttConnection {
+    /// Whether this connection drives a server-side (RPC) RTT client.
+    pub fn is_remote(&self) -> bool {
+        matches!(self.client, RttClientHandle::Remote(_))
+    }
+
     /// Polls all the available channels for data and transmits data to the client.
     /// If at least one channel had data, then return a `true` status.
     pub async fn process_rtt_data<P: ProtocolAdapter>(
@@ -175,6 +209,43 @@ impl RttConnection {
             }
         };
 
+        self.emit_rtt_results(debug_adapter, results).await
+    }
+
+    /// Remote-only [`Self::process_rtt_data`]: a single `rtt/poll_up` round trip
+    /// with no local `Core` (and no `block_on` bridge).
+    pub async fn process_rtt_data_remote<P: ProtocolAdapter>(
+        &mut self,
+        debug_adapter: &mut DebugAdapter<P>,
+    ) -> bool {
+        let windowed: Vec<u32> = self
+            .debugger_rtt_channels
+            .iter()
+            .filter(|c| c.has_client_window)
+            .map(|c| c.channel_number)
+            .collect();
+        if windowed.is_empty() {
+            return false;
+        }
+
+        let results = match self.client.poll_channels_remote(&windowed).await {
+            Ok(results) => results,
+            Err(error) => {
+                debug_adapter
+                    .show_error_message(&DebuggerError::Other(anyhow!(error)))
+                    .ok();
+                return false;
+            }
+        };
+
+        self.emit_rtt_results(debug_adapter, results).await
+    }
+
+    async fn emit_rtt_results<P: ProtocolAdapter>(
+        &mut self,
+        debug_adapter: &mut DebugAdapter<P>,
+        results: ChannelPollResults,
+    ) -> bool {
         let mut at_least_one_channel_had_data = false;
         for (channel, result) in results {
             let Some(debugger_rtt_channel) = self
@@ -202,9 +273,15 @@ impl RttConnection {
     }
 
     /// Clean up the RTT connection, restoring the state changes that we made.
-    pub fn clean_up(&mut self, target_core: &mut Core<'_>) -> Result<(), DebuggerError> {
+    /// The `Local` variant needs a live `Core`; the `Remote` variant cleans up
+    /// server-side (no `block_on` bridge).
+    pub async fn clean_up_async(
+        &mut self,
+        target_core: Option<&mut Core<'_>>,
+    ) -> Result<(), DebuggerError> {
         self.client
-            .clean_up(target_core)
+            .clean_up_async(target_core)
+            .await
             .map_err(|err| DebuggerError::Other(anyhow!(err)))?;
         Ok(())
     }

@@ -506,7 +506,7 @@ impl Debugger {
                     }
                 }
                 DebugSessionStatus::Terminate => {
-                    session_data.clean_up(&self.config)?;
+                    session_data.clean_up(&self.config).await?;
                     return Ok(());
                 }
             };
