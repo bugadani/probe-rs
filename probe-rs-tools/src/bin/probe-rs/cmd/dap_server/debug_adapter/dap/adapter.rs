@@ -669,6 +669,37 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
+    pub(crate) async fn rtt_window_opened<B: DapBackend>(
+        &mut self,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+        request: &Request,
+    ) -> Result<()> {
+        if let Some(debugger_rtt_target) = session_data
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+            .and_then(|cd| cd.rtt_connection.as_mut())
+        {
+            let arguments: RttWindowOpenedArguments = get_arguments(self, request)?;
+
+            if let Some(rtt_channel) = debugger_rtt_target
+                .debugger_rtt_channels
+                .iter_mut()
+                .find(|debugger_rtt_channel| {
+                    debugger_rtt_channel.channel_number == arguments.channel_number
+                })
+            {
+                rtt_channel.has_client_window = arguments.window_is_open;
+            }
+
+            self.send_response::<()>(&request, Ok(None))
+                .context("Could not deserialize arguments for RttWindowOpened")?;
+        }
+        Ok(())
+    }
+
+    /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
     pub(crate) async fn completions<B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,

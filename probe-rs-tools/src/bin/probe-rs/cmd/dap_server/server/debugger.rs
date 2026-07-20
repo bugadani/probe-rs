@@ -1,6 +1,5 @@
 use super::{
     configuration::{self, ConsoleLog},
-    core_data::CoreHandle,
     logger::DebugLogger,
     session_data::SessionData,
     startup::{TargetSessionType, get_file_timestamp},
@@ -15,7 +14,7 @@ use crate::{
                 adapter::{DebugAdapter, get_arguments},
                 dap_types::{
                     Capabilities, DisconnectResponse, Event, ExitedEventBody,
-                    InitializeRequestArguments, MessageSeverity, Request, RttWindowOpenedArguments,
+                    InitializeRequestArguments, MessageSeverity, Request,
                     TerminatedEventBody,
                 },
                 request_helpers::halt_core,
@@ -321,19 +320,20 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "rttWindowOpened" => {
+                debug_adapter
+                    .rtt_window_opened(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
-            _ => {
-                let mut target_core = session_data
-                    .attach_core(core_index)
-                    .context("Unable to connect to target core")?;
-                dispatch_request(debug_adapter, request, &mut target_core)
-                    .context("Error executing request.")?
-            }
+            _ => dispatch_request(debug_adapter, request)
+                .context("Error executing request.")?,
         };
 
         if unhalt_me && let Err(error) = session_data.backend.run(core_index).await {
@@ -982,37 +982,14 @@ impl Debugger {
 fn dispatch_request<P: ProtocolAdapter>(
     debug_adapter: &mut DebugAdapter<P>,
     request: Request,
-    target_core: &mut CoreHandle<'_>,
 ) -> anyhow::Result<DebugSessionStatus> {
-    match request.command.as_ref() {
-        "rttWindowOpened" => {
-            if let Some(debugger_rtt_target) = target_core.core_data.rtt_connection.as_mut() {
-                let arguments: RttWindowOpenedArguments = get_arguments(debug_adapter, &request)?;
-
-                if let Some(rtt_channel) = debugger_rtt_target
-                    .debugger_rtt_channels
-                    .iter_mut()
-                    .find(|debugger_rtt_channel| {
-                        debugger_rtt_channel.channel_number == arguments.channel_number
-                    })
-                {
-                    rtt_channel.has_client_window = arguments.window_is_open;
-                }
-
-                debug_adapter
-                    .send_response::<()>(&request, Ok(None))
-                    .context("Could not deserialize arguments for RttWindowOpened")?;
-            }
-        }
-        unimplemented_command => {
-            debug_adapter.send_response::<()>(
-                &request,
-                Err(&DebuggerError::Other(anyhow!(
-                    "Received request '{unimplemented_command}', which is not supported or not implemented yet"
-                ))),
-            )?;
-        }
-    }
+    let unimplemented_command = request.command.as_str();
+    debug_adapter.send_response::<()>(
+        &request,
+        Err(&DebuggerError::Other(anyhow!(
+            "Received request '{unimplemented_command}', which is not supported or not implemented yet"
+        ))),
+    )?;
 
     Ok(DebugSessionStatus::Continue(Duration::ZERO))
 }
