@@ -833,6 +833,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
+            "info frame" | "info var" => Err(DebuggerError::Unimplemented),
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
