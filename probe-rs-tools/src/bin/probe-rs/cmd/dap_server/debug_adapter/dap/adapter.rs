@@ -9,7 +9,7 @@ use crate::cmd::run::EmbeddedTestElfInfo;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
-        dap::repl_commands::{EvalResponse, EvalResult, ReplCommand},
+        dap::repl_commands::{EvalResponse, EvalResult},
         protocol::{ProtocolAdapter, ProtocolHelper},
     },
     server::{
@@ -689,7 +689,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .trim_start();
 
         self.dispatch_repl_command(
-            repl_command,
             &command_root,
             session_data,
             core_index,
@@ -700,12 +699,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Async REPL dispatch. Migrated commands are handled inline (session-level,
-    /// no `CoreHandle`); unmigrated commands fall back to the sync `handler`
-    /// via a short-lived `CoreHandle` (transitional — uses the bridge for RPC
-    /// until they are migrated).
+    /// no `CoreHandle`); unmigrated commands return an `Unimplemented` error.
     async fn dispatch_repl_command<B: DapBackend>(
         &mut self,
-        leaf: ReplCommand,
         command_root: &str,
         session_data: &mut SessionData<B>,
         core_index: usize,
@@ -849,12 +845,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
-            _ => {
-                let mut target_core = session_data
-                    .attach_core(core_index)
-                    .map_err(|e| DebuggerError::Other(anyhow!(e)))?;
-                (leaf.handler)(&mut target_core, argument_string, arguments, self)
-            }
+            _ => Err(DebuggerError::Other(anyhow!(
+                "REPL command '{command_root}' is not implemented"
+            ))),
         }
     }
 
