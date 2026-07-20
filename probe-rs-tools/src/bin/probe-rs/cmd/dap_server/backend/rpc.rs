@@ -39,7 +39,7 @@ use crate::rpc::{
     client::{CoreInterface as RpcCoreClient, RpcClient, SessionInterface},
     functions::{
         core_ops::{
-            WireBreakpointCause, WireCoreStatus, WireHaltReason, WireRegisterValue,
+            WireBreakpointCause, WireCoreStatus, WireHaltReason, WireRegisterId, WireRegisterValue,
             WireSemihostingCommand, WireVectorCatchCondition,
         },
         debug_vars::WireSteppingMode,
@@ -665,6 +665,31 @@ impl DapBackend for RpcBackend {
             .write_core_reg(register_id.into(), value.into())
             .await
             .map_err(rpc_err)
+    }
+
+    async fn read_core_registers(
+        &mut self,
+        core_index: usize,
+        ids: Vec<RegisterId>,
+    ) -> Result<Vec<Option<RegisterValue>>, Error> {
+        let wire_ids: Vec<WireRegisterId> = ids.iter().copied().map(Into::into).collect();
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        let results = client
+            .read_registers(wire_ids)
+            .await
+            .map_err(rpc_err)?;
+        Ok(results
+            .into_iter()
+            .map(|r| r.value.map(RegisterValue::from))
+            .collect())
+    }
+
+    fn register_file(
+        &mut self,
+        core_index: usize,
+    ) -> Result<&'static probe_rs::CoreRegisters, Error> {
+        Ok(self.core_metadata[core_index].registers)
     }
 
     async fn debug_step(

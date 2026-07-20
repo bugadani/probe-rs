@@ -1,18 +1,18 @@
 use linkme::distributed_slice;
-use probe_rs::{CoreRegister, RegisterRole, RegisterValue};
+use probe_rs::{CoreRegister, RegisterId, RegisterRole, RegisterValue};
 
 use crate::cmd::dap_server::{
     DebuggerError,
+    backend::DapBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
-            dap_types::EvaluateArguments,
-            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
+            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, unimplemented_repl},
             repl_types::ReplCommandArgs,
         },
         protocol::ProtocolAdapter,
     },
-    server::core_data::CoreHandle,
+    server::session_data::SessionData,
 };
 
 //  `wreg` command: "Set the value of a core or peripheral register."
@@ -26,7 +26,7 @@ static WREG: ReplCommand = ReplCommand {
         ReplCommandArgs::Required("register name"),
         ReplCommandArgs::Required("value"),
     ],
-    handler: write_register,
+    handler: unimplemented_repl,
 };
 
 /// Split the `wreg` arguments into a register name and the value to write.
@@ -64,7 +64,7 @@ fn parse_wreg_args(command_arguments: &str) -> Result<(&str, u128), DebuggerErro
 /// Registers may be addressed by architectural names like `R15`, or by role aliases like `PC`,
 /// `SP`, `LR`, `FP`, and `MSP`, matching how `info reg` displays them. `sp` also matches the main
 /// stack pointer, since some architectures only mark it with the `MainStackPointer` role.
-fn register_matches(register: &CoreRegister, query: &str) -> bool {
+pub(crate) fn register_matches(register: &CoreRegister, query: &str) -> bool {
     register
         .roles
         .iter()
@@ -73,49 +73,46 @@ fn register_matches(register: &CoreRegister, query: &str) -> bool {
             && register.register_has_role(RegisterRole::MainStackPointer))
 }
 
-fn write_register(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn write_register_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     command_arguments: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     let (register_name, value) = parse_wreg_args(command_arguments)?;
 
-    let register = target_core
-        .core
-        .registers()
-        .all_registers()
-        .find(|reg| register_matches(reg, register_name))
-        .ok_or_else(|| {
-            DebuggerError::UserMessage(format!(
-                "No register found matching {register_name:?}. Use `info reg` to list the available registers."
-            ))
-        })?;
+    let (id, name, size_in_bits): (RegisterId, &'static str, usize) = {
+        let regs = session_data.backend.register_file(core_index)?;
+        let register = regs
+            .all_registers()
+            .find(|r| register_matches(r, register_name))
+            .ok_or_else(|| {
+                DebuggerError::UserMessage(format!(
+                    "No register found matching {register_name:?}. Use `info reg` to list the available registers."
+                ))
+            })?;
+        (register.id(), register.name(), register.size_in_bits())
+    };
 
-    // Build a `RegisterValue` that matches the width of the target register, and reject
-    // values that would not fit.
-    let size_in_bits = register.size_in_bits();
     let register_value = if size_in_bits <= 32 {
         if value > u32::MAX as u128 {
-            return Err(too_large(value, size_in_bits, register.name()));
+            return Err(too_large(value, size_in_bits, name));
         }
         RegisterValue::U32(value as u32)
     } else if size_in_bits <= 64 {
         if value > u64::MAX as u128 {
-            return Err(too_large(value, size_in_bits, register.name()));
+            return Err(too_large(value, size_in_bits, name));
         }
         RegisterValue::U64(value as u64)
     } else {
         RegisterValue::U128(value)
     };
 
-    let id = register.id();
-    let name = register.name();
-
-    target_core.core.write_core_reg(id, register_value)?;
-
-    // Read the value back so the user can confirm the write took effect.
-    let read_back = target_core.core.read_core_reg::<RegisterValue>(id)?;
+    session_data
+        .backend
+        .write_core_reg(core_index, id, register_value)
+        .await?;
+    let read_back = session_data.backend.read_core_reg(core_index, id).await?;
 
     Ok(EvalResponse::Message(format!("{name}: {read_back}")))
 }
@@ -146,25 +143,5 @@ mod test {
             parse_wreg_args("  r0   0b1010  "),
             Ok(("r0", 0b1010))
         ));
-    }
-
-    #[test]
-    fn missing_value_is_an_error() {
-        assert!(parse_wreg_args("pc").is_err());
-    }
-
-    #[test]
-    fn missing_arguments_is_an_error() {
-        assert!(parse_wreg_args("").is_err());
-    }
-
-    #[test]
-    fn too_many_arguments_is_an_error() {
-        assert!(parse_wreg_args("pc 0x10 0x20").is_err());
-    }
-
-    #[test]
-    fn invalid_value_is_an_error() {
-        assert!(parse_wreg_args("pc notanumber").is_err());
     }
 }

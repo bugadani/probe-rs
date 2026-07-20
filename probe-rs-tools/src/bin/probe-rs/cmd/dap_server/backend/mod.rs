@@ -353,6 +353,33 @@ pub trait DapBackend {
         core.read_core_reg(register_id)
     }
 
+    /// Read a batch of core registers in one round trip (RPC) or a tight loop
+    /// (local). Per-register failures are reported as `None` in-place.
+    async fn read_core_registers(
+        &mut self,
+        core_index: usize,
+        ids: Vec<RegisterId>,
+    ) -> Result<Vec<Option<RegisterValue>>, Error> {
+        let mut core = self.core(core_index)?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            out.push(core.read_core_reg::<RegisterValue>(id).ok());
+        }
+        Ok(out)
+    }
+
+    /// The static register file for this core (names, roles, sizes, ids).
+    /// Both backends can produce this without a round trip: the local backend
+    /// reads it from the live `Core`, the RPC backend from cached per-core
+    /// metadata.
+    fn register_file(
+        &mut self,
+        core_index: usize,
+    ) -> Result<&'static probe_rs::CoreRegisters, Error> {
+        let core = self.core(core_index)?;
+        Ok(core.registers())
+    }
+
     /// Write a single core register. Default via [`DapBackend::core`]; the
     /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
     async fn write_core_reg(

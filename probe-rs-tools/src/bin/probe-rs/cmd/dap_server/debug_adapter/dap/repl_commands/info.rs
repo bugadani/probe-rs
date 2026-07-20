@@ -1,24 +1,25 @@
 use std::fmt::Write;
 
 use linkme::distributed_slice;
-use probe_rs::{CoreInterface, RegisterValue};
+use probe_rs::{CoreRegister, RegisterId};
 use probe_rs_debug::VariableName;
 
 use crate::cmd::dap_server::{
     DebuggerError,
+    backend::DapBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
-            dap_types::EvaluateArguments,
             repl_commands::{
                 EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, need_subcommand,
+                unimplemented_repl,
             },
             repl_commands_helpers::get_local_variable,
             repl_types::{GdbFormat, GdbNuf, ReplCommandArgs},
         },
         protocol::ProtocolAdapter,
     },
-    server::core_data::CoreHandle,
+    server::session_data::SessionData,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -57,7 +58,7 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: true,
             sub_commands: &[],
             args: &[ReplCommandArgs::Optional("register name")],
-            handler: print_registers,
+            handler: unimplemented_repl,
         },
         ReplCommand {
             command: "var",
@@ -74,43 +75,45 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: false,
             sub_commands: &[],
             args: &[],
-            handler: print_breakpoints,
+            handler: unimplemented_repl,
         },
     ],
     args: &[],
     handler: need_subcommand,
 };
 
-fn print_registers(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn print_registers_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     command_arguments: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     let register_name = command_arguments.trim();
-    let regs = target_core.core.registers().all_registers().filter(|reg| {
-        if register_name.is_empty() {
-            true
-        } else {
-            reg.name().eq_ignore_ascii_case(register_name)
-        }
-    });
-
-    let mut results = vec![];
-    let mut failures = vec![];
-    let mut any_matched = false;
-    for reg in regs {
-        any_matched = true;
-        match target_core.core.read_core_reg::<RegisterValue>(reg.id()) {
-            Ok(reg_value) => results.push((format!("{reg}:"), reg_value.to_string())),
-            Err(error) => failures.push((reg.to_string(), error)),
-        }
-    }
-
-    if !any_matched {
+    let registers: Vec<&'static CoreRegister> = {
+        let regs = session_data.backend.register_file(core_index)?;
+        regs.all_registers()
+            .filter(|reg| register_name.is_empty() || reg.name().eq_ignore_ascii_case(register_name))
+            .collect::<Vec<&'static CoreRegister>>()
+    };
+    if registers.is_empty() {
         return Err(DebuggerError::UserMessage(format!(
             "No registers found matching {register_name:?}. See the `help` command for more information."
         )));
+    }
+
+    let ids: Vec<RegisterId> = registers.iter().map(|r| r.id()).collect();
+    let values = session_data
+        .backend
+        .read_core_registers(core_index, ids)
+        .await?;
+
+    let mut results = vec![];
+    let mut failures = vec![];
+    for (reg, value) in registers.into_iter().zip(values) {
+        match value {
+            Some(reg_value) => results.push((format!("{reg}:"), reg_value.to_string())),
+            None => failures.push((reg.to_string(), "unreadable".to_string())),
+        }
     }
 
     let mut response_message = String::new();
@@ -132,24 +135,22 @@ fn print_registers(
     Ok(EvalResponse::Message(response_message))
 }
 
-fn print_breakpoints(
-    target_core: &mut CoreHandle<'_>,
-    _: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
+pub(crate) async fn print_breakpoints_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
+    _command_arguments: &str,
 ) -> EvalResult {
-    let breakpoint_addrs = target_core
-        .core
-        .hw_breakpoints()?
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, bpt)| bpt.map(|bpt| (idx, bpt)));
-
     let mut response_message = String::new();
-
-    for (idx, bpt) in breakpoint_addrs {
-        #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
-        writeln!(&mut response_message, "Breakpoint #{idx} @ {bpt:#010X}").unwrap();
+    if let Some(cd) = session_data
+        .core_data
+        .iter()
+        .find(|c| c.core_index == core_index)
+    {
+        for (idx, ab) in cd.breakpoints.iter().enumerate() {
+            #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+            writeln!(&mut response_message, "Breakpoint #{idx} @ {:010X}", ab.address).unwrap();
+        }
     }
 
     if response_message.is_empty() {

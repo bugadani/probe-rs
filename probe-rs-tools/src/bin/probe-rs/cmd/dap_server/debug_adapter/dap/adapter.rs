@@ -791,6 +791,24 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
+            "wreg" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::registers::write_register_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
+            "info reg" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::info::print_registers_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
+            "info break" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::info::print_breakpoints_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
