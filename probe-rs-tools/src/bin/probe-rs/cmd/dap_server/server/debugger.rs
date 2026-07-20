@@ -733,9 +733,7 @@ impl Debugger {
                 // `session_data`.
                 let target_core_config = target_core_config.clone();
                 session_data.load_debug_info_for_core(&target_core_config)?;
-                session_data
-                    .attach_core(core_index)
-                    .map(|mut target_core| target_core.recompute_breakpoints())??;
+                session_data.recompute_breakpoints(core_index).await?;
 
                 session_data.load_rtt_location(&self.config)?;
 

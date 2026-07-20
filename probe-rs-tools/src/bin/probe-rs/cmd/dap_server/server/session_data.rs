@@ -34,7 +34,7 @@ use probe_rs::{
     probe::list::Lister,
     rtt::{ScanRegion, find_rtt_control_block_in_raw_file},
 };
-use probe_rs_debug::{SourceLocation, debug_info::DebugInfo};
+use probe_rs_debug::{ColumnType, SourceLocation, VerifiedBreakpoint, debug_info::DebugInfo};
 use std::{any::Any, collections::HashMap, env::set_current_dir, path::Path, time::Duration};
 use time::UtcOffset;
 
@@ -294,6 +294,102 @@ impl<B: DapBackend> SessionData<B> {
                 .clear_rtt_blocks(core_data.core_index, &core_data.rtt_scan_ranges)
                 .await
                 .map_err(DebuggerError::ProbeRs)?;
+        }
+        Ok(())
+    }
+
+    /// Recompute source breakpoint addresses after a restart that flashed a
+    /// new binary: re-verify each cached source breakpoint against the
+    /// (reloaded) debug info and re-set the hardware breakpoints, since the
+    /// address of a source location may have shifted. Driven through
+    /// [`DapBackend`] round trips so the RPC backend needs no `block_on`
+    /// bridge.
+    pub(crate) async fn recompute_breakpoints(
+        &mut self,
+        core_index: usize,
+    ) -> Result<(), DebuggerError> {
+        let (old_addrs, to_set) = {
+            let Some(core_data) = self
+                .core_data
+                .iter_mut()
+                .find(|cd| cd.core_index == core_index)
+            else {
+                return Ok(());
+            };
+            let Some(debug_info) = core_data.debug_info.as_ref() else {
+                return Ok(());
+            };
+            let mut old_addrs: Vec<u64> = Vec::new();
+            let mut to_set: Vec<(u64, Box<Source>, SourceLocation)> = Vec::new();
+            for bp in &core_data.breakpoints {
+                let BreakpointType::SourceBreakpoint {
+                    source,
+                    location: SourceLocationScope::Specific(loc),
+                } = &bp.breakpoint_type
+                else {
+                    continue;
+                };
+                old_addrs.push(bp.address);
+                let column = loc.column.map(|col| match col {
+                    ColumnType::LeftEdge => 0_u64,
+                    ColumnType::Column(c) => c,
+                });
+                match debug_info.get_breakpoint_location(
+                    loc.path.to_path(),
+                    loc.line.unwrap_or(0),
+                    column,
+                ) {
+                    Ok(VerifiedBreakpoint {
+                        address,
+                        source_location,
+                    }) => to_set.push((address, source.clone(), source_location)),
+                    Err(e) => {
+                        return Err(DebuggerError::Other(anyhow!(
+                            "Failed to recompute breakpoint at {loc:?} in {source:?}. Error: {e:?}"
+                        )));
+                    }
+                }
+            }
+            (old_addrs, to_set)
+        };
+        if old_addrs.is_empty() {
+            return Ok(());
+        }
+        self.backend
+            .clear_hw_breakpoints(core_index, old_addrs)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        if let Some(core_data) = self
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            core_data
+                .breakpoints
+                .retain(|bp| !matches!(&bp.breakpoint_type, BreakpointType::SourceBreakpoint { .. }));
+        }
+        let set_addrs: Vec<u64> = to_set.iter().map(|(a, _, _)| *a).collect();
+        let set_results = self
+            .backend
+            .set_hw_breakpoints(core_index, set_addrs)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        if let Some(core_data) = self
+            .core_data
+            .iter_mut()
+            .find(|cd| cd.core_index == core_index)
+        {
+            for (i, (addr, source, loc)) in to_set.into_iter().enumerate() {
+                if set_results.get(i).copied().unwrap_or(false) {
+                    core_data.breakpoints.push(ActiveBreakpoint {
+                        breakpoint_type: BreakpointType::SourceBreakpoint {
+                            source,
+                            location: SourceLocationScope::Specific(loc),
+                        },
+                        address: addr,
+                    });
+                }
+            }
         }
         Ok(())
     }

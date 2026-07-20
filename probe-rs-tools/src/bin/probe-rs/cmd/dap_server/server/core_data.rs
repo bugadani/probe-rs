@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::{ops::Range};
 
-use super::session_data::{self, ActiveBreakpoint, BreakpointType, SourceLocationScope};
+use super::session_data;
 use crate::cmd::dap_server::backend::RttRemoteSeed;
 use crate::cmd::dap_server::debug_adapter::dap::repl_commands::ReplCommand;
 use crate::rpc::Key;
@@ -14,20 +14,12 @@ use crate::util::rtt::client::RttClient;
 pub(crate) type ChannelNames = Vec<(u32, String)>;
 use crate::{
     cmd::dap_server::{
-        DebuggerError,
-        debug_adapter::dap::dap_types::Source,
         peripherals::svd_variables::SvdCache,
         server::debug_rtt,
     },
 };
-use anyhow::{Result, anyhow};
-use probe_rs::{BreakpointError};
 use probe_rs::{Core, CoreStatus, rtt::ScanRegion};
-use probe_rs_debug::VerifiedBreakpoint;
-use probe_rs_debug::{
-    ColumnType, ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo,
-};
-use typed_path::TypedPath;
+use probe_rs_debug::{ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo};
 
 /// Convert [`ScanRegion`] (probe-rs) into the wire [`WireScanRegion`].
 pub(crate) fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
@@ -105,144 +97,6 @@ impl CoreHandle<'_> {
             .stack_frames
             .iter()
             .find(|stack_frame| stack_frame.id == id)
-    }
-
-    /// Check if a breakpoint address is already cached in [`CoreData::breakpoints`].
-    /// Use this to avoid duplicate breakpoint entries, and also to help with clearing existing breakpoints on request.
-    fn find_breakpoint_in_cache(&self, address: u64) -> Option<(usize, &ActiveBreakpoint)> {
-        self.core_data
-            .breakpoints
-            .iter()
-            .enumerate()
-            .find(|(_, breakpoint)| breakpoint.address == address)
-    }
-
-    /// Set a single breakpoint in target configuration as well as [`super::core_data::CoreHandle`]
-    pub(crate) fn set_breakpoint(
-        &mut self,
-        address: u64,
-        breakpoint_type: session_data::BreakpointType,
-    ) -> Result<(), DebuggerError> {
-        // NOTE: After receiving a DAP [`crate::debug_adapter::dap::dap_types::BreakpointEvent`], VSCode will mistakenly
-        // identify a `InstructionBreakpoint` as a `SourceBreakpoint`. This results in breakpoints not being cleared correctly from [`CoreHandle::clear_breakpoints()`].
-        // To work around this, we have to clear the breakpoints manually before we set them again.
-        if let Some((_, breakpoint)) = self.find_breakpoint_in_cache(address) {
-            self.clear_breakpoint(breakpoint.address)?;
-        }
-
-        self.core
-            .set_hw_breakpoint(address)
-            .map_err(DebuggerError::ProbeRs)?;
-        // Wait until the set of the hw breakpoint succeeded, before we cache it here ...
-        self.core_data
-            .breakpoints
-            .push(session_data::ActiveBreakpoint {
-                breakpoint_type,
-                address,
-            });
-        Ok(())
-    }
-
-    /// Clear a single breakpoint from target configuration.
-    ///
-    /// Returns whether the breakpoint was successfully cleared.
-    pub(crate) fn clear_breakpoint(&mut self, address: u64) -> Result<bool> {
-        match self.core.clear_hw_breakpoint(address) {
-            Ok(_) => {}
-            Err(probe_rs::Error::BreakpointOperation(BreakpointError::NotFound(_addr))) => {}
-            Err(e) => return Err(DebuggerError::ProbeRs(e).into()),
-        }
-        if let Some((breakpoint_position, _)) = self.find_breakpoint_in_cache(address) {
-            self.core_data.breakpoints.remove(breakpoint_position);
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Set a breakpoint at the requested address. If the requested source location is not specific, or
-    /// if the requested address is not a valid breakpoint location,
-    /// the debugger will attempt to find the closest location to the requested location, and set a breakpoint there.
-    /// The Result<> contains the "verified" `address` and `SourceLocation` where the breakpoint that was set.
-    pub(crate) fn verify_and_set_breakpoint(
-        &mut self,
-        source_path: TypedPath,
-        requested_breakpoint_line: u64,
-        requested_breakpoint_column: Option<u64>,
-        requested_source: &Source,
-    ) -> Result<VerifiedBreakpoint, DebuggerError> {
-        let Some(ref debug_info) = self.core_data.debug_info else {
-            return Err(DebuggerError::Other(anyhow!(
-                "Cannot set source breakpoint without debug information."
-            )));
-        };
-
-        let VerifiedBreakpoint {
-                 address,
-                 source_location,
-             } = debug_info
-            .get_breakpoint_location(
-                source_path,
-                requested_breakpoint_line,
-                requested_breakpoint_column,
-            )
-            .map_err(|debug_error|
-                DebuggerError::Other(anyhow!("Cannot set breakpoint here. Try reducing compile time-, and link time-, optimization in your build configuration, or choose a different source location: {debug_error}")))?;
-        self.set_breakpoint(
-            address,
-            BreakpointType::SourceBreakpoint {
-                source: Box::new(requested_source.clone()),
-                location: SourceLocationScope::Specific(source_location.clone()),
-            },
-        )?;
-        Ok(VerifiedBreakpoint {
-            address,
-            source_location,
-        })
-    }
-
-    /// In the case where a new binary is flashed as part of a restart, we need to recompute the breakpoint address,
-    /// for a specified source location, of any [`super::session_data::BreakpointType::SourceBreakpoint`].
-    /// This is because the address of the breakpoint may have changed based on changes in the source file that created the new binary.
-    pub(crate) fn recompute_breakpoints(&mut self) -> Result<(), DebuggerError> {
-        if self.core_data.debug_info.is_none() {
-            return Ok(());
-        }
-        let target_breakpoints = self.core_data.breakpoints.clone();
-        for breakpoint in target_breakpoints
-            .iter()
-            .filter(|&breakpoint| {
-                matches!(
-                    breakpoint.breakpoint_type,
-                    BreakpointType::SourceBreakpoint { .. }
-                )
-            })
-            .cloned()
-        {
-            self.clear_breakpoint(breakpoint.address)?;
-            if let BreakpointType::SourceBreakpoint {
-                source,
-                location: SourceLocationScope::Specific(source_location),
-            } = breakpoint.breakpoint_type
-            {
-                let breakpoint_err = self.verify_and_set_breakpoint(
-                    source_location.path.to_path(),
-                    source_location.line.unwrap_or(0),
-                    source_location.column.map(|col| match col {
-                        ColumnType::LeftEdge => 0_u64,
-                        ColumnType::Column(c) => c,
-                    }),
-                    &source,
-                );
-
-                if let Err(breakpoint_error) = breakpoint_err {
-                    return Err(DebuggerError::Other(anyhow!(
-                        "Failed to recompute breakpoint at {source_location:?} in {source:?}. Error: {breakpoint_error:?}"
-                    )));
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Traverse all the variables in the available stack frames, and return the memory ranges
