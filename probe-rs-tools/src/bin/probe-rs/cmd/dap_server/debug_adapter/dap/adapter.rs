@@ -149,19 +149,22 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         Ok(cpu_info)
     }
 
-    pub(crate) fn disconnect(
+    pub(crate) async fn disconnect<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         let arguments: DisconnectArguments = get_arguments(self, request)?;
 
-        // TODO: For now (until we do multicore), we will assume that both terminate and suspend translate to a halt of the core.
         let must_halt_debuggee = arguments.terminate_debuggee.unwrap_or(false)
             || arguments.suspend_debuggee.unwrap_or(false);
 
         if must_halt_debuggee {
-            let _ = target_core.core.halt(Duration::from_millis(100));
+            let _ = session_data
+                .backend
+                .halt(core_index, Duration::from_millis(100))
+                .await;
         }
 
         self.send_response::<DisconnectResponse>(request, Ok(None))
