@@ -379,242 +379,219 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             value_location_reference: None,
         };
 
-        if let Some(context) = &arguments.context {
-            if context == "clipboard" {
-                response_body.result = arguments.expression;
-            } else {
-                // Handle other contexts: 'watch', 'hover', etc.
-                // The Variables request sometimes returns the variable name, and other times the variable id, so this expression will be tested to determine if it is an id or not.
-                let expression = arguments.expression.clone();
+        if arguments.context.is_some() {
+            // Handle other contexts: 'watch', 'hover', etc. (clipboard is not advertised, therefore unhandled)
+            // The Variables request sometimes returns the variable name, and other times the variable id, so this expression will be tested to determine if it is an id or not.
+            let expression = arguments.expression.clone();
 
-                let mut expression_resolved = false;
+            let mut expression_resolved = false;
 
-                // Make sure we have a valid StackFrame
-                let frame_index = match arguments.frame_id.map(ObjectRef::try_from).transpose() {
-                    Ok(Some(frame_id)) => target_core
-                        .core_data
-                        .stack_frames
-                        .iter()
-                        .position(|stack_frame| stack_frame.id == frame_id),
-                    Ok(None) => {
-                        if target_core.core_data.stack_frames.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Invalid frame_id: {e}");
-                        if target_core.core_data.stack_frames.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        }
-                    }
-                };
-
-                if let Some(frame_index) = frame_index
-                    && let Some(stack_frame) =
-                        target_core.core_data.stack_frames.get_mut(frame_index)
-                {
-                    // Always search the registers first, because we don't have a VariableCache for them.
-                    if let Some(register_value) = stack_frame
-                        .registers
-                        .get_register_by_name(expression.as_str())
-                        .and_then(|reg| reg.value)
-                    {
-                        response_body.type_ = Some(format!("{}", VariableName::RegistersRoot));
-                        response_body.result = format!("{register_value}");
-                        expression_resolved = true;
+            // Make sure we have a valid StackFrame
+            let frame_index = match arguments.frame_id.map(ObjectRef::try_from).transpose() {
+                Ok(Some(frame_id)) => target_core
+                    .core_data
+                    .stack_frames
+                    .iter()
+                    .position(|stack_frame| stack_frame.id == frame_id),
+                Ok(None) => {
+                    if target_core.core_data.stack_frames.is_empty() {
+                        None
                     } else {
-                        // If the expression wasn't pointing to a register, then check if it is a local variable in our stack_frame.
-                        let mut variable: Option<probe_rs_debug::Variable> = None;
-                        let mut variable_cache: Option<&mut probe_rs_debug::VariableCache> = None;
+                        Some(0)
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Invalid frame_id: {e}");
+                    if target_core.core_data.stack_frames.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    }
+                }
+            };
 
-                        if let Some(search_cache) = stack_frame.local_variables.as_mut() {
-                            if search_cache.len() == 1 {
-                                let mut root_variable = search_cache.root_variable().clone();
+            if let Some(frame_index) = frame_index
+                && let Some(stack_frame) = target_core.core_data.stack_frames.get_mut(frame_index)
+            {
+                // Always search the registers first, because we don't have a VariableCache for them.
+                if let Some(register_value) = stack_frame
+                    .registers
+                    .get_register_by_name(expression.as_str())
+                    .and_then(|reg| reg.value)
+                {
+                    response_body.type_ = Some(format!("{}", VariableName::RegistersRoot));
+                    response_body.result = format!("{register_value}");
+                    expression_resolved = true;
+                } else {
+                    // If the expression wasn't pointing to a register, then check if it is a local variable in our stack_frame.
+                    let mut variable: Option<probe_rs_debug::Variable> = None;
+                    let mut variable_cache: Option<&mut probe_rs_debug::VariableCache> = None;
 
-                                // This is a special case where we have a single variable in the cache, and it is the root of a scope.
-                                // These variables don't have cached children by default, so we need to resolve them before we proceed.
-                                // We check for len() == 1, so unwrap() on first_mut() is safe.
-                                #[allow(
-                                    clippy::expect_used,
-                                    reason = "Expect should be unreachable"
-                                )]
-                                target_core
-                                    .core_data
-                                    .debug_info
-                                    .as_ref()
-                                    .expect(
-                                        "This code should not be reached without debug information",
-                                    )
-                                    .cache_deferred_variables(
-                                        search_cache,
-                                        &mut target_core.core,
-                                        &mut root_variable,
-                                        StackFrameInfo {
-                                            registers: &stack_frame.registers,
-                                            frame_base: stack_frame.frame_base,
-                                            canonical_frame_address: stack_frame
-                                                .canonical_frame_address,
-                                        },
-                                    )?;
-                            }
+                    if let Some(search_cache) = stack_frame.local_variables.as_mut() {
+                        if search_cache.len() == 1 {
+                            let mut root_variable = search_cache.root_variable().clone();
 
-                            if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
-                                variable = search_cache.get_variable_by_key(expression_as_key);
-                            } else {
-                                variable = search_cache
-                                    .get_variable_by_name(&VariableName::Named(expression.clone()));
-                            }
-                            if variable.is_some() {
-                                variable_cache = Some(search_cache);
-                            }
+                            // This is a special case where we have a single variable in the cache, and it is the root of a scope.
+                            // These variables don't have cached children by default, so we need to resolve them before we proceed.
+                            // We check for len() == 1, so unwrap() on first_mut() is safe.
+                            #[allow(clippy::expect_used, reason = "Expect should be unreachable")]
+                            target_core
+                                .core_data
+                                .debug_info
+                                .as_ref()
+                                .expect("This code should not be reached without debug information")
+                                .cache_deferred_variables(
+                                    search_cache,
+                                    &mut target_core.core,
+                                    &mut root_variable,
+                                    StackFrameInfo {
+                                        registers: &stack_frame.registers,
+                                        frame_base: stack_frame.frame_base,
+                                        canonical_frame_address: stack_frame
+                                            .canonical_frame_address,
+                                    },
+                                )?;
                         }
 
-                        if let (Some(variable), Some(variable_cache)) = (variable, variable_cache) {
-                            let (
-                                variables_reference,
-                                named_child_variables_cnt,
-                                indexed_child_variables_cnt,
-                            ) = get_variable_reference(&variable, variable_cache);
-                            response_body.indexed_variables = Some(indexed_child_variables_cnt);
-                            response_body.memory_reference =
-                                Some(variable.memory_location.to_string());
-                            response_body.named_variables = Some(named_child_variables_cnt);
-                            response_body.result = variable.to_string(variable_cache);
-                            response_body.type_ = Some(variable.type_name());
-                            response_body.variables_reference = variables_reference.into();
-                            expression_resolved = true;
+                        if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
+                            variable = search_cache.get_variable_by_key(expression_as_key);
+                        } else {
+                            variable = search_cache
+                                .get_variable_by_name(&VariableName::Named(expression.clone()));
+                        }
+                        if variable.is_some() {
+                            variable_cache = Some(search_cache);
+                        }
+                    }
+
+                    if let (Some(variable), Some(variable_cache)) = (variable, variable_cache) {
+                        let (
+                            variables_reference,
+                            named_child_variables_cnt,
+                            indexed_child_variables_cnt,
+                        ) = get_variable_reference(&variable, variable_cache);
+                        response_body.indexed_variables = Some(indexed_child_variables_cnt);
+                        response_body.memory_reference = Some(variable.memory_location.to_string());
+                        response_body.named_variables = Some(named_child_variables_cnt);
+                        response_body.result = variable.to_string(variable_cache);
+                        response_body.type_ = Some(variable.type_name());
+                        response_body.variables_reference = variables_reference.into();
+                        expression_resolved = true;
+                    }
+                }
+            }
+
+            if !expression_resolved
+                && let Some(static_cache) = &mut target_core.core_data.static_variables
+            {
+                if static_cache.len() == 1 {
+                    let mut root_variable = static_cache.root_variable().clone();
+                    if root_variable.variable_node_type.is_deferred()
+                        && !static_cache.has_children(&root_variable)
+                    {
+                        if let Some(top_frame) = target_core.core_data.stack_frames.first() {
+                            let registers = top_frame.registers.clone();
+                            let frame_info = StackFrameInfo {
+                                registers: &registers,
+                                frame_base: top_frame.frame_base,
+                                canonical_frame_address: top_frame.canonical_frame_address,
+                            };
+                            #[allow(clippy::expect_used, reason = "Expect should be unreachable")]
+                            target_core
+                                .core_data
+                                .debug_info
+                                .as_ref()
+                                .expect("This code should not be reached without debug information")
+                                .cache_deferred_variables(
+                                    static_cache,
+                                    &mut target_core.core,
+                                    &mut root_variable,
+                                    frame_info,
+                                )?;
+                        } else {
+                            tracing::error!(
+                                "Could not cache deferred static variables. No register data available."
+                            );
                         }
                     }
                 }
 
-                if !expression_resolved
-                    && let Some(static_cache) = &mut target_core.core_data.static_variables
-                {
-                    if static_cache.len() == 1 {
-                        let mut root_variable = static_cache.root_variable().clone();
-                        if root_variable.variable_node_type.is_deferred()
-                            && !static_cache.has_children(&root_variable)
-                        {
-                            if let Some(top_frame) = target_core.core_data.stack_frames.first() {
-                                let registers = top_frame.registers.clone();
-                                let frame_info = StackFrameInfo {
-                                    registers: &registers,
-                                    frame_base: top_frame.frame_base,
-                                    canonical_frame_address: top_frame.canonical_frame_address,
-                                };
-                                #[allow(
-                                    clippy::expect_used,
-                                    reason = "Expect should be unreachable"
-                                )]
-                                target_core
-                                    .core_data
-                                    .debug_info
-                                    .as_ref()
-                                    .expect(
-                                        "This code should not be reached without debug information",
-                                    )
-                                    .cache_deferred_variables(
-                                        static_cache,
-                                        &mut target_core.core,
-                                        &mut root_variable,
-                                        frame_info,
-                                    )?;
-                            } else {
-                                tracing::error!(
-                                    "Could not cache deferred static variables. No register data available."
-                                );
-                            }
-                        }
-                    }
-
-                    let mut static_variable = if let Ok(expression_as_key) =
-                        expression.parse::<ObjectRef>()
-                    {
+                let mut static_variable =
+                    if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
                         static_cache.get_variable_by_key(expression_as_key)
                     } else {
                         static_cache.get_variable_by_name(&VariableName::Named(expression.clone()))
                     };
 
-                    if let Some(static_variable) = static_variable.as_mut() {
-                        if static_variable.variable_node_type.is_deferred()
-                            && !static_cache.has_children(static_variable)
-                        {
-                            if let Some(top_frame) = target_core.core_data.stack_frames.first() {
-                                let registers = top_frame.registers.clone();
-                                let frame_info = StackFrameInfo {
-                                    registers: &registers,
-                                    frame_base: top_frame.frame_base,
-                                    canonical_frame_address: top_frame.canonical_frame_address,
-                                };
-                                #[allow(
-                                    clippy::expect_used,
-                                    reason = "Expect should be unreachable"
-                                )]
-                                target_core
-                                    .core_data
-                                    .debug_info
-                                    .as_ref()
-                                    .expect(
-                                        "This code should not be reached without debug information",
-                                    )
-                                    .cache_deferred_variables(
-                                        static_cache,
-                                        &mut target_core.core,
-                                        static_variable,
-                                        frame_info,
-                                    )?;
-                            } else {
-                                tracing::error!(
-                                    "Could not cache deferred static variable: {}. No register data available.",
-                                    static_variable.name
-                                );
-                            }
-                        }
-
-                        static_variable.extract_value(&mut target_core.core, static_cache);
-                        static_cache.update_variable(static_variable)?;
-
-                        let (
-                            variables_reference,
-                            named_child_variables_cnt,
-                            indexed_child_variables_cnt,
-                        ) = get_variable_reference(static_variable, static_cache);
-                        response_body.indexed_variables = Some(indexed_child_variables_cnt);
-                        response_body.memory_reference =
-                            Some(static_variable.memory_location.to_string());
-                        response_body.named_variables = Some(named_child_variables_cnt);
-                        response_body.result = static_variable.to_string(static_cache);
-                        response_body.type_ = Some(static_variable.type_name());
-                        response_body.variables_reference = variables_reference.into();
-                        expression_resolved = true;
-                    }
-                }
-
-                if !expression_resolved
-                    && let Some(core_peripherals) = &target_core.core_data.core_peripherals
-                {
-                    let svd_cache = &core_peripherals.svd_variable_cache;
-                    let svd_variable =
-                        if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
-                            svd_cache.get_variable_by_key(expression_as_key)
+                if let Some(static_variable) = static_variable.as_mut() {
+                    if static_variable.variable_node_type.is_deferred()
+                        && !static_cache.has_children(static_variable)
+                    {
+                        if let Some(top_frame) = target_core.core_data.stack_frames.first() {
+                            let registers = top_frame.registers.clone();
+                            let frame_info = StackFrameInfo {
+                                registers: &registers,
+                                frame_base: top_frame.frame_base,
+                                canonical_frame_address: top_frame.canonical_frame_address,
+                            };
+                            #[allow(clippy::expect_used, reason = "Expect should be unreachable")]
+                            target_core
+                                .core_data
+                                .debug_info
+                                .as_ref()
+                                .expect("This code should not be reached without debug information")
+                                .cache_deferred_variables(
+                                    static_cache,
+                                    &mut target_core.core,
+                                    static_variable,
+                                    frame_info,
+                                )?;
                         } else {
-                            svd_cache.get_variable_by_name(&expression)
-                        };
-
-                    if let Some(svd_variable) = svd_variable {
-                        let (variables_reference, named_child_variables_cnt) =
-                            get_svd_variable_reference(svd_variable, svd_cache);
-                        response_body.indexed_variables = None;
-                        response_body.memory_reference = svd_variable.memory_reference();
-                        response_body.named_variables = Some(named_child_variables_cnt);
-                        response_body.result = svd_variable.get_value(&mut target_core.core);
-                        response_body.type_ = svd_variable.type_name();
-                        response_body.variables_reference = variables_reference.into();
+                            tracing::error!(
+                                "Could not cache deferred static variable: {}. No register data available.",
+                                static_variable.name
+                            );
+                        }
                     }
+
+                    static_variable.extract_value(&mut target_core.core, static_cache);
+                    static_cache.update_variable(static_variable)?;
+
+                    let (
+                        variables_reference,
+                        named_child_variables_cnt,
+                        indexed_child_variables_cnt,
+                    ) = get_variable_reference(static_variable, static_cache);
+                    response_body.indexed_variables = Some(indexed_child_variables_cnt);
+                    response_body.memory_reference =
+                        Some(static_variable.memory_location.to_string());
+                    response_body.named_variables = Some(named_child_variables_cnt);
+                    response_body.result = static_variable.to_string(static_cache);
+                    response_body.type_ = Some(static_variable.type_name());
+                    response_body.variables_reference = variables_reference.into();
+                    expression_resolved = true;
+                }
+            }
+
+            if !expression_resolved
+                && let Some(core_peripherals) = &target_core.core_data.core_peripherals
+            {
+                let svd_cache = &core_peripherals.svd_variable_cache;
+                let svd_variable = if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
+                    svd_cache.get_variable_by_key(expression_as_key)
+                } else {
+                    svd_cache.get_variable_by_name(&expression)
+                };
+
+                if let Some(svd_variable) = svd_variable {
+                    let (variables_reference, named_child_variables_cnt) =
+                        get_svd_variable_reference(svd_variable, svd_cache);
+                    response_body.indexed_variables = None;
+                    response_body.memory_reference = svd_variable.memory_reference();
+                    response_body.named_variables = Some(named_child_variables_cnt);
+                    response_body.result = svd_variable.get_value(&mut target_core.core);
+                    response_body.type_ = svd_variable.type_name();
+                    response_body.variables_reference = variables_reference.into();
                 }
             }
         }

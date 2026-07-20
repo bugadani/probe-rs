@@ -950,7 +950,6 @@ impl Debugger {
             supports_read_memory_request: Some(true),
             supports_write_memory_request: Some(true),
             supports_set_variable: Some(true),
-            supports_clipboard_context: Some(true),
             supports_disassemble_request: Some(true),
             supports_instruction_breakpoints: Some(true),
             supports_stepping_granularity: Some(true),
@@ -1086,7 +1085,6 @@ mod test {
     fn expected_capabilities() -> Capabilities {
         Capabilities {
             support_suspend_debuggee: Some(true),
-            supports_clipboard_context: Some(true),
             supports_completions_request: Some(true),
             supports_configuration_done_request: Some(true),
             supports_delayed_stack_trace_loading: Some(true),
