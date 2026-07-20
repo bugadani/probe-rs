@@ -1,6 +1,6 @@
 use super::{
     configuration::{self, CoreConfig, SessionConfig},
-    core_data::{CoreData, CoreHandle},
+    core_data::{CoreData, CoreHandle, SemihostingFile},
 };
 use crate::{
     FormatKind,
@@ -29,10 +29,13 @@ use probe_rs::{
     config::{Registry, TargetSelector},
     probe::list::Lister,
     rtt::{Rtt, ScanRegion, find_rtt_control_block_in_raw_file},
+    semihosting::SemihostingCommand,
 };
 use probe_rs_debug::{SourceLocation, debug_info::DebugInfo};
-use std::{any::Any, collections::HashMap, env::set_current_dir, time::Duration};
+use std::{any::Any, collections::HashMap, env::set_current_dir, num::NonZeroU32, time::Duration};
 use time::UtcOffset;
+
+use crate::util::rtt::DataFormat;
 
 /// The supported breakpoint types
 #[derive(Clone, Debug, PartialEq)]
@@ -404,6 +407,134 @@ impl<B: DapBackend> SessionData<B> {
         Ok(status)
     }
 
+    /// Handle a semihosting command from the target. Lifted from
+    /// `CoreHandle::handle_semihosting` so it does not need a `CoreHandle`:
+    /// a `Core` is acquired via `self.backend.core()` (local path; for the
+    /// RPC backend this still goes through the bridge until 6.6 moves
+    /// semihosting server-side) and the per-core handles live in
+    /// `self.core_data[cd_idx]`.
+    fn handle_semihosting<P: ProtocolAdapter>(
+        &mut self,
+        debug_adapter: &mut DebugAdapter<P>,
+        cd_idx: usize,
+        command: SemihostingCommand,
+    ) -> Result<CoreStatus, DebuggerError> {
+        let core_index = self.core_data[cd_idx].core_index;
+        let mut core = self.backend.core(core_index)?;
+        match command {
+            SemihostingCommand::Open(request) => {
+                tracing::debug!("Semihosting request: open {request:?}");
+                let path = request.path(&mut core)?;
+                let mode = request.mode();
+
+                let is_write = mode.starts_with('w') || mode.starts_with('a');
+                let is_append = mode.starts_with('a');
+                let is_stdio = path == ":tt";
+
+                let path = if is_stdio {
+                    if is_append { "stderr" } else { "stdout" }
+                } else {
+                    &path
+                };
+
+                let is_binary = mode.ends_with('b');
+                let format = if is_binary {
+                    DataFormat::BinaryLE
+                } else {
+                    DataFormat::String
+                };
+
+                if is_write {
+                    if let Some(file) = self.core_data[cd_idx]
+                        .semihosting_handles
+                        .values()
+                        .find(|f| f.path == path)
+                    {
+                        request.respond_with_handle(&mut core, file.handle)?;
+                    } else {
+                        let handle = self.core_data[cd_idx].next_semihosting_handle;
+                        #[expect(
+                            clippy::unwrap_used,
+                            reason = "Infallible because we start from 1024"
+                        )]
+                        let nz_handle = NonZeroU32::new(handle).unwrap();
+                        self.core_data[cd_idx].semihosting_handles.insert(
+                            handle,
+                            SemihostingFile {
+                                handle: nz_handle,
+                                path: path.to_string(),
+                                mode,
+                            },
+                        );
+                        self.core_data[cd_idx].next_semihosting_handle += 1;
+
+                        if debug_adapter.rtt_window(handle, path.to_string(), format) {
+                            request.respond_with_handle(&mut core, nz_handle)?;
+                        }
+                    }
+                }
+            }
+            SemihostingCommand::Close(request) => {
+                tracing::debug!("Semihosting request: close {request:?}");
+                request.success(&mut core)?;
+            }
+            SemihostingCommand::WriteConsole(request) => {
+                tracing::debug!("Semihosting request: write console {request:?}");
+                let string = request.read(&mut core)?;
+                debug_adapter.log_to_console(string);
+            }
+            SemihostingCommand::Write(request) => {
+                tracing::debug!("Semihosting request: write {request:?}");
+                let handle = request.file_handle();
+                let bytes = request.read(&mut core)?;
+
+                if let Some(file) = self.core_data[cd_idx].semihosting_handles.get(&handle) {
+                    let data = if file.mode.ends_with('b') {
+                        let mut string = String::new();
+                        for byte in bytes {
+                            if !string.is_empty() {
+                                string.push(' ');
+                            }
+                            string.push_str(&format!("{byte:02x}"));
+                        }
+                        string
+                    } else {
+                        String::from_utf8_lossy(&bytes).to_string()
+                    };
+
+                    debug_adapter.rtt_output(handle, data);
+                    request.write_status(&mut core, 0)?;
+                }
+            }
+            SemihostingCommand::Errno(request) => {
+                request.write_errno(&mut core, 0)?;
+            }
+
+            SemihostingCommand::ExitSuccess => {
+                debug_adapter.log_to_console("Application has exited with success.");
+                return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                    BreakpointCause::Semihosting(command),
+                )));
+            }
+            SemihostingCommand::ExitError(details) => {
+                debug_adapter.log_to_console(format!("Application has exited with {details}"));
+                return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                    BreakpointCause::Semihosting(command),
+                )));
+            }
+
+            unhandled => {
+                tracing::warn!("Unhandled semihosting command: {:?}", unhandled);
+                return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                    BreakpointCause::Semihosting(unhandled),
+                )));
+            }
+        };
+
+        core.run()?;
+        Ok(CoreStatus::Running)
+    }
+
     /// The target has no way of notifying the debug adapter when things changes, so we have to constantly poll it to determine:
     /// - Whether the target cores are running, and what their actual status is.
     /// - Whether the target cores have data in their RTT buffers that we need to read and pass to the client.
@@ -539,17 +670,12 @@ impl<B: DapBackend> SessionData<B> {
             }
 
             // Semihosting handling needs a live `Core` (the probe-rs
-            // semihosting API takes `&mut dyn CoreInterface`). Scoped so the
-            // backend borrow is released before `self.notify_halted` (which
-            // reads the PC via the backend, no `Core`).
+            // semihosting API takes `&mut dyn CoreInterface`). `self.handle_semihosting`
+            // acquires the `Core` via `self.backend.core()` (disjoint from
+            // `self.core_data`), so no `CoreHandle` is needed and the
+            // backend borrow is released before `self.notify_halted`.
             if let Some(command) = semihosting_command {
-                let handled = {
-                    let Ok(mut target_core) = self.attach_core(core_index) else {
-                        continue;
-                    };
-                    target_core.handle_semihosting(debug_adapter, command)?
-                };
-                current_core_status = handled;
+                current_core_status = self.handle_semihosting(debug_adapter, cd_idx, command)?;
 
                 if current_core_status.is_halted() {
                     // poll_core did not notify about the halt, so we need to do it manually.
