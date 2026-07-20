@@ -44,7 +44,20 @@ impl RemoteRttClient {
             rtt_client,
         }
     }
+
+    /// Async write to a down channel over the RPC session — no local `Core`
+    /// (and no `block_on` bridge) required.
+    pub(crate) async fn write_down_remote(
+        &self,
+        channel: u32,
+        data: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        self.session
+            .send_to_rtt(self.rtt_client, channel, data)
+            .await
+    }
 }
+
 
 impl RttClientHandle {
     /// Poll multiple up channels in one go. The local path copies each
@@ -100,21 +113,26 @@ impl RttClientHandle {
     }
 
     /// Write data to a down channel.
-    pub(crate) fn write_down(
+    pub(crate) async fn write_down_async<B: crate::cmd::dap_server::backend::DapBackend>(
         &mut self,
-        core: &mut Core<'_>,
+        backend: &mut B,
+        core_index: usize,
         channel: u32,
-        data: &[u8],
+        data: Vec<u8>,
     ) -> Result<(), RttError> {
         match self {
-            RttClientHandle::Local(client) => client.write_down_channel(core, channel, data),
-            RttClientHandle::Remote(remote) => block_on(
-                &remote.handle,
+            RttClientHandle::Local(client) => {
+                let mut core = backend
+                    .core(core_index)
+                    .map_err(|e| RttError::Other(anyhow!(e)))?;
+                client.write_down_channel(&mut core, channel, &data)
+            }
+            RttClientHandle::Remote(remote) => {
                 remote
-                    .session
-                    .send_to_rtt(remote.rtt_client, channel, data.to_vec()),
-            )
-            .map_err(RttError::Other),
+                    .write_down_remote(channel, data)
+                    .await
+                    .map_err(RttError::Other)
+            }
         }
     }
 }

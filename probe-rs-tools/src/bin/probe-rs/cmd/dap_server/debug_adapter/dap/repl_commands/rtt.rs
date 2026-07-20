@@ -1,20 +1,21 @@
+use linkme::distributed_slice;
+
 use crate::cmd::dap_server::{
     DebuggerError,
+    backend::DapBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
-            dap_types::EvaluateArguments,
             repl_commands::{
                 EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, need_subcommand,
+                unimplemented_repl,
             },
             repl_types::ReplCommandArgs,
         },
         protocol::ProtocolAdapter,
     },
-    server::core_data::CoreHandle,
+    server::session_data::SessionData,
 };
-
-use linkme::distributed_slice;
 
 #[distributed_slice(REPL_COMMANDS)]
 static RTT_COMMANDS: ReplCommand = ReplCommand {
@@ -30,19 +31,17 @@ static RTT_COMMANDS: ReplCommand = ReplCommand {
             ReplCommandArgs::Required("channel_id"),
             ReplCommandArgs::Required("data"),
         ],
-        handler: write,
+        handler: unimplemented_repl,
     }],
     args: &[],
     handler: need_subcommand,
 };
 
-// TODO: add analysis command: print channels, modes, addresses (control block, channel buffers)
-
-fn write(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn rtt_write_async<B: DapBackend, P: ProtocolAdapter>(
+    _adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     input: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     let (channel_id, data) = input.split_once(' ').ok_or_else(|| {
         DebuggerError::UserMessage("Expected input format: <channel_id> <data>".to_string())
@@ -52,18 +51,27 @@ fn write(
         .parse()
         .map_err(|_| DebuggerError::UserMessage("Channel ID must be a number".to_string()))?;
 
-    let Some(rtt) = target_core.core_data.rtt_connection.as_mut() else {
-        return Err(DebuggerError::UserMessage(
-            "Not connected to RTT".to_string(),
-        ));
+    let Some(cd_idx) = session_data
+        .core_data
+        .iter()
+        .position(|c| c.core_index == core_index)
+    else {
+        return Err(DebuggerError::UserMessage("No core data".to_string()));
     };
 
     let mut data = data.to_string();
     data.push('\n');
+
+    let rtt = session_data.core_data[cd_idx]
+        .rtt_connection
+        .as_mut()
+        .ok_or_else(|| DebuggerError::UserMessage("Not connected to RTT".to_string()))?;
+
     rtt.client
-        .write_down(&mut target_core.core, channel_id, data.as_bytes())
+        .write_down_async(&mut session_data.backend, core_index, channel_id, data.into_bytes())
+        .await
         .map_err(|e| {
-            DebuggerError::UserMessage(format!("Failed to write to channel {}: {}", channel_id, e))
+            DebuggerError::UserMessage(format!("Failed to write to channel {channel_id}: {e}"))
         })?;
 
     Ok(EvalResponse::Message(String::new()))

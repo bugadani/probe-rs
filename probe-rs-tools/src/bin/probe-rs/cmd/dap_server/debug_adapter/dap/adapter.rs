@@ -827,6 +827,12 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
+            "rtt write" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::rtt::rtt_write_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
