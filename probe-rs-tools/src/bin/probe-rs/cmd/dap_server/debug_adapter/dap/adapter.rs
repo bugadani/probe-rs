@@ -8,7 +8,7 @@ use crate::cmd::dap_server::backend::DapBackend;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
-        dap::repl_commands::{EvalResponse, EvalResult},
+        dap::repl_commands::{EvalResponse, EvalResult, ReplCommand},
         protocol::{ProtocolAdapter, ProtocolHelper},
     },
     server::{
@@ -351,6 +351,27 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         {
             return self.send_response(request, Ok(Some(response_body)));
         }
+
+        if arguments.context.as_deref() == Some("repl") {
+            let mut response_body = EvaluateResponseBody {
+                indexed_variables: None,
+                memory_reference: None,
+                named_variables: None,
+                presentation_hint: None,
+                result: format!("<invalid expression {:?}>", arguments.expression),
+                type_: None,
+                variables_reference: 0,
+                value_location_reference: None,
+            };
+            match self.handle_repl(session_data, core_index, &arguments).await {
+                Ok(EvalResponse::Body(body)) => response_body = body,
+                Ok(EvalResponse::Message(message)) => response_body.result = message,
+                Err(DebuggerError::UserMessage(message)) => response_body.result = message,
+                Err(error) => response_body.result = format!("{error:?}"),
+            }
+            return self.send_response(request, Ok(Some(response_body)));
+        }
+
         let mut target_core = session_data
             .attach_core(core_index)
             .context("Unable to connect to target core")?;
@@ -383,13 +404,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         if let Some(context) = &arguments.context {
             if context == "clipboard" {
                 response_body.result = arguments.expression;
-            } else if context == "repl" {
-                match self.handle_repl(target_core, &arguments) {
-                    Ok(EvalResponse::Body(body)) => response_body = body,
-                    Ok(EvalResponse::Message(message)) => response_body.result = message,
-                    Err(DebuggerError::UserMessage(message)) => response_body.result = message,
-                    Err(error) => response_body.result = format!("{error:?}"),
-                }
             } else {
                 // Handle other contexts: 'watch', 'hover', etc.
                 // The Variables request sometimes returns the variable name, and other times the variable id, so this expression will be tested to determine if it is an id or not.
@@ -629,18 +643,25 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(response_body)))
     }
 
-    fn handle_repl(
+    async fn handle_repl<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         arguments: &EvaluateArguments,
     ) -> EvalResult {
-        // The target is halted, so we can allow any repl command.
-        // TODO: Do we need to look for '/' in the expression, before we split it?
-        // Now we can make sure we have a valid expression and evaluate it.
-        let (command_root, last_piece, repl_commands) = build_expanded_commands(
-            &target_core.core_data.repl_commands,
-            arguments.expression.trim(),
-        );
+        let expression_trimmed = arguments.expression.trim();
+        let (command_root, last_piece, repl_commands) = {
+            let Some(cd) = session_data
+                .core_data
+                .iter()
+                .find(|c| c.core_index == core_index)
+            else {
+                return Err(DebuggerError::UserMessage(
+                    "No core data for core".to_string(),
+                ));
+            };
+            build_expanded_commands(&cd.repl_commands, expression_trimmed)
+        };
 
         let Some(repl_command) = repl_commands.first() else {
             return Err(DebuggerError::UserMessage(format!(
@@ -648,16 +669,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 command_root.trim()
             )));
         };
+        let repl_command = *repl_command;
 
-        if repl_command.requires_target_halted && !target_core.core.core_halted()? {
+        if repl_command.requires_target_halted
+            && !session_data.backend.core_halted(core_index).await?
+        {
             return Err(DebuggerError::UserMessage(
                 "The target is running. Only the 'break', 'help' or 'quit' commands are allowed."
                     .to_string(),
             ));
         }
 
-        // We have a valid repl command, so we can evaluate it.
-        // First, let's extract the remainder of the arguments, so that we can pass them to the handler.
         let argument_string = arguments
             .expression
             .trim_start_matches(&command_root)
@@ -665,7 +687,60 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .trim_start_matches(last_piece)
             .trim_start();
 
-        (repl_command.handler)(target_core, argument_string, arguments, self)
+        self.dispatch_repl_command(
+            repl_command,
+            &command_root,
+            session_data,
+            core_index,
+            argument_string,
+            arguments,
+        )
+        .await
+    }
+
+    /// Async REPL dispatch. Migrated commands are handled inline (session-level,
+    /// no `CoreHandle`); unmigrated commands fall back to the sync `handler`
+    /// via a short-lived `CoreHandle` (transitional — uses the bridge for RPC
+    /// until they are migrated).
+    async fn dispatch_repl_command<B: DapBackend>(
+        &mut self,
+        leaf: ReplCommand,
+        command_root: &str,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
+        argument_string: &str,
+        arguments: &EvaluateArguments,
+    ) -> EvalResult {
+        match command_root.trim() {
+            "c" => {
+                self.continue_impl_async(session_data, core_index).await?;
+                Ok(EvalResponse::Message(String::new()))
+            }
+            "reset" => {
+                self.reset_and_halt_core_async(session_data, core_index).await?;
+                Ok(EvalResponse::Message(String::new()))
+            }
+            "step" => {
+                let pc = self
+                    .step_impl_async(
+                        probe_rs_debug::SteppingMode::StepInstruction,
+                        session_data,
+                        core_index,
+                    )
+                    .await?;
+                Ok(EvalResponse::Message(
+                    CoreStatus::Halted(HaltReason::Request)
+                        .short_long_status(Some(pc))
+                        .1,
+                ))
+            }
+            _ => {
+                let mut target_core = session_data
+                    .attach_core(core_index)
+                    .map_err(|e| DebuggerError::Other(anyhow!(e)))?;
+                (leaf.handler)(&mut target_core, argument_string, arguments, self)
+            }
+        }
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
@@ -2477,13 +2552,6 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
     }
 
     /// Returns whether all cores have continued.
-    pub(crate) fn continue_impl(&mut self, target_core: &mut CoreHandle<'_>) -> Result<bool> {
-        target_core.core.run()?;
-        target_core.reset_core_status(self);
-        Ok(true) // TODO this isn't very useful?
-    }
-
-    /// Returns whether all cores have continued.
     pub(crate) fn reset_and_halt_core(
         &mut self,
         target_core: &mut CoreHandle<'_>,
@@ -2556,62 +2624,6 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
                         .1,
                 ),
                 thread_id: Some(core_index as i64),
-                preserve_focus_hint: None,
-                text: None,
-                all_threads_stopped: Some(self.all_cores_halted),
-                hit_breakpoint_ids: None,
-            };
-            self.dyn_send_event("stopped", serde_json::to_value(event_body).ok())?;
-        }
-        Ok(program_counter)
-    }
-
-    /// Per-core `step_impl` used by the REPL `--step` command (which still
-    /// drives a `Core` via the bridge). Lifted DAP `next`/`stepIn`/`stepOut`
-    /// use `step_impl_async` instead; this is removed once the REPL is
-    /// lifted (cluster 6.8).
-    pub(crate) fn step_impl(
-        &mut self,
-        stepping_mode: SteppingMode,
-        target_core: &mut CoreHandle<'_>,
-    ) -> Result<u64> {
-        target_core.reset_core_status(self);
-        let (new_status, program_counter) = match stepping_mode.step(
-            &mut target_core.core,
-            target_core.core_data.debug_info.as_ref(),
-        ) {
-            Ok((new_status, program_counter)) => (new_status, program_counter),
-            Err(probe_rs_debug::DebugError::WarnAndContinue { message }) => {
-                let pc_at_error = target_core
-                    .core
-                    .read_core_reg(target_core.core.program_counter())?;
-                self.dyn_show_message(
-                    MessageSeverity::Information,
-                    format!("Step error @{pc_at_error:#010X}: {message}"),
-                );
-                (target_core.core.status()?, pc_at_error)
-            }
-            Err(other_error) => {
-                target_core.core.halt(Duration::from_millis(100)).ok();
-                return Err(other_error).context("Unexpected error during stepping");
-            }
-        };
-
-        target_core.core_data.last_known_status = CoreStatus::Halted(HaltReason::Step);
-        if matches!(new_status, CoreStatus::Halted(_)) {
-            let event_body = StoppedEventBody {
-                reason: target_core
-                    .core_data
-                    .last_known_status
-                    .short_long_status(None)
-                    .0
-                    .to_string(),
-                description: Some(
-                    CoreStatus::Halted(HaltReason::Step)
-                        .short_long_status(Some(program_counter))
-                        .1,
-                ),
-                thread_id: Some(target_core.id() as i64),
                 preserve_focus_hint: None,
                 text: None,
                 all_threads_stopped: Some(self.all_cores_halted),

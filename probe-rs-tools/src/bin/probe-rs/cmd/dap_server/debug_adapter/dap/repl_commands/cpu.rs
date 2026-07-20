@@ -1,18 +1,10 @@
 use crate::cmd::dap_server::{
-    debug_adapter::{
-        dap::{
-            adapter::DebugAdapter,
-            core_status::DapStatus,
-            dap_types::EvaluateArguments,
-            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
-        },
-        protocol::ProtocolAdapter,
-    },
-    server::core_data::CoreHandle,
+    debug_adapter::dap::repl_commands::{EvalResult, REPL_COMMANDS, ReplCommand},
+    DebuggerError,
 };
+use anyhow::anyhow;
 
 use linkme::distributed_slice;
-use probe_rs::{CoreStatus, HaltReason};
 
 #[distributed_slice(REPL_COMMANDS)]
 static CONTINUE: ReplCommand = ReplCommand {
@@ -21,7 +13,7 @@ static CONTINUE: ReplCommand = ReplCommand {
     requires_target_halted: true,
     sub_commands: &[],
     args: &[],
-    handler: r#continue,
+    handler: repl_stub,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -31,7 +23,7 @@ static RESET: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[],
-    handler: reset,
+    handler: repl_stub,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -41,40 +33,22 @@ static STEP: ReplCommand = ReplCommand {
     requires_target_halted: true,
     sub_commands: &[],
     args: &[],
-    handler: step,
+    handler: repl_stub,
 };
 
-fn r#continue(
-    target_core: &mut CoreHandle<'_>,
+/// Placeholder handler for REPL commands whose logic has been lifted to the
+/// async session-level dispatch (`DebugAdapter::dispatch_repl_command`). The
+/// `handler` field is still required by `ReplCommand` for the help/completion
+/// table; this stub is never invoked for migrated commands.
+fn repl_stub(
+    _: &mut crate::cmd::dap_server::server::core_data::CoreHandle,
     _: &str,
-    _: &EvaluateArguments,
-    adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
+    _: &crate::cmd::dap_server::debug_adapter::dap::dap_types::EvaluateArguments,
+    _: &mut crate::cmd::dap_server::debug_adapter::dap::adapter::DebugAdapter<
+        dyn crate::cmd::dap_server::debug_adapter::protocol::ProtocolAdapter + '_,
+    >,
 ) -> EvalResult {
-    adapter.continue_impl(target_core)?;
-    Ok(EvalResponse::Message(String::new()))
-}
-
-fn reset(
-    target_core: &mut CoreHandle<'_>,
-    _: &str,
-    _: &EvaluateArguments,
-    adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
-) -> EvalResult {
-    adapter.reset_and_halt_core(target_core)?;
-    Ok(EvalResponse::Message(String::new()))
-}
-
-fn step(
-    target_core: &mut CoreHandle<'_>,
-    _: &str,
-    _: &EvaluateArguments,
-    adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
-) -> EvalResult {
-    let pc = adapter.step_impl(probe_rs_debug::SteppingMode::StepInstruction, target_core)?;
-
-    Ok(EvalResponse::Message(
-        CoreStatus::Halted(HaltReason::Request)
-            .short_long_status(Some(pc))
-            .1,
-    ))
+    Err(DebuggerError::Other(anyhow!(
+        "REPL command handled by async dispatch"
+    )))
 }
