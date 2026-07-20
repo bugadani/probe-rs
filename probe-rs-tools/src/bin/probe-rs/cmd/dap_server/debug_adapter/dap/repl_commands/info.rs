@@ -1,6 +1,4 @@
 use std::fmt::Write;
-use std::future::Future;
-use std::pin::Pin;
 
 use linkme::distributed_slice;
 use probe_rs::{CoreRegister, RegisterId};
@@ -14,7 +12,7 @@ use crate::cmd::dap_server::{
             adapter::DebugAdapter,
             dap_types::EvaluateArguments,
             repl_commands::{
-                EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, need_subcommand,
+                EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, async_fn, need_subcommand,
                 unimplemented_repl,
             },
             repl_commands_helpers::get_local_variable,
@@ -38,7 +36,7 @@ static INFO: ReplCommand = ReplCommand {
             sub_commands: &[],
             args: &[ReplCommandArgs::Optional("address")],
             // TODO: This is easy to implement ... just requires deciding how to format the output.
-            handler: unimplemented_repl,
+            handler: async_fn!(unimplemented_repl),
         },
         ReplCommand {
             command: "locals",
@@ -46,7 +44,7 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: true,
             sub_commands: &[],
             args: &[],
-            handler: info_locals,
+            handler: async_fn!(info_locals),
         },
         ReplCommand {
             command: "reg",
@@ -54,7 +52,7 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: true,
             sub_commands: &[],
             args: &[ReplCommandArgs::Optional("register name")],
-            handler: print_registers,
+            handler: async_fn!(print_registers),
         },
         ReplCommand {
             command: "var",
@@ -63,7 +61,7 @@ static INFO: ReplCommand = ReplCommand {
             sub_commands: &[],
             args: &[],
             // TODO: This is easy to implement ... just requires deciding how to format the output.
-            handler: unimplemented_repl,
+            handler: async_fn!(unimplemented_repl),
         },
         ReplCommand {
             command: "break",
@@ -71,104 +69,98 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: false,
             sub_commands: &[],
             args: &[],
-            handler: print_breakpoints,
+            handler: async_fn!(print_breakpoints),
         },
     ],
     args: &[],
-    handler: need_subcommand,
+    handler: async_fn!(need_subcommand),
 };
 
-fn print_registers<'a>(
+async fn print_registers<'a>(
     backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
     _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let core_index = core_data.core_index;
-        let register_name = command_arguments.trim();
-        let registers: Vec<&'static CoreRegister> = {
-            let regs = backend.register_file(core_index)?;
-            regs.all_registers()
-                .filter(|reg| register_name.is_empty() || reg.name().eq_ignore_ascii_case(register_name))
-                .collect::<Vec<&'static CoreRegister>>()
-        };
-        if registers.is_empty() {
-            return Err(DebuggerError::UserMessage(format!(
-                "No registers found matching {register_name:?}. See the `help` command for more information."
-            )));
+) -> EvalResult {
+    let core_index = core_data.core_index;
+    let register_name = command_arguments.trim();
+    let registers: Vec<&'static CoreRegister> = {
+        let regs = backend.register_file(core_index)?;
+        regs.all_registers()
+            .filter(|reg| register_name.is_empty() || reg.name().eq_ignore_ascii_case(register_name))
+            .collect::<Vec<&'static CoreRegister>>()
+    };
+    if registers.is_empty() {
+        return Err(DebuggerError::UserMessage(format!(
+            "No registers found matching {register_name:?}. See the `help` command for more information."
+        )));
+    }
+
+    let ids: Vec<RegisterId> = registers.iter().map(|r| r.id()).collect();
+    let values = backend.read_core_registers(core_index, ids).await?;
+
+    let mut results = vec![];
+    let mut failures = vec![];
+    for (reg, value) in registers.into_iter().zip(values) {
+        match value {
+            Some(reg_value) => results.push((format!("{reg}:"), reg_value.to_string())),
+            None => failures.push((reg.to_string(), "unreadable".to_string())),
         }
+    }
 
-        let ids: Vec<RegisterId> = registers.iter().map(|r| r.id()).collect();
-        let values = backend.read_core_registers(core_index, ids).await?;
+    let mut response_message = String::new();
 
-        let mut results = vec![];
-        let mut failures = vec![];
-        for (reg, value) in registers.into_iter().zip(values) {
-            match value {
-                Some(reg_value) => results.push((format!("{reg}:"), reg_value.to_string())),
-                None => failures.push((reg.to_string(), "unreadable".to_string())),
-            }
+    if !failures.is_empty() {
+        response_message.push_str("Failed to read the following registers:");
+        for (reg_name, error) in &failures {
+            #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+            writeln!(&mut response_message, "{reg_name}: {error}").unwrap();
         }
-
-        let mut response_message = String::new();
-
-        if !failures.is_empty() {
-            response_message.push_str("Failed to read the following registers:");
-            for (reg_name, error) in &failures {
-                #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
-                writeln!(&mut response_message, "{reg_name}: {error}").unwrap();
-            }
+    }
+    if !results.is_empty() {
+        if !response_message.is_empty() {
+            response_message.push('\n');
         }
-        if !results.is_empty() {
-            if !response_message.is_empty() {
-                response_message.push('\n');
-            }
-            response_message.push_str(&reg_table(&results, 80));
-        }
+        response_message.push_str(&reg_table(&results, 80));
+    }
 
-        Ok(EvalResponse::Message(response_message))
-    })
+    Ok(EvalResponse::Message(response_message))
 }
 
-fn print_breakpoints<'a>(
+async fn print_breakpoints<'a>(
     _backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
     _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let mut response_message = String::new();
-        for (idx, ab) in core_data.breakpoints.iter().enumerate() {
-            #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
-            writeln!(&mut response_message, "Breakpoint #{idx} @ {:010X}", ab.address).unwrap();
-        }
+) -> EvalResult {
+    let mut response_message = String::new();
+    for (idx, ab) in core_data.breakpoints.iter().enumerate() {
+        #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+        writeln!(&mut response_message, "Breakpoint #{idx} @ {:010X}", ab.address).unwrap();
+    }
 
-        if response_message.is_empty() {
-            response_message.push_str("No breakpoints set.");
-        }
+    if response_message.is_empty() {
+        response_message.push_str("No breakpoints set.");
+    }
 
-        Ok(EvalResponse::Message(response_message))
-    })
+    Ok(EvalResponse::Message(response_message))
 }
 
-fn info_locals<'a>(
+async fn info_locals<'a>(
     _backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     evaluate_arguments: &'a EvaluateArguments,
     _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let gdb_nuf = GdbNuf {
-            format_specifier: GdbFormat::Native,
-            ..Default::default()
-        };
-        let variable_name = VariableName::LocalScopeRoot;
-        get_local_variable(evaluate_arguments, core_data, variable_name, gdb_nuf)
-    })
+) -> EvalResult {
+    let gdb_nuf = GdbNuf {
+        format_specifier: GdbFormat::Native,
+        ..Default::default()
+    };
+    let variable_name = VariableName::LocalScopeRoot;
+    get_local_variable(evaluate_arguments, core_data, variable_name, gdb_nuf)
 }
 
 fn reg_table(results: &[(String, String)], max_line_length: usize) -> String {

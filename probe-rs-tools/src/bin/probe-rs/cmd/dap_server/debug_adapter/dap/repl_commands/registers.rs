@@ -1,7 +1,5 @@
 use linkme::distributed_slice;
 use probe_rs::{CoreRegister, RegisterId, RegisterRole, RegisterValue};
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::cmd::dap_server::{
     DebuggerError,
@@ -10,7 +8,7 @@ use crate::cmd::dap_server::{
         dap::{
             adapter::DebugAdapter,
             dap_types::EvaluateArguments,
-            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
+            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, async_fn},
             repl_types::ReplCommandArgs,
         },
         protocol::ProtocolAdapter,
@@ -29,7 +27,7 @@ static WREG: ReplCommand = ReplCommand {
         ReplCommandArgs::Required("register name"),
         ReplCommandArgs::Required("value"),
     ],
-    handler: write_register,
+    handler: async_fn!(write_register),
 };
 
 /// Split the `wreg` arguments into a register name and the value to write.
@@ -76,49 +74,47 @@ pub(crate) fn register_matches(register: &CoreRegister, query: &str) -> bool {
             && register.register_has_role(RegisterRole::MainStackPointer))
 }
 
-fn write_register<'a>(
+async fn write_register<'a>(
     backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
     _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let core_index = core_data.core_index;
-        let (register_name, value) = parse_wreg_args(command_arguments)?;
+) -> EvalResult {
+    let core_index = core_data.core_index;
+    let (register_name, value) = parse_wreg_args(command_arguments)?;
 
-        let (id, name, size_in_bits): (RegisterId, &'static str, usize) = {
-            let regs = backend.register_file(core_index)?;
-            let register = regs
-                .all_registers()
-                .find(|r| register_matches(r, register_name))
-                .ok_or_else(|| {
-                    DebuggerError::UserMessage(format!(
-                        "No register found matching {register_name:?}. Use `info reg` to list the available registers."
-                    ))
-                })?;
-            (register.id(), register.name(), register.size_in_bits())
-        };
+    let (id, name, size_in_bits): (RegisterId, &'static str, usize) = {
+        let regs = backend.register_file(core_index)?;
+        let register = regs
+            .all_registers()
+            .find(|r| register_matches(r, register_name))
+            .ok_or_else(|| {
+                DebuggerError::UserMessage(format!(
+                    "No register found matching {register_name:?}. Use `info reg` to list the available registers."
+                ))
+            })?;
+        (register.id(), register.name(), register.size_in_bits())
+    };
 
-        let register_value = if size_in_bits <= 32 {
-            if value > u32::MAX as u128 {
-                return Err(too_large(value, size_in_bits, name));
-            }
-            RegisterValue::U32(value as u32)
-        } else if size_in_bits <= 64 {
-            if value > u64::MAX as u128 {
-                return Err(too_large(value, size_in_bits, name));
-            }
-            RegisterValue::U64(value as u64)
-        } else {
-            RegisterValue::U128(value)
-        };
+    let register_value = if size_in_bits <= 32 {
+        if value > u32::MAX as u128 {
+            return Err(too_large(value, size_in_bits, name));
+        }
+        RegisterValue::U32(value as u32)
+    } else if size_in_bits <= 64 {
+        if value > u64::MAX as u128 {
+            return Err(too_large(value, size_in_bits, name));
+        }
+        RegisterValue::U64(value as u64)
+    } else {
+        RegisterValue::U128(value)
+    };
 
-        backend.write_core_reg(core_index, id, register_value).await?;
-        let read_back = backend.read_core_reg(core_index, id).await?;
+    backend.write_core_reg(core_index, id, register_value).await?;
+    let read_back = backend.read_core_reg(core_index, id).await?;
 
-        Ok(EvalResponse::Message(format!("{name}: {read_back}")))
-    })
+    Ok(EvalResponse::Message(format!("{name}: {read_back}")))
 }
 
 fn too_large(value: u128, size_in_bits: usize, register_name: &str) -> DebuggerError {

@@ -1,6 +1,4 @@
 use linkme::distributed_slice;
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::cmd::dap_server::{
     DebuggerError,
@@ -10,7 +8,7 @@ use crate::cmd::dap_server::{
             adapter::DebugAdapter,
             dap_types::EvaluateArguments,
             repl_commands::{
-                EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, need_subcommand,
+                EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, async_fn, need_subcommand,
             },
             repl_types::ReplCommandArgs,
         },
@@ -33,43 +31,41 @@ static RTT_COMMANDS: ReplCommand = ReplCommand {
             ReplCommandArgs::Required("channel_id"),
             ReplCommandArgs::Required("data"),
         ],
-        handler: rtt_write,
+        handler: async_fn!(rtt_write),
     }],
     args: &[],
-    handler: need_subcommand,
+    handler: async_fn!(need_subcommand),
 };
 
-fn rtt_write<'a>(
+async fn rtt_write<'a>(
     backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     input: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
     _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let (channel_id, data) = input.split_once(' ').ok_or_else(|| {
-            DebuggerError::UserMessage("Expected input format: <channel_id> <data>".to_string())
+) -> EvalResult {
+    let (channel_id, data) = input.split_once(' ').ok_or_else(|| {
+        DebuggerError::UserMessage("Expected input format: <channel_id> <data>".to_string())
+    })?;
+
+    let channel_id = channel_id
+        .parse()
+        .map_err(|_| DebuggerError::UserMessage("Channel ID must be a number".to_string()))?;
+
+    let mut data = data.to_string();
+    data.push('\n');
+
+    let rtt = core_data
+        .rtt_connection
+        .as_mut()
+        .ok_or_else(|| DebuggerError::UserMessage("Not connected to RTT".to_string()))?;
+
+    rtt.client
+        .write_down_async(backend, core_data.core_index, channel_id, data.into_bytes())
+        .await
+        .map_err(|e| {
+            DebuggerError::UserMessage(format!("Failed to write to channel {channel_id}: {e}"))
         })?;
 
-        let channel_id = channel_id
-            .parse()
-            .map_err(|_| DebuggerError::UserMessage("Channel ID must be a number".to_string()))?;
-
-        let mut data = data.to_string();
-        data.push('\n');
-
-        let rtt = core_data
-            .rtt_connection
-            .as_mut()
-            .ok_or_else(|| DebuggerError::UserMessage("Not connected to RTT".to_string()))?;
-
-        rtt.client
-            .write_down_async(backend, core_data.core_index, channel_id, data.into_bytes())
-            .await
-            .map_err(|e| {
-                DebuggerError::UserMessage(format!("Failed to write to channel {channel_id}: {e}"))
-            })?;
-
-        Ok(EvalResponse::Message(String::new()))
-    })
+    Ok(EvalResponse::Message(String::new()))
 }

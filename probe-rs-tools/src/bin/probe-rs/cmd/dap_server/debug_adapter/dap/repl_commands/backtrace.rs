@@ -9,7 +9,7 @@ use crate::cmd::dap_server::{
         dap::{
             adapter::DebugAdapter,
             dap_types::EvaluateArguments,
-            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
+            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, async_fn},
             repl_types::ReplCommandArgs,
         },
         protocol::ProtocolAdapter,
@@ -18,8 +18,6 @@ use crate::cmd::dap_server::{
 };
 use crate::rpc::functions::stack_trace::StackTraceFrame;
 use crate::util::cli::format_stack_frame;
-use std::future::Future;
-use std::pin::Pin;
 
 #[distributed_slice(REPL_COMMANDS)]
 static BACKTRACE: ReplCommand = ReplCommand {
@@ -33,64 +31,60 @@ static BACKTRACE: ReplCommand = ReplCommand {
         args: &[ReplCommandArgs::Required(
             "path (e.g. my_dir/backtrace.yaml)",
         )],
-        handler: save_backtrace_to_yaml,
+        handler: async_fn!(save_backtrace_to_yaml),
     }],
     help_text: "Print the backtrace of the current thread.",
     args: &[],
-    handler: print_backtrace,
+    handler: async_fn!(print_backtrace),
 };
 
-fn print_backtrace<'a>(
+async fn print_backtrace<'a>(
     _backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
     debug_adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let colorize = Some(debug_adapter.supports_ansi_styling);
+) -> EvalResult {
+    let colorize = Some(debug_adapter.supports_ansi_styling);
 
-        let mut response_message = String::new();
-        for (i, frame) in core_data.stack_frames.iter().enumerate() {
-            #[allow(clippy::unwrap_used, reason = "Writing to a string is infallible")]
-            writeln!(
-                &mut response_message,
-                "    Frame {}: {}",
-                i + 1,
-                format_stack_frame(&StackTraceFrame::from(frame), colorize)
-            )
-            .unwrap();
-        }
+    let mut response_message = String::new();
+    for (i, frame) in core_data.stack_frames.iter().enumerate() {
+        #[allow(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+        writeln!(
+            &mut response_message,
+            "    Frame {}: {}",
+            i + 1,
+            format_stack_frame(&StackTraceFrame::from(frame), colorize)
+        )
+        .unwrap();
+    }
 
-        Ok(EvalResponse::Message(response_message))
-    })
+    Ok(EvalResponse::Message(response_message))
 }
 
-fn save_backtrace_to_yaml<'a>(
+async fn save_backtrace_to_yaml<'a>(
     _backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
     _debug_adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let mut args = command_arguments.split_whitespace();
-        let write_to_file = args.next().map(Path::new);
+) -> EvalResult {
+    let mut args = command_arguments.split_whitespace();
+    let write_to_file = args.next().map(Path::new);
 
-        use insta::_macro_support as insta_yaml;
-        let yaml_data = insta_yaml::serialize_value(
-            &core_data.stack_frames,
-            insta_yaml::SerializationFormat::Yaml,
-        );
+    use insta::_macro_support as insta_yaml;
+    let yaml_data = insta_yaml::serialize_value(
+        &core_data.stack_frames,
+        insta_yaml::SerializationFormat::Yaml,
+    );
 
-        let response_message = if let Some(location) = write_to_file {
-            std::fs::write(location, yaml_data)
-                .map_err(|e| DebuggerError::UserMessage(format!("{e:?}")))?;
-            format!("Stacktrace successfully stored at {location:?}.")
-        } else {
-            yaml_data
-        };
+    let response_message = if let Some(location) = write_to_file {
+        std::fs::write(location, yaml_data)
+            .map_err(|e| DebuggerError::UserMessage(format!("{e:?}")))?;
+        format!("Stacktrace successfully stored at {location:?}.")
+    } else {
+        yaml_data
+    };
 
-        Ok(EvalResponse::Message(response_message))
-    })
+    Ok(EvalResponse::Message(response_message))
 }

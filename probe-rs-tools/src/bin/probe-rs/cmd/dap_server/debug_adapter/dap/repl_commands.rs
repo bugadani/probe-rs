@@ -54,6 +54,29 @@ pub(crate) type ReplHandler = for<'a> fn(
     adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
 ) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>>;
 
+/// Wrap an `async fn` REPL handler so it can be stored as a plain `fn`
+/// pointer in the static [`REPL_COMMANDS`] table.
+///
+/// The handler must match the [`ReplHandler`] argument list (without the
+/// `Pin<Box<...>>` return wrapping). The macro expands to a non-async
+/// `wrapper` that boxes the future returned by the handler, matching the
+/// `ReplHandler` signature.
+macro_rules! async_fn {
+    ($handler:ident) => {{
+        fn wrapper<'a>(
+            backend: &'a mut dyn DapBackend,
+            core_data: &'a mut CoreData,
+            command_arguments: &'a str,
+            evaluate_arguments: &'a EvaluateArguments,
+            adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+        ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = EvalResult> + 'a>> {
+            ::std::boxed::Box::pin($handler(backend, core_data, command_arguments, evaluate_arguments, adapter))
+        }
+        wrapper
+    }};
+}
+pub(crate) use async_fn;
+
 #[derive(Clone, Copy)]
 pub(crate) struct ReplCommand {
     /// The text that the user will type to invoke the command.
@@ -96,7 +119,7 @@ static HELP: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[],
-    handler: print_help,
+    handler: async_fn!(print_help),
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -106,67 +129,61 @@ static QUIT: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[],
-    handler: quit_repl,
+    handler: async_fn!(quit_repl),
 };
 
-fn print_help<'a>(
+async fn print_help<'a>(
     _backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
     _: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        let mut help_text =
-            "Usage:\t- Use <Ctrl+Space> to get a list of available commands.".to_string();
-        help_text.push_str("\n\t- Use <Up/DownArrows> to navigate through the command list.");
-        help_text.push_str("\n\t- Use <Hab> to insert the currently selected command.");
-        help_text.push_str(
-            "\n\t- Note: This implementation is a subset of gdb commands, and is intended to behave similarly.",
-        );
-        help_text.push_str("\nAvailable commands:");
-        for command in core_data.repl_commands.iter() {
-            help_text.push_str(&format!("\n{command}"));
-        }
-        Ok(EvalResponse::Message(help_text))
-    })
+) -> EvalResult {
+    let mut help_text =
+        "Usage:\t- Use <Ctrl+Space> to get a list of available commands.".to_string();
+    help_text.push_str("\n\t- Use <Up/DownArrows> to navigate through the command list.");
+    help_text.push_str("\n\t- Use <Hab> to insert the currently selected command.");
+    help_text.push_str(
+        "\n\t- Note: This implementation is a subset of gdb commands, and is intended to behave similarly.",
+    );
+    help_text.push_str("\nAvailable commands:");
+    for command in core_data.repl_commands.iter() {
+        help_text.push_str(&format!("\n{command}"));
+    }
+    Ok(EvalResponse::Message(help_text))
 }
 
-fn need_subcommand<'a>(
+async fn need_subcommand<'a>(
     _backend: &'a mut dyn DapBackend,
     _core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
     _: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        Err(DebuggerError::UserMessage(
-            "Please provide one of the required subcommands. See the `help` command for more information."
-                .to_string(),
-        ))
-    })
+) -> EvalResult {
+    Err(DebuggerError::UserMessage(
+        "Please provide one of the required subcommands. See the `help` command for more information."
+            .to_string(),
+    ))
 }
 
 /// Halt the target and emit the `terminated` event (REPL `quit`).
-fn quit_repl<'a>(
+async fn quit_repl<'a>(
     backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
     adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move {
-        backend
-            .halt(core_data.core_index, Duration::from_millis(500))
-            .await?;
-        adapter.dyn_send_event(
-            "terminated",
-            serde_json::to_value(TerminatedEventBody { restart: None }).ok(),
-        )?;
-        Ok(EvalResponse::Message(
-            "Debug Session Terminated".to_string(),
-        ))
-    })
+) -> EvalResult {
+    backend
+        .halt(core_data.core_index, Duration::from_millis(500))
+        .await?;
+    adapter.dyn_send_event(
+        "terminated",
+        serde_json::to_value(TerminatedEventBody { restart: None }).ok(),
+    )?;
+    Ok(EvalResponse::Message(
+        "Debug Session Terminated".to_string(),
+    ))
 }
 
 pub enum EvalResponse {
@@ -183,12 +200,12 @@ pub type EvalResult = Result<EvalResponse, DebuggerError>;
 /// (e.g. `info frame`, `info var`). The `handler` field is required by
 /// [`ReplCommand`] for the help/completion table; this stub surfaces a
 /// clean `Unimplemented` error when the command is actually invoked.
-pub(crate) fn unimplemented_repl<'a>(
+pub(crate) async fn unimplemented_repl<'a>(
     _backend: &'a mut dyn DapBackend,
     _core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
     _: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
-    Box::pin(async move { Err(DebuggerError::Unimplemented) })
+) -> EvalResult {
+    Err(DebuggerError::Unimplemented)
 }
