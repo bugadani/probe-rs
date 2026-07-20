@@ -310,10 +310,10 @@ impl From<HaltReason> for WireHaltReason {
 // though, so the DAP server can emit the same "Application has exited
 // with …" message on both the local and remote paths.
 //
-// The `GetCommandLine` variant is reconstructed with a zero-initialised
-// [`Buffer`] here; the client reissues [`Buffer::from_block_at`] against
-// its [`RpcRemoteCore`] in [`RpcRemoteCore::status`] so the request ends
-// up bound to the correct target addresses.
+// The `GetCommandLine` variant is surfaced as a placeholder
+// `SemihostingCommand::Unknown` here; the server-side
+// `core/handle_semihosting` endpoint re-derives the real command from the
+// live core, so the client never needs target memory access for it.
 impl From<WireBreakpointCause> for probe_rs::BreakpointCause {
     fn from(value: WireBreakpointCause) -> Self {
         match value {
@@ -326,10 +326,11 @@ impl From<WireBreakpointCause> for probe_rs::BreakpointCause {
                     WireSemihostingCommand::ExitError(details) => {
                         SemihostingCommand::ExitError(details.into())
                     }
-                    // Placeholder: callers that want a usable
-                    // `GetCommandLineRequest` rehydrate one against the
-                    // target via `Buffer::from_block_at`. See
-                    // `RpcRemoteCore::status`.
+                    // Placeholder: the server-side `core/handle_semihosting`
+                    // endpoint re-derives the real `GetCommandLineRequest`
+                    // from the live core, so the DAP server recognizes the
+                    // halt as semihosting-induced without reconstituting the
+                    // full request on the client.
                     WireSemihostingCommand::GetCommandLine { .. } => {
                         SemihostingCommand::Unknown(UnknownCommandDetails {
                             operation: 0,
