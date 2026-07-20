@@ -732,7 +732,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 rtt_channel.has_client_window = arguments.window_is_open;
             }
 
-            self.send_response::<()>(&request, Ok(None))
+            self.send_response::<()>(request, Ok(None))
                 .context("Could not deserialize arguments for RttWindowOpened")?;
         }
         Ok(())
@@ -983,6 +983,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
             if let Some((cache_variable, frame_index)) = found_local {
                 let mut core = session_data.backend.core(core_index)?;
+                #[allow(clippy::expect_used, reason = "We just searched for local_variables and found it to be Some")]
                 let cache = session_data.core_data[cd_idx].stack_frames[frame_index]
                     .local_variables
                     .as_mut()
@@ -1008,6 +1009,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 }
             } else if let Some(cache_variable) = found_static {
                 let mut core = session_data.backend.core(core_index)?;
+                #[allow(clippy::expect_used, reason = "We just searched for static_variables and found it to be Some")]
                 let cache = session_data.core_data[cd_idx]
                     .static_variables
                     .as_mut()
@@ -2473,9 +2475,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 }
 
 impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
-    /// Halt the core (REPL/DAP `pause`). Driven against `&mut dyn DapBackend`
-    /// + `&mut CoreData` so it is callable from the REPL handler path (which
-    /// only holds those two disjoint borrows), with no `block_on` bridge.
+    /// Halt the core (REPL/DAP `pause`).
     pub(crate) async fn pause_impl_async(
         &mut self,
         backend: &mut dyn DapBackend,

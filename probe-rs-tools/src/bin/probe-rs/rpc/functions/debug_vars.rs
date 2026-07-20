@@ -623,7 +623,7 @@ pub async fn step(ctx: &mut RpcContext, _header: VarHeader, request: StepRequest
     let mut core = session.core(request.core as usize)?;
 
     let stepping_mode = SteppingMode::from(request.mode);
-    let debug_info_ref = debug_info.as_ref().map(|di| &**di);
+    let debug_info_ref = debug_info.as_deref();
     match stepping_mode.step(&mut core, debug_info_ref) {
         Ok((status, pc)) => Ok(StepResponse {
             status: status.into(),

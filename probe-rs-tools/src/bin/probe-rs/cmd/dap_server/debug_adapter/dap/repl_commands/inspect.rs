@@ -229,11 +229,8 @@ async fn dump_core<'a>(
             || core_data.static_variables.is_some();
         if has_client_cache {
             let core = backend.core(core_index)?;
-            let ranges = {
-                let mut handle = CoreHandle { core, core_data };
-                handle.get_memory_ranges()
-            };
-            ranges
+            let mut handle = CoreHandle { core, core_data };
+            handle.get_memory_ranges()
         } else {
             Vec::new()
         }
