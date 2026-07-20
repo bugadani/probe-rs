@@ -26,6 +26,7 @@ use probe_rs_debug::{
 };
 
 use crate::cmd::dap_server::DebuggerError;
+use async_trait::async_trait;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
     EvaluateArguments, EvaluateResponseBody, Scope, Variable,
 };
@@ -239,6 +240,7 @@ use crate::util::flash::build_loader;
 /// a single [`Core`]) goes through this trait. The DAP code is written against
 /// `SessionData<B: DapBackend>` so it can run against either a local
 /// [`Session`] or a remote RPC-backed session implementation.
+#[async_trait(?Send)]
 pub trait DapBackend {
     /// Return the available cores on this target.
     fn list_cores(&self) -> Vec<(usize, CoreType)>;
@@ -746,6 +748,7 @@ pub trait DapBackend {
     }
 }
 
+#[async_trait(?Send)]
 impl DapBackend for Session {
     fn list_cores(&self) -> Vec<(usize, CoreType)> {
         Session::list_cores(self)

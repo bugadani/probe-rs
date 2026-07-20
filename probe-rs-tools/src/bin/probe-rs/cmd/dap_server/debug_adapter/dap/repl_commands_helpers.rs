@@ -3,11 +3,7 @@ use probe_rs_debug::{ObjectRef, VariableName};
 use crate::cmd::dap_server::{
     DebuggerError,
     backend::DapBackend,
-    debug_adapter::{
-        dap::{adapter::DebugAdapter, repl_commands::{EvalResponse, EvalResult}},
-        protocol::ProtocolAdapter,
-    },
-    server::session_data::SessionData,
+    debug_adapter::dap::repl_commands::{EvalResponse, EvalResult},
 };
 
 use super::{
@@ -103,21 +99,16 @@ pub(crate) fn get_local_variable(
 }
 
 /// Read memory at the specified address (hex), using the [`GdbNuf`] specifiers to determine size and format.
-pub(crate) async fn memory_read_async<B: DapBackend, P: ProtocolAdapter>(
-    _adapter: &mut DebugAdapter<P>,
-    session_data: &mut SessionData<B>,
+pub(crate) async fn memory_read_async(
+    backend: &mut dyn DapBackend,
+    core_data: &crate::cmd::dap_server::server::core_data::CoreData,
     core_index: usize,
     address: u64,
     gdb_nuf: GdbNuf,
 ) -> EvalResult {
     if gdb_nuf.format_specifier == GdbFormat::Instruction {
-        let debug_info = session_data
-            .core_data
-            .iter()
-            .find(|c| c.core_index == core_index)
-            .and_then(|c| c.debug_info.as_ref());
-        let assembly_lines = session_data
-            .backend
+        let debug_info = core_data.debug_info.as_ref();
+        let assembly_lines = backend
             .disassemble(
                 core_index,
                 debug_info,
@@ -139,8 +130,7 @@ pub(crate) async fn memory_read_async<B: DapBackend, P: ProtocolAdapter>(
 
         Ok(EvalResponse::Message(formatted_output))
     } else {
-        let memory = session_data
-            .backend
+        let memory = backend
             .read_memory_8(core_index, address, gdb_nuf.get_size())
             .await
             .map_err(|err| {

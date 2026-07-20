@@ -5,7 +5,6 @@ use super::{
     request_helpers::{get_dap_source, get_svd_variable_reference, get_variable_reference},
 };
 use crate::cmd::dap_server::backend::DapBackend;
-use crate::cmd::run::EmbeddedTestElfInfo;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
@@ -14,7 +13,7 @@ use crate::cmd::dap_server::{
     },
     server::{
         configuration::ConsoleLog,
-        core_data::CoreHandle,
+        core_data::{CoreData, CoreHandle},
         session_data::{ActiveBreakpoint, BreakpointType, SessionData, SourceLocationScope},
     },
 };
@@ -106,7 +105,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        let response = match self.pause_impl_async(session_data, core_index).await {
+        let response = match self
+            .pause_impl_async(
+                &mut session_data.backend,
+                session_data
+                    .core_data
+                    .iter_mut()
+                    .find(|c| c.core_index == core_index)
+                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?,
+            )
+            .await
+        {
             Ok(cpu_info) => Ok(Some(format!(
                 "Core stopped at address {:#010x}",
                 cpu_info.pc
@@ -115,39 +124,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         };
 
         self.send_response(request, response)
-    }
-
-    pub(crate) async fn pause_impl_async<B: DapBackend>(
-        &mut self,
-        session_data: &mut SessionData<B>,
-        core_index: usize,
-    ) -> Result<CoreInformation> {
-        let cpu_info = session_data
-            .backend
-            .halt(core_index, Duration::from_millis(500))
-            .await?;
-        let new_status = CoreStatus::Halted(HaltReason::Request);
-        let event_body = Some(StoppedEventBody {
-            reason: "pause".to_owned(),
-            description: Some(new_status.short_long_status(Some(cpu_info.pc)).1),
-            thread_id: Some(core_index as i64),
-            preserve_focus_hint: Some(false),
-            text: None,
-            all_threads_stopped: Some(self.all_cores_halted),
-            hit_breakpoint_ids: None,
-        });
-        if let Some(cd) = session_data
-            .core_data
-            .iter_mut()
-            .find(|cd| cd.core_index == core_index)
-        {
-            cd.last_known_status = new_status;
-        }
-        self.dyn_send_event(
-            "stopped",
-            event_body.map(|event_body| serde_json::to_value(event_body).unwrap_or_default()),
-        )?;
-        Ok(cpu_info)
     }
 
     pub(crate) async fn disconnect<B: DapBackend>(
@@ -699,171 +675,26 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         .await
     }
 
-    /// Async REPL dispatch. Migrated commands are handled inline (session-level,
-    /// no `CoreHandle`); unmigrated commands fall back to the command's
-    /// encapsulated sync `handler`, driven against `&mut CoreData` (no
-    /// `attach_core` / `backend.core()` round trip, so the RPC backend
-    /// needs no `block_on` bridge).
+    /// Async REPL dispatch. Resolves the selected core's [`CoreData`] and the
+    /// session [`DapBackend`], then hands control to the command's own
+    /// localized `handler` (a boxed-future `fn` pointer stored on the
+    /// [`ReplCommand`] in its module). Each handler `.await`s the backend
+    /// directly, so the RPC backend needs no `block_on` bridge.
     async fn dispatch_repl_command<B: DapBackend>(
         &mut self,
         leaf: ReplCommand,
-        command_root: &str,
+        _command_root: &str,
         session_data: &mut SessionData<B>,
         core_index: usize,
         argument_string: &str,
         arguments: &EvaluateArguments,
     ) -> EvalResult {
-        match command_root.trim() {
-            "c" => {
-                self.continue_impl_async(session_data, core_index).await?;
-                Ok(EvalResponse::Message(String::new()))
-            }
-            "reset" => {
-                self.reset_and_halt_core_async(session_data, core_index).await?;
-                Ok(EvalResponse::Message(String::new()))
-            }
-            "step" => {
-                let pc = self
-                    .step_impl_async(
-                        probe_rs_debug::SteppingMode::StepInstruction,
-                        session_data,
-                        core_index,
-                    )
-                    .await?;
-                Ok(EvalResponse::Message(
-                    CoreStatus::Halted(HaltReason::Request)
-                        .short_long_status(Some(pc))
-                        .1,
-                ))
-            }
-            "test list" => {
-                let Some(cd) = session_data
-                    .core_data
-                    .iter()
-                    .find(|c| c.core_index == core_index)
-                else {
-                    return Err(DebuggerError::UserMessage("No core data".to_string()));
-                };
-                let Some(test_data) = cd.test_data.downcast_ref::<EmbeddedTestElfInfo>() else {
-                    return Err(DebuggerError::UserMessage(
-                        "Internal error while trying to access test data".to_string(),
-                    ));
-                };
-                let mut tests = test_data
-                    .tests
-                    .iter()
-                    .map(|t| t.name.as_str())
-                    .collect::<Vec<&str>>();
-                tests.sort();
-                Ok(EvalResponse::Message(tests.join("\n")))
-            }
-            "test run" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::embedded_test::run_test_async(
-                    self,
-                    session_data,
-                    core_index,
-                    argument_string,
-                )
-                .await
-            }
-            "quit" => {
-                session_data
-                    .backend
-                    .halt(core_index, Duration::from_millis(500))
-                    .await?;
-                self.dyn_send_event(
-                    "terminated",
-                    serde_json::to_value(TerminatedEventBody { restart: None }).ok(),
-                )?;
-                Ok(EvalResponse::Message("Debug Session Terminated".to_string()))
-            }
-            "bt" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::backtrace::print_backtrace_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "bt yaml" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::backtrace::save_backtrace_to_yaml_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "break" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::breakpoint::create_breakpoint_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "clear" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::breakpoint::clear_breakpoint_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "wreg" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::registers::write_register_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "info reg" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::info::print_registers_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "info break" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::info::print_breakpoints_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "x" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::inspect::examine_memory_async(
-                    self, session_data, core_index, argument_string, arguments,
-                )
-                .await
-            }
-            "p" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::inspect::print_variables_async(
-                    self, session_data, core_index, argument_string, arguments,
-                )
-                .await
-            }
-            "info locals" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::info::info_locals_async(
-                    self, session_data, core_index, argument_string, arguments,
-                )
-                .await
-            }
-            "rtt write" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::rtt::rtt_write_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            "info frame" | "info var" => Err(DebuggerError::Unimplemented),
-            "dump" => {
-                crate::cmd::dap_server::debug_adapter::dap::repl_commands::inspect::dump_core_async(
-                    self, session_data, core_index, argument_string,
-                )
-                .await
-            }
-            _ => {
-                let cd_idx = session_data
-                    .core_data
-                    .iter()
-                    .position(|c| c.core_index == core_index)
-                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?;
-                (leaf.handler)(
-                    &mut session_data.core_data[cd_idx],
-                    argument_string,
-                    arguments,
-                    self,
-                )
-            }
-        }
+        let core_data = session_data
+            .core_data
+            .iter_mut()
+            .find(|c| c.core_index == core_index)
+            .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?;
+        (leaf.handler)(&mut session_data.backend, core_data, argument_string, arguments, self).await
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
@@ -1282,7 +1113,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 tracing::debug!(
                     "Core is halted, but not due to a breakpoint and halt_after_reset is not set. Continuing."
                 );
-                self.continue_impl_async(session_data, core_index).await?;
+                self.continue_impl_async(
+                    &mut session_data.backend,
+                    session_data
+                        .core_data
+                        .iter_mut()
+                        .find(|c| c.core_index == core_index)
+                        .ok_or_else(|| {
+                            DebuggerError::Other(anyhow!("No core data for core {core_index}"))
+                        })?,
+                )
+                .await?;
             }
         }
 
@@ -2213,7 +2054,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        match self.continue_impl_async(session_data, core_index).await {
+        match self
+            .continue_impl_async(
+                &mut session_data.backend,
+                session_data
+                    .core_data
+                    .iter_mut()
+                    .find(|c| c.core_index == core_index)
+                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?,
+            )
+            .await
+        {
             Ok(all_continued) if request.command == "continue" => {
                 // If this continue was initiated as part of some other request, then do not respond.
                 self.send_response(
@@ -2229,23 +2080,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 Err(error)
             }
         }
-    }
-
-    async fn continue_impl_async<B: DapBackend>(
-        &mut self,
-        session_data: &mut SessionData<B>,
-        core_index: usize,
-    ) -> Result<bool> {
-        session_data.backend.run(core_index).await?;
-        if let Some(cd) = session_data
-            .core_data
-            .iter_mut()
-            .find(|cd| cd.core_index == core_index)
-        {
-            cd.last_known_status = CoreStatus::Unknown;
-        }
-        self.all_cores_halted = false;
-        Ok(true) // TODO this isn't very useful?
     }
 
     /// Steps through the code at the requested granularity.
@@ -2315,8 +2149,16 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         core_index: usize,
         request: &Request,
     ) -> Result<(), anyhow::Error> {
-        self.step_impl_async(stepping_mode, session_data, core_index)
-            .await?;
+        self.step_impl_async(
+            stepping_mode,
+            &mut session_data.backend,
+            session_data
+                .core_data
+                .iter_mut()
+                .find(|c| c.core_index == core_index)
+                .ok_or_else(|| anyhow!("No core data for core {core_index}"))?,
+        )
+        .await?;
         self.send_response::<()>(request, Ok(None))?;
 
         Ok(())
@@ -2327,53 +2169,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// round trip) to re-apply breakpoints on Riscv/Xtensa, then resets
     /// `core_data.last_known_status`. The per-core `reset_and_halt_core`
     /// remains for the REPL path until cluster 6.8.
-    pub(crate) async fn reset_and_halt_core_async<B: DapBackend>(
-        &mut self,
-        session_data: &mut SessionData<B>,
-        core_index: usize,
-    ) -> Result<CoreInformation> {
-        let core_info = session_data
-            .backend
-            .reset_and_halt(core_index, Duration::from_millis(500))
-            .await
-            .map_err(DebuggerError::ProbeRs)?;
-
-        let arch = session_data
-            .backend
-            .core_architecture(core_index)
-            .await
-            .map_err(DebuggerError::ProbeRs)?;
-        if [Architecture::Riscv, Architecture::Xtensa].contains(&arch) {
-            let addrs: Vec<u64> = session_data
-                .core_data
-                .iter()
-                .find(|cd| cd.core_index == core_index)
-                .map(|cd| cd.breakpoints.iter().map(|bp| bp.address).collect())
-                .unwrap_or_default();
-            if !addrs.is_empty() {
-                session_data
-                    .backend
-                    .set_hw_breakpoints(core_index, addrs)
-                    .await
-                    .map_err(|e| {
-                        DebuggerError::Other(anyhow!(
-                            "Failed to re-apply breakpoints after reset: {e}"
-                        ))
-                    })?;
-            }
-        }
-
-        if let Some(cd) = session_data
-            .core_data
-            .iter_mut()
-            .find(|cd| cd.core_index == core_index)
-        {
-            cd.last_known_status = CoreStatus::Unknown;
-        }
-        self.all_cores_halted = false;
-        Ok(core_info)
-    }
-
     /// Session-level `restart` for the lifted path. Mirrors the per-core
     /// `restart`: reset-and-halt (+ reapply breakpoints), then optionally
     /// resume via `continue_impl_async`, emitting the `stopped`/`continued`
@@ -2385,7 +2180,14 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         request: Option<&Request>,
     ) -> Result<()> {
         let core_info = match self
-            .reset_and_halt_core_async(session_data, core_index)
+            .reset_and_halt_core_async(
+                &mut session_data.backend,
+                session_data
+                    .core_data
+                    .iter_mut()
+                    .find(|c| c.core_index == core_index)
+                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?,
+            )
             .await
         {
             Ok(core_info) => core_info,
@@ -2396,7 +2198,19 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
         if let Some(request) = request {
             if !self.halt_after_reset {
-                if let Err(error) = self.continue_impl_async(session_data, core_index).await {
+                if let Err(error) = self
+                    .continue_impl_async(
+                        &mut session_data.backend,
+                        session_data
+                            .core_data
+                            .iter_mut()
+                            .find(|c| c.core_index == core_index)
+                            .ok_or_else(|| {
+                                DebuggerError::Other(anyhow!("No core data for core {core_index}"))
+                            })?,
+                    )
+                    .await
+                {
                     return self.send_response::<()>(
                         request,
                         Err(&DebuggerError::Other(anyhow!("{error}"))),
@@ -2649,31 +2463,96 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
 impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
 
-    pub(crate) async fn step_impl_async<B: DapBackend>(
+    /// Halt the core (REPL/DAP `pause`). Driven against `&mut dyn DapBackend`
+    /// + `&mut CoreData` so it is callable from the REPL handler path (which
+    /// only holds those two disjoint borrows), with no `block_on` bridge.
+    pub(crate) async fn pause_impl_async(
+        &mut self,
+        backend: &mut dyn DapBackend,
+        core_data: &mut CoreData,
+    ) -> Result<CoreInformation> {
+        let core_index = core_data.core_index;
+        let cpu_info = backend.halt(core_index, Duration::from_millis(500)).await?;
+        let new_status = CoreStatus::Halted(HaltReason::Request);
+        let event_body = Some(StoppedEventBody {
+            reason: "pause".to_owned(),
+            description: Some(new_status.short_long_status(Some(cpu_info.pc)).1),
+            thread_id: Some(core_index as i64),
+            preserve_focus_hint: Some(false),
+            text: None,
+            all_threads_stopped: Some(self.all_cores_halted),
+            hit_breakpoint_ids: None,
+        });
+        core_data.last_known_status = new_status;
+        self.dyn_send_event(
+            "stopped",
+            event_body.map(|event_body| serde_json::to_value(event_body).unwrap_or_default()),
+        )?;
+        Ok(cpu_info)
+    }
+
+    /// Resume the core (REPL `c` / DAP `continue`).
+    pub(crate) async fn continue_impl_async(
+        &mut self,
+        backend: &mut dyn DapBackend,
+        core_data: &mut CoreData,
+    ) -> Result<bool> {
+        backend.run(core_data.core_index).await?;
+        core_data.last_known_status = CoreStatus::Unknown;
+        self.all_cores_halted = false;
+        Ok(true) // TODO this isn't very useful?
+    }
+
+    /// Reset and halt the core (REPL `reset` / DAP `restart`), re-applying
+    /// hardware breakpoints on RISC-V / Xtensa.
+    pub(crate) async fn reset_and_halt_core_async(
+        &mut self,
+        backend: &mut dyn DapBackend,
+        core_data: &mut CoreData,
+    ) -> Result<CoreInformation> {
+        let core_index = core_data.core_index;
+        let core_info = backend
+            .reset_and_halt(core_index, Duration::from_millis(500))
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+
+        let arch = backend
+            .core_architecture(core_index)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        if [Architecture::Riscv, Architecture::Xtensa].contains(&arch) {
+            let addrs: Vec<u64> = core_data.breakpoints.iter().map(|bp| bp.address).collect();
+            if !addrs.is_empty() {
+                backend
+                    .set_hw_breakpoints(core_index, addrs)
+                    .await
+                    .map_err(|e| {
+                        DebuggerError::Other(anyhow!(
+                            "Failed to re-apply breakpoints after reset: {e}"
+                        ))
+                    })?;
+            }
+        }
+
+        core_data.last_known_status = CoreStatus::Unknown;
+        self.all_cores_halted = false;
+        Ok(core_info)
+    }
+
+    pub(crate) async fn step_impl_async(
         &mut self,
         stepping_mode: SteppingMode,
-        session_data: &mut SessionData<B>,
-        core_index: usize,
+        backend: &mut dyn DapBackend,
+        core_data: &mut CoreData,
     ) -> Result<u64> {
+        let core_index = core_data.core_index;
         // reset_core_status, inlined (no CoreHandle): mark status Unknown and
         // clear all_cores_halted without notifying the client.
-        {
-            let core_data = session_data
-                .core_data
-                .iter_mut()
-                .find(|cd| cd.core_index == core_index)
-                .ok_or_else(|| anyhow!("No core data for core index {core_index}"))?;
-            core_data.last_known_status = CoreStatus::Unknown;
-        }
+        core_data.last_known_status = CoreStatus::Unknown;
         self.all_cores_halted = false;
-        let debug_info = session_data
-            .core_data
-            .iter()
-            .find(|cd| cd.core_index == core_index)
-            .and_then(|cd| cd.debug_info.as_ref());
+        let debug_info = core_data.debug_info.as_ref();
 
-        let (new_status, program_counter, warning) = session_data
-            .backend
+        let (new_status, program_counter, warning) = backend
             .debug_step(core_index, stepping_mode, debug_info)
             .await
             .map_err(DebuggerError::ProbeRs)?;
@@ -2684,11 +2563,6 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
             );
         }
 
-        let core_data = session_data
-            .core_data
-            .iter_mut()
-            .find(|cd| cd.core_index == core_index)
-            .ok_or_else(|| anyhow!("No core data for core index {core_index}"))?;
         // Override the halt reason: stepping uses breakpoints, which would
         // otherwise surface as a "BreakPoint" halt reason.
         core_data.last_known_status = CoreStatus::Halted(HaltReason::Step);

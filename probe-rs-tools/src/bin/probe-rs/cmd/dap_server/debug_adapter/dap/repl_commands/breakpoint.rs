@@ -1,24 +1,27 @@
 use linkme::distributed_slice;
 use probe_rs::{CoreStatus, HaltReason};
 use probe_rs_debug::{ColumnType, VerifiedBreakpoint};
+use std::future::Future;
+use std::pin::Pin;
 use typed_path::TypedPath;
 
 use crate::cmd::dap_server::{
     DebuggerError,
+    backend::DapBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
             core_status::DapStatus,
-            dap_types::{Breakpoint, BreakpointEventBody, MemoryAddress, Source},
-            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, unimplemented_repl},
+            dap_types::{Breakpoint, BreakpointEventBody, EvaluateArguments, MemoryAddress, Source},
+            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
             repl_types::ReplCommandArgs,
             request_helpers::get_dap_source,
         },
         protocol::ProtocolAdapter,
     },
-    server::session_data::{ActiveBreakpoint, BreakpointType, SessionData, SourceLocationScope},
+    server::core_data::CoreData,
+    server::session_data::{ActiveBreakpoint, BreakpointType, SourceLocationScope},
 };
-use crate::cmd::dap_server::backend::DapBackend;
 
 #[distributed_slice(REPL_COMMANDS)]
 static BREAK: ReplCommand = ReplCommand {
@@ -27,7 +30,7 @@ static BREAK: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[ReplCommandArgs::Optional("*address | file:line[:column]")],
-    handler: unimplemented_repl,
+    handler: create_breakpoint,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -37,7 +40,7 @@ static CLEAR: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[ReplCommandArgs::Required("*address | file:line[:column]")],
-    handler: unimplemented_repl,
+    handler: clear_breakpoint,
 };
 
 enum BreakpointLocation<'a> {
@@ -99,60 +102,50 @@ fn source_from_path(path: &str) -> Source {
     }
 }
 
-pub(crate) async fn create_breakpoint_async<B: DapBackend, P: ProtocolAdapter>(
-    adapter: &mut DebugAdapter<P>,
-    session_data: &mut SessionData<B>,
-    core_index: usize,
-    command_arguments: &str,
-) -> EvalResult {
-    if command_arguments.is_empty() {
-        let core_info = adapter.pause_impl_async(session_data, core_index).await?;
-        return Ok(EvalResponse::Message(
-            CoreStatus::Halted(HaltReason::Request)
-                .short_long_status(Some(core_info.pc))
-                .1,
-        ));
-    }
+fn create_breakpoint<'a>(
+    backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    command_arguments: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        let core_index = core_data.core_index;
+        if command_arguments.is_empty() {
+            let core_info = adapter.pause_impl_async(backend, core_data).await?;
+            return Ok(EvalResponse::Message(
+                CoreStatus::Halted(HaltReason::Request)
+                    .short_long_status(Some(core_info.pc))
+                    .1,
+            ));
+        }
 
-    let Some(token) = command_arguments.split_whitespace().next() else {
-        return Err(DebuggerError::UserMessage(
-            "Missing argument. See `help`.".to_string(),
-        ));
-    };
+        let Some(token) = command_arguments.split_whitespace().next() else {
+            return Err(DebuggerError::UserMessage(
+                "Missing argument. See `help`.".to_string(),
+            ));
+        };
 
-    match parse_breakpoint_location(token)? {
-        BreakpointLocation::Address(address) => {
-            let mut breakpoint_response = Breakpoint {
-                column: None,
-                end_column: None,
-                end_line: None,
-                id: None,
-                instruction_reference: None,
-                line: None,
-                message: None,
-                offset: None,
-                source: None,
-                verified: false,
-                reason: None,
-            };
-            match session_data
-                .backend
-                .set_hw_breakpoint(core_index, address)
-                .await
-            {
-                Ok(()) => {
-                    breakpoint_response.verified = true;
-                    breakpoint_response.instruction_reference = Some(format!("{address:#010x}"));
-                    let cd = session_data
-                        .core_data
-                        .iter_mut()
-                        .find(|c| c.core_index == core_index);
-                    if let Some(cd) = cd {
-                        cd.breakpoints.push(ActiveBreakpoint {
-                            breakpoint_type: BreakpointType::InstructionBreakpoint,
-                            address,
-                        });
-                        if let Some(di) = &cd.debug_info
+        match parse_breakpoint_location(token)? {
+            BreakpointLocation::Address(address) => {
+                let mut breakpoint_response = Breakpoint {
+                    column: None,
+                    end_column: None,
+                    end_line: None,
+                    id: None,
+                    instruction_reference: None,
+                    line: None,
+                    message: None,
+                    offset: None,
+                    source: None,
+                    verified: false,
+                    reason: None,
+                };
+                match backend.set_hw_breakpoint(core_index, address).await {
+                    Ok(()) => {
+                        breakpoint_response.verified = true;
+                        breakpoint_response.instruction_reference = Some(format!("{address:#010x}"));
+                        if let Some(di) = &core_data.debug_info
                             && let Some(source_location) = di.get_source_location(address)
                         {
                             breakpoint_response.id = Some(address as i64);
@@ -177,170 +170,142 @@ pub(crate) async fn create_breakpoint_async<B: DapBackend, P: ProtocolAdapter>(
                                 "Instruction breakpoint set @:{address:#010x}, but could not resolve a source location."
                             ));
                         }
-                    } else {
+                    }
+                    Err(error) => {
+                        breakpoint_response.instruction_reference = Some(format!("{address:#010x}"));
                         breakpoint_response.message = Some(format!(
-                            "Instruction breakpoint set @:{address:#010x}"
+                            "Warning: Could not set breakpoint at memory address: {address:#010x}: {error}"
                         ));
                     }
                 }
-                Err(error) => {
-                    breakpoint_response.instruction_reference = Some(format!("{address:#010x}"));
-                    breakpoint_response.message = Some(format!(
-                        "Warning: Could not set breakpoint at memory address: {address:#010x}: {error}"
-                    ));
-                }
+                let body = if breakpoint_response.verified {
+                    serde_json::to_value(BreakpointEventBody {
+                        breakpoint: breakpoint_response.clone(),
+                        reason: "new".to_string(),
+                    })
+                    .ok()
+                } else {
+                    None
+                };
+                adapter.dyn_send_event("breakpoint", body)?;
+                Ok(EvalResponse::Message(breakpoint_response.message.unwrap_or_else(
+                    || format!("Unexpected error creating breakpoint at {address:#x}."),
+                )))
             }
-            let body = if breakpoint_response.verified {
-                serde_json::to_value(BreakpointEventBody {
-                    breakpoint: breakpoint_response.clone(),
+
+            BreakpointLocation::FileLine { path, line, column } => {
+                let source = source_from_path(path);
+                let Some(debug_info) = &core_data.debug_info else {
+                    return Err(DebuggerError::UserMessage(
+                        "Cannot set source breakpoint without debug information.".to_string(),
+                    ));
+                };
+                let VerifiedBreakpoint {
+                    address,
+                    source_location,
+                } = debug_info
+                    .get_breakpoint_location(TypedPath::derive(path), line, column)
+                    .map_err(|e| DebuggerError::UserMessage(e.to_string()))?;
+                backend.set_hw_breakpoint(core_index, address).await?;
+                core_data.breakpoints.push(ActiveBreakpoint {
+                    breakpoint_type: BreakpointType::SourceBreakpoint {
+                        source: Box::new(source.clone()),
+                        location: SourceLocationScope::Specific(source_location.clone()),
+                    },
+                    address,
+                });
+                let body = serde_json::to_value(BreakpointEventBody {
+                    breakpoint: Breakpoint {
+                        id: Some(address as i64),
+                        verified: true,
+                        line: source_location.line.map(|l| l as i64),
+                        source: Some(source),
+                        message: Some(format!("Source breakpoint at {:#010X}", address)),
+                        column: source_location.column.map(|col| match col {
+                            ColumnType::LeftEdge => 0_i64,
+                            ColumnType::Column(c) => c as i64,
+                        }),
+                        end_column: None,
+                        end_line: None,
+                        instruction_reference: None,
+                        offset: None,
+                        reason: None,
+                    },
                     reason: "new".to_string(),
                 })
-                .ok()
-            } else {
-                None
-            };
-            adapter.dyn_send_event("breakpoint", body)?;
-            Ok(EvalResponse::Message(breakpoint_response.message.unwrap_or_else(
-                || format!("Unexpected error creating breakpoint at {address:#x}."),
-            )))
+                .ok();
+                adapter.dyn_send_event("breakpoint", body)?;
+                Ok(EvalResponse::Message(format!(
+                    "Breakpoint set at {:#010X}",
+                    address
+                )))
+            }
         }
-
-        BreakpointLocation::FileLine { path, line, column } => {
-            let source = source_from_path(path);
-            let cd = session_data
-                .core_data
-                .iter_mut()
-                .find(|c| c.core_index == core_index);
-            let Some(cd) = cd else {
-                return Err(DebuggerError::UserMessage("No core data".to_string()));
-            };
-            let Some(debug_info) = &cd.debug_info else {
-                return Err(DebuggerError::UserMessage(
-                    "Cannot set source breakpoint without debug information.".to_string(),
-                ));
-            };
-            let VerifiedBreakpoint {
-                address,
-                source_location,
-            } = debug_info
-                .get_breakpoint_location(TypedPath::derive(path), line, column)
-                .map_err(|e| DebuggerError::UserMessage(e.to_string()))?;
-            session_data
-                .backend
-                .set_hw_breakpoint(core_index, address)
-                .await?;
-            cd.breakpoints.push(ActiveBreakpoint {
-                breakpoint_type: BreakpointType::SourceBreakpoint {
-                    source: Box::new(source.clone()),
-                    location: SourceLocationScope::Specific(source_location.clone()),
-                },
-                address,
-            });
-            let body = serde_json::to_value(BreakpointEventBody {
-                breakpoint: Breakpoint {
-                    id: Some(address as i64),
-                    verified: true,
-                    line: source_location.line.map(|l| l as i64),
-                    source: Some(source),
-                    message: Some(format!("Source breakpoint at {:#010X}", address)),
-                    column: source_location.column.map(|col| match col {
-                        ColumnType::LeftEdge => 0_i64,
-                        ColumnType::Column(c) => c as i64,
-                    }),
-                    end_column: None,
-                    end_line: None,
-                    instruction_reference: None,
-                    offset: None,
-                    reason: None,
-                },
-                reason: "new".to_string(),
-            })
-            .ok();
-            adapter.dyn_send_event("breakpoint", body)?;
-            Ok(EvalResponse::Message(format!(
-                "Breakpoint set at {:#010X}",
-                address
-            )))
-        }
-    }
+    })
 }
 
-pub(crate) async fn clear_breakpoint_async<B: DapBackend, P: ProtocolAdapter>(
-    adapter: &mut DebugAdapter<P>,
-    session_data: &mut SessionData<B>,
-    core_index: usize,
-    command_arguments: &str,
-) -> EvalResult {
-    let Some(token) = command_arguments.split_whitespace().next() else {
-        return Err(DebuggerError::UserMessage(
-            "Missing argument. See `help`.".to_string(),
-        ));
-    };
+fn clear_breakpoint<'a>(
+    backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    command_arguments: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        let core_index = core_data.core_index;
+        let Some(token) = command_arguments.split_whitespace().next() else {
+            return Err(DebuggerError::UserMessage(
+                "Missing argument. See `help`.".to_string(),
+            ));
+        };
 
-    let address = match parse_breakpoint_location(token)? {
-        BreakpointLocation::Address(addr) => addr,
-        BreakpointLocation::FileLine { path, line, column } => {
-            let cd = session_data
-                .core_data
-                .iter()
-                .find(|c| c.core_index == core_index);
-            let Some(cd) = cd else {
-                return Err(DebuggerError::UserMessage("No core data".to_string()));
-            };
-            let Some(debug_info) = &cd.debug_info else {
-                return Err(DebuggerError::UserMessage(
-                    "Cannot resolve file:line without debug information.".to_string(),
-                ));
-            };
-            debug_info
-                .get_breakpoint_location(TypedPath::derive(path), line, column)
-                .map_err(|e| DebuggerError::UserMessage(format!("Cannot resolve {path}:{line}: {e}")))?
-                .address
+        let address = match parse_breakpoint_location(token)? {
+            BreakpointLocation::Address(addr) => addr,
+            BreakpointLocation::FileLine { path, line, column } => {
+                let Some(debug_info) = &core_data.debug_info else {
+                    return Err(DebuggerError::UserMessage(
+                        "Cannot resolve file:line without debug information.".to_string(),
+                    ));
+                };
+                debug_info
+                    .get_breakpoint_location(TypedPath::derive(path), line, column)
+                    .map_err(|e| {
+                        DebuggerError::UserMessage(format!("Cannot resolve {path}:{line}: {e}"))
+                    })?
+                    .address
+            }
+        };
+
+        backend.clear_hw_breakpoint(core_index, address).await?;
+        let before = core_data.breakpoints.len();
+        core_data.breakpoints.retain(|ab| ab.address != address);
+        let removed = before != core_data.breakpoints.len();
+        if !removed {
+            return Err(DebuggerError::UserMessage(format!(
+                "No breakpoint found at {address:#x}."
+            )));
         }
-    };
 
-    session_data
-        .backend
-        .clear_hw_breakpoint(core_index, address)
-        .await?;
-    let removed = {
-        let cd = session_data
-            .core_data
-            .iter_mut()
-            .find(|c| c.core_index == core_index);
-        if let Some(cd) = cd {
-            let before = cd.breakpoints.len();
-            cd.breakpoints.retain(|ab| ab.address != address);
-            before != cd.breakpoints.len()
-        } else {
-            false
-        }
-    };
-    if !removed {
-        return Err(DebuggerError::UserMessage(format!(
-            "No breakpoint found at {address:#x}."
-        )));
-    }
+        let body = serde_json::to_value(BreakpointEventBody {
+            breakpoint: Breakpoint {
+                id: Some(address as i64),
+                column: None,
+                end_column: None,
+                end_line: None,
+                instruction_reference: None,
+                line: None,
+                message: None,
+                offset: None,
+                source: None,
+                verified: false,
+                reason: None,
+            },
+            reason: "removed".to_string(),
+        })
+        .ok();
 
-    let body = serde_json::to_value(BreakpointEventBody {
-        breakpoint: Breakpoint {
-            id: Some(address as i64),
-            column: None,
-            end_column: None,
-            end_line: None,
-            instruction_reference: None,
-            line: None,
-            message: None,
-            offset: None,
-            source: None,
-            verified: false,
-            reason: None,
-        },
-        reason: "removed".to_string(),
+        adapter.dyn_send_event("breakpoint", body)?;
+
+        Ok(EvalResponse::Message("Breakpoint cleared".to_string()))
     })
-    .ok();
-
-    adapter.dyn_send_event("breakpoint", body)?;
-
-    Ok(EvalResponse::Message("Breakpoint cleared".to_string()))
 }

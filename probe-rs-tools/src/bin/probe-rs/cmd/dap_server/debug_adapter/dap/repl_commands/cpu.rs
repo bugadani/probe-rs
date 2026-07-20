@@ -1,10 +1,21 @@
 use crate::cmd::dap_server::{
-    debug_adapter::dap::repl_commands::{EvalResult, REPL_COMMANDS, ReplCommand},
-    DebuggerError,
+    backend::DapBackend,
+    debug_adapter::{
+        dap::{
+            adapter::DebugAdapter,
+            core_status::DapStatus,
+            dap_types::EvaluateArguments,
+            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
+        },
+        protocol::ProtocolAdapter,
+    },
+    server::core_data::CoreData,
 };
-use anyhow::anyhow;
-
+use probe_rs::{CoreStatus, HaltReason};
+use probe_rs_debug::SteppingMode;
 use linkme::distributed_slice;
+use std::future::Future;
+use std::pin::Pin;
 
 #[distributed_slice(REPL_COMMANDS)]
 static CONTINUE: ReplCommand = ReplCommand {
@@ -13,7 +24,7 @@ static CONTINUE: ReplCommand = ReplCommand {
     requires_target_halted: true,
     sub_commands: &[],
     args: &[],
-    handler: repl_stub,
+    handler: continue_repl,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -23,7 +34,7 @@ static RESET: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[],
-    handler: repl_stub,
+    handler: reset_repl,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -33,22 +44,50 @@ static STEP: ReplCommand = ReplCommand {
     requires_target_halted: true,
     sub_commands: &[],
     args: &[],
-    handler: repl_stub,
+    handler: step_repl,
 };
 
-/// Placeholder handler for REPL commands whose logic has been lifted to the
-/// async session-level dispatch (`DebugAdapter::dispatch_repl_command`). The
-/// `handler` field is still required by `ReplCommand` for the help/completion
-/// table; this stub is never invoked for migrated commands.
-fn repl_stub(
-    _: &mut crate::cmd::dap_server::server::core_data::CoreData,
-    _: &str,
-    _: &crate::cmd::dap_server::debug_adapter::dap::dap_types::EvaluateArguments,
-    _: &mut crate::cmd::dap_server::debug_adapter::dap::adapter::DebugAdapter<
-        dyn crate::cmd::dap_server::debug_adapter::protocol::ProtocolAdapter + '_,
-    >,
-) -> EvalResult {
-    Err(DebuggerError::Other(anyhow!(
-        "REPL command handled by async dispatch"
-    )))
+fn continue_repl<'a>(
+    backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    _command_arguments: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        adapter.continue_impl_async(backend, core_data).await?;
+        Ok(EvalResponse::Message(String::new()))
+    })
+}
+
+fn reset_repl<'a>(
+    backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    _command_arguments: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        adapter.reset_and_halt_core_async(backend, core_data).await?;
+        Ok(EvalResponse::Message(String::new()))
+    })
+}
+
+fn step_repl<'a>(
+    backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    _command_arguments: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        let pc = adapter
+            .step_impl_async(SteppingMode::StepInstruction, backend, core_data)
+            .await?;
+        Ok(EvalResponse::Message(
+            CoreStatus::Halted(HaltReason::Request)
+                .short_long_status(Some(pc))
+                .1,
+        ))
+    })
 }

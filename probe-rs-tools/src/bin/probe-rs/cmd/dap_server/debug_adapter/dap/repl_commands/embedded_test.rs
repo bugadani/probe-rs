@@ -5,15 +5,20 @@ use crate::cmd::{
         debug_adapter::{
             dap::{
                 adapter::DebugAdapter,
-                repl_commands::{EvalResponse, EvalResult, ReplCommand, need_subcommand, unimplemented_repl},
+                dap_types::EvaluateArguments,
+                repl_commands::{
+                    EvalResponse, EvalResult, ReplCommand, need_subcommand,
+                },
                 repl_types::ReplCommandArgs,
             },
             protocol::ProtocolAdapter,
         },
-        server::session_data::SessionData,
+        server::core_data::CoreData,
     },
     run::EmbeddedTestElfInfo,
 };
+use std::future::Future;
+use std::pin::Pin;
 
 pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
     command: "test",
@@ -26,7 +31,7 @@ pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
             requires_target_halted: false,
             sub_commands: &[],
             args: &[],
-            handler: crate::cmd::dap_server::debug_adapter::dap::repl_commands::unimplemented_repl,
+            handler: list_tests,
         },
         ReplCommand {
             command: "run",
@@ -34,57 +39,77 @@ pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
             requires_target_halted: false,
             sub_commands: &[],
             args: &[ReplCommandArgs::Required("test_name")],
-            handler: unimplemented_repl,
+            handler: run_test,
         },
     ],
     args: &[],
     handler: need_subcommand,
 };
 
-pub(crate) async fn run_test_async<B: DapBackend, P: ProtocolAdapter>(
-    adapter: &mut DebugAdapter<P>,
-    session_data: &mut SessionData<B>,
-    core_index: usize,
-    test_name: &str,
-) -> EvalResult {
-    let Some(test_data) = session_data
-        .core_data
-        .iter()
-        .find(|c| c.core_index == core_index)
-        .and_then(|c| c.test_data.downcast_ref::<EmbeddedTestElfInfo>())
-    else {
-        return Err(DebuggerError::UserMessage(
-            "Internal error while trying to access test data".to_string(),
-        ));
-    };
+fn list_tests<'a>(
+    _backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    _command_arguments: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        let Some(test_data) = core_data
+            .test_data
+            .downcast_ref::<EmbeddedTestElfInfo>()
+        else {
+            return Err(DebuggerError::UserMessage(
+                "Internal error while trying to access test data".to_string(),
+            ));
+        };
+        let mut tests = test_data
+            .tests
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<&str>>();
+        tests.sort();
+        Ok(EvalResponse::Message(tests.join("\n")))
+    })
+}
 
-    let Some(test) = test_data.tests.iter().find(|test| test.name == test_name) else {
-        return Err(DebuggerError::UserMessage(format!(
-            "Test '{test_name}' not found"
-        )));
-    };
+fn run_test<'a>(
+    backend: &'a mut dyn DapBackend,
+    core_data: &'a mut CoreData,
+    test_name: &'a str,
+    _evaluate_arguments: &'a EvaluateArguments,
+    adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>> {
+    Box::pin(async move {
+        let Some(test_data) = core_data
+            .test_data
+            .downcast_ref::<EmbeddedTestElfInfo>()
+        else {
+            return Err(DebuggerError::UserMessage(
+                "Internal error while trying to access test data".to_string(),
+            ));
+        };
 
-    let Some(address) = test.address else {
-        return Err(DebuggerError::UserMessage(format!(
-            "Test '{test_name}' has no address"
-        )));
-    };
+        let Some(test) = test_data.tests.iter().find(|test| test.name == test_name) else {
+            return Err(DebuggerError::UserMessage(format!(
+                "Test '{test_name}' not found"
+            )));
+        };
 
-    adapter.reset_and_halt_core_async(session_data, core_index).await?;
-    session_data
-        .backend
-        .kickoff_test(core_index, address as u64)
-        .await
-        .map_err(DebuggerError::ProbeRs)?;
+        let Some(address) = test.address else {
+            return Err(DebuggerError::UserMessage(format!(
+                "Test '{test_name}' has no address"
+            )));
+        };
 
-    if let Some(cd) = session_data
-        .core_data
-        .iter_mut()
-        .find(|c| c.core_index == core_index)
-    {
-        cd.last_known_status = probe_rs::CoreStatus::Unknown;
-    }
-    adapter.all_cores_halted = false;
+        adapter.reset_and_halt_core_async(backend, core_data).await?;
+        backend
+            .kickoff_test(core_data.core_index, address as u64)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
 
-    Ok(EvalResponse::Message(String::new()))
+        core_data.last_known_status = probe_rs::CoreStatus::Unknown;
+        adapter.all_cores_halted = false;
+
+        Ok(EvalResponse::Message(String::new()))
+    })
 }

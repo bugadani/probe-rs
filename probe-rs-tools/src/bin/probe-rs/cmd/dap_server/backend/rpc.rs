@@ -22,6 +22,7 @@ use tokio::runtime::Handle;
 
 use super::{DapBackend, FlashingBackend};
 use crate::cmd::dap_server::DebuggerError;
+use async_trait::async_trait;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
     DisassembledInstruction, EvaluateArguments, EvaluateResponseBody, Scope, Source, Variable,
 };
@@ -191,6 +192,7 @@ pub struct CorePerAttachInfo {
     pub fp_register_count: Option<usize>,
 }
 
+#[async_trait(?Send)]
 impl DapBackend for RpcBackend {
     fn list_cores(&self) -> Vec<(usize, CoreType)> {
         self.cores.clone()

@@ -142,9 +142,9 @@ impl RttClientHandle {
     }
 
     /// Write data to a down channel.
-    pub(crate) async fn write_down_async<B: crate::cmd::dap_server::backend::DapBackend>(
+    pub(crate) async fn write_down_async(
         &mut self,
-        backend: &mut B,
+        backend: &mut dyn crate::cmd::dap_server::backend::DapBackend,
         core_index: usize,
         channel: u32,
         data: Vec<u8>,
