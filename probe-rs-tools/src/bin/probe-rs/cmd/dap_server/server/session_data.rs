@@ -953,16 +953,18 @@ impl<B: DapBackend> SessionData<B> {
     pub(crate) fn clean_up(&mut self, session_config: &SessionConfig) -> Result<(), DebuggerError> {
         for core_config in session_config.core_configs.iter() {
             if core_config.rtt_config.enabled {
-                let Ok(mut target_core) = self.attach_core(core_config.core_index) else {
-                    tracing::debug!(
-                        "Failed to attach to target core #{}. Cannot clean up.",
-                        core_config.core_index
-                    );
+                let Some(cd_idx) = self
+                    .core_data
+                    .iter()
+                    .position(|c| c.core_index == core_config.core_index)
+                else {
                     continue;
                 };
-
-                if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
-                    core_rtt.clean_up(&mut target_core.core)?;
+                if self.core_data[cd_idx].rtt_connection.is_some() {
+                    let mut core = self.backend.core(core_config.core_index)?;
+                    if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
+                        core_rtt.clean_up(&mut core)?;
+                    }
                 }
             }
         }
