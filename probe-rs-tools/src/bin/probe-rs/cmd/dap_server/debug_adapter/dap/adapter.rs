@@ -767,6 +767,18 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )?;
                 Ok(EvalResponse::Message("Debug Session Terminated".to_string()))
             }
+            "bt" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::backtrace::print_backtrace_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
+            "bt yaml" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::backtrace::save_backtrace_to_yaml_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)

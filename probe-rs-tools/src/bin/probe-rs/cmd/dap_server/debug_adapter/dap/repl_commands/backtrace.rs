@@ -7,14 +7,14 @@ use crate::cmd::dap_server::{
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
-            dap_types::EvaluateArguments,
-            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand},
+            repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, unimplemented_repl},
             repl_types::ReplCommandArgs,
         },
         protocol::ProtocolAdapter,
     },
-    server::core_data::CoreHandle,
+    server::session_data::SessionData,
 };
+use crate::cmd::dap_server::backend::DapBackend;
 use crate::rpc::functions::stack_trace::StackTraceFrame;
 use crate::util::cli::format_stack_frame;
 
@@ -30,32 +30,64 @@ static BACKTRACE: ReplCommand = ReplCommand {
         args: &[ReplCommandArgs::Required(
             "path (e.g. my_dir/backtrace.yaml)",
         )],
-        handler: save_backtrace_to_yaml,
+        handler: unimplemented_repl,
     }],
     help_text: "Print the backtrace of the current thread.",
     args: &[],
-    handler: print_backtrace,
+    handler: unimplemented_repl,
 };
 
-fn save_backtrace_to_yaml(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn print_backtrace_async<B: DapBackend, P: ProtocolAdapter>(
+    debug_adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
+    _command_arguments: &str,
+) -> EvalResult {
+    let colorize = Some(debug_adapter.supports_ansi_styling);
+
+    let Some(cd) = session_data
+        .core_data
+        .iter()
+        .find(|c| c.core_index == core_index)
+    else {
+        return Err(DebuggerError::UserMessage("No core data".to_string()));
+    };
+
+    let mut response_message = String::new();
+    for (i, frame) in cd.stack_frames.iter().enumerate() {
+        #[allow(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+        writeln!(
+            &mut response_message,
+            "    Frame {}: {}",
+            i + 1,
+            format_stack_frame(&StackTraceFrame::from(frame), colorize)
+        )
+        .unwrap();
+    }
+
+    Ok(EvalResponse::Message(response_message))
+}
+
+pub(crate) async fn save_backtrace_to_yaml_async<B: DapBackend, P: ProtocolAdapter>(
+    _debug_adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     command_arguments: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     let mut args = command_arguments.split_whitespace();
-
     let write_to_file = args.next().map(Path::new);
 
-    // Using the `insta` crate to serialize, because they add a couple of transformations to the yaml output,
-    // presumably to make it easier to read.
-    // In our case, we want this backtrace format to be comparable to the unwind tests
-    // in `probe-rs::debug::debuginfo`.
-    // The reason for this is that these 'live' backtraces are used to create the 'master' snapshots,
-    // which is used to compare against backtraces generated from coredumps.
+    let Some(cd) = session_data
+        .core_data
+        .iter()
+        .find(|c| c.core_index == core_index)
+    else {
+        return Err(DebuggerError::UserMessage("No core data".to_string()));
+    };
+
     use insta::_macro_support as insta_yaml;
     let yaml_data = insta_yaml::serialize_value(
-        &target_core.core_data.stack_frames,
+        &cd.stack_frames,
         insta_yaml::SerializationFormat::Yaml,
     );
 
@@ -66,32 +98,6 @@ fn save_backtrace_to_yaml(
     } else {
         yaml_data
     };
-
-    Ok(EvalResponse::Message(response_message))
-}
-
-fn print_backtrace(
-    target_core: &mut CoreHandle<'_>,
-    _: &str,
-    _: &EvaluateArguments,
-    debug_adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
-) -> EvalResult {
-    // Color gating follows the DAP-negotiated `supportsAnsiStyling` capability,
-    // NOT the server's local `PROBE_RS_COLOR` env var, so the server never
-    // overrules what the client can render.
-    let colorize = Some(debug_adapter.supports_ansi_styling);
-
-    let mut response_message = String::new();
-    for (i, frame) in target_core.core_data.stack_frames.iter().enumerate() {
-        #[allow(clippy::unwrap_used, reason = "Writing to a string is infallible")]
-        writeln!(
-            &mut response_message,
-            "    Frame {}: {}",
-            i + 1,
-            format_stack_frame(&StackTraceFrame::from(frame), colorize)
-        )
-        .unwrap();
-    }
 
     Ok(EvalResponse::Message(response_message))
 }
