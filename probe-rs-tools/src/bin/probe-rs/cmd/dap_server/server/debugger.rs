@@ -301,6 +301,12 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "threads" => {
+                debug_adapter
+                    .threads(session_data, core_index, &request)
+                    .await?;
+                DebugSessionStatus::Continue(Duration::ZERO)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
@@ -984,7 +990,6 @@ fn dispatch_request<P: ProtocolAdapter>(
                     .context("Could not deserialize arguments for RttWindowOpened")?;
             }
         }
-        "threads" => debug_adapter.threads(target_core, &request)?,
         "restart" => {
             target_core
                 .core

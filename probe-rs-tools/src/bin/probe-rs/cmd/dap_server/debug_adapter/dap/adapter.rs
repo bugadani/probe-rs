@@ -1436,13 +1436,14 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         )
     }
 
-    pub(crate) fn threads(
+    pub(crate) async fn threads<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
         if !self.configuration_is_done() {
-            let current_core_status = target_core.core.status()?;
+            let current_core_status = session_data.backend.status(core_index).await?;
 
             return
                 self.send_response::<()>(
@@ -1453,11 +1454,14 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 );
         }
 
-        // TODO: Implement actual thread resolution. For now, we just use the core id as the thread id.
-
         let threads = vec![Thread {
-            id: target_core.id() as i64,
-            name: target_core.core_data.target_name.clone(),
+            id: core_index as i64,
+            name: session_data
+                .core_data
+                .iter()
+                .find(|cd| cd.core_index == core_index)
+                .map(|cd| cd.target_name.clone())
+                .unwrap_or_default(),
         }];
         self.send_response(request, Ok(Some(ThreadsResponseBody { threads })))
     }
