@@ -8,7 +8,7 @@ use crate::cmd::dap_server::{
         },
         protocol::ProtocolAdapter,
     },
-    server::core_data::CoreHandle,
+    server::core_data::CoreData,
 };
 use linkme::distributed_slice;
 use std::fmt::Display;
@@ -35,7 +35,7 @@ pub(crate) mod rtt;
 //
 // TODO: Make this less confusing by having a different struct for this.
 pub(crate) type ReplHandler = fn(
-    target_core: &mut CoreHandle<'_>,
+    core_data: &mut CoreData,
     command_arguments: &str,
     evaluate_arguments: &EvaluateArguments,
     adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
@@ -97,7 +97,7 @@ static QUIT: ReplCommand = ReplCommand {
 };
 
 fn print_help(
-    target_core: &mut CoreHandle<'_>,
+    core_data: &mut CoreData,
     _: &str,
     _: &EvaluateArguments,
     _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
@@ -108,14 +108,14 @@ fn print_help(
     help_text.push_str("\n\t- Use <Hab> to insert the currently selected command.");
     help_text.push_str("\n\t- Note: This implementation is a subset of gdb commands, and is intended to behave similarly.");
     help_text.push_str("\nAvailable commands:");
-    for command in target_core.core_data.repl_commands.iter() {
+    for command in core_data.repl_commands.iter() {
         help_text.push_str(&format!("\n{command}"));
     }
     Ok(EvalResponse::Message(help_text))
 }
 
 fn need_subcommand(
-    _: &mut CoreHandle<'_>,
+    _: &mut CoreData,
     _: &str,
     _: &EvaluateArguments,
     _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
@@ -136,9 +136,10 @@ pub type EvalResult = Result<EvalResponse, DebuggerError>;
 /// Placeholder handler for REPL commands whose logic has been lifted to the
 /// async session-level dispatch (`DebugAdapter::dispatch_repl_command`). The
 /// `handler` field is required by `ReplCommand` for the help/completion
-/// table; this stub is never invoked for migrated commands.
+/// table; this stub is only reached for unmigrated commands without a
+/// dedicated async arm.
 pub(crate) fn unimplemented_repl(
-    _: &mut CoreHandle<'_>,
+    _: &mut CoreData,
     _: &str,
     _: &EvaluateArguments,
     _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,

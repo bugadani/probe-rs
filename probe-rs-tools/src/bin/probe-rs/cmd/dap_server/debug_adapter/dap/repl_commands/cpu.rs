@@ -41,7 +41,7 @@ static STEP: ReplCommand = ReplCommand {
 /// `handler` field is still required by `ReplCommand` for the help/completion
 /// table; this stub is never invoked for migrated commands.
 fn repl_stub(
-    _: &mut crate::cmd::dap_server::server::core_data::CoreHandle,
+    _: &mut crate::cmd::dap_server::server::core_data::CoreData,
     _: &str,
     _: &crate::cmd::dap_server::debug_adapter::dap::dap_types::EvaluateArguments,
     _: &mut crate::cmd::dap_server::debug_adapter::dap::adapter::DebugAdapter<

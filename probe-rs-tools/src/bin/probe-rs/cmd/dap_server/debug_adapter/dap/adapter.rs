@@ -9,7 +9,7 @@ use crate::cmd::run::EmbeddedTestElfInfo;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
-        dap::repl_commands::{EvalResponse, EvalResult},
+        dap::repl_commands::{EvalResponse, EvalResult, ReplCommand},
         protocol::{ProtocolAdapter, ProtocolHelper},
     },
     server::{
@@ -689,6 +689,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .trim_start();
 
         self.dispatch_repl_command(
+            repl_command,
             &command_root,
             session_data,
             core_index,
@@ -699,9 +700,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Async REPL dispatch. Migrated commands are handled inline (session-level,
-    /// no `CoreHandle`); unmigrated commands return an `Unimplemented` error.
+    /// no `CoreHandle`); unmigrated commands fall back to the command's
+    /// encapsulated sync `handler`, driven against `&mut CoreData` (no
+    /// `attach_core` / `backend.core()` round trip, so the RPC backend
+    /// needs no `block_on` bridge).
     async fn dispatch_repl_command<B: DapBackend>(
         &mut self,
+        leaf: ReplCommand,
         command_root: &str,
         session_data: &mut SessionData<B>,
         core_index: usize,
@@ -845,9 +850,19 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 )
                 .await
             }
-            _ => Err(DebuggerError::Other(anyhow!(
-                "REPL command '{command_root}' is not implemented"
-            ))),
+            _ => {
+                let cd_idx = session_data
+                    .core_data
+                    .iter()
+                    .position(|c| c.core_index == core_index)
+                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?;
+                (leaf.handler)(
+                    &mut session_data.core_data[cd_idx],
+                    argument_string,
+                    arguments,
+                    self,
+                )
+            }
         }
     }
 
