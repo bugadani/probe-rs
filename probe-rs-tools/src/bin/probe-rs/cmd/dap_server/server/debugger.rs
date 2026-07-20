@@ -307,6 +307,14 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
+            "restart" => {
+                session_data
+                    .backend
+                    .halt(core_index, Duration::from_millis(500))
+                    .await
+                    .context("Failed to halt core")?;
+                DebugSessionStatus::Restart(request)
+            }
             "continue" => {
                 debug_adapter
                     .r#continue(session_data, core_index, &request)
@@ -989,14 +997,6 @@ fn dispatch_request<P: ProtocolAdapter>(
                     .send_response::<()>(&request, Ok(None))
                     .context("Could not deserialize arguments for RttWindowOpened")?;
             }
-        }
-        "restart" => {
-            target_core
-                .core
-                .halt(Duration::from_millis(500))
-                .context("Failed to halt core")?;
-
-            return Ok(DebugSessionStatus::Restart(request));
         }
         "completions" => debug_adapter.completions(target_core, &request)?,
 
