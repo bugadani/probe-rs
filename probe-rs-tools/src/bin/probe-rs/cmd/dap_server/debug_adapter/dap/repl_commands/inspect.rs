@@ -5,7 +5,7 @@ use probe_rs_debug::{ObjectRef, VariableName};
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -61,7 +61,7 @@ static DUMP: ReplCommand = ReplCommand {
 };
 
 async fn print_variables<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     evaluate_arguments: &'a EvaluateArguments,
@@ -98,7 +98,7 @@ async fn print_variables<'a>(
 }
 
 async fn examine_memory<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     request_arguments: &'a EvaluateArguments,
@@ -196,7 +196,7 @@ async fn examine_memory<'a>(
 }
 
 async fn dump_core<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,

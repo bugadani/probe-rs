@@ -2,7 +2,7 @@ use probe_rs_debug::{ObjectRef, VariableName};
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::dap::repl_commands::{EvalResponse, EvalResult},
 };
 
@@ -100,7 +100,7 @@ pub(crate) fn get_local_variable(
 
 /// Read memory at the specified address (hex), using the [`GdbNuf`] specifiers to determine size and format.
 pub(crate) async fn memory_read_async(
-    backend: &mut dyn DapBackend,
+    backend: &mut RpcBackend,
     core_data: &crate::cmd::dap_server::server::core_data::CoreData,
     core_index: usize,
     address: u64,

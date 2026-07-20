@@ -3,7 +3,7 @@ use probe_rs::{CoreRegister, RegisterId, RegisterRole, RegisterValue};
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -75,7 +75,7 @@ pub(crate) fn register_matches(register: &CoreRegister, query: &str) -> bool {
 }
 
 async fn write_register<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,

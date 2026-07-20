@@ -1,4 +1,4 @@
-//! RPC-backed [`DapBackend`] implementation.
+//! RPC backend for the DAP server.
 //!
 //! [`RpcBackend`] proxies all session/core operations to a probe-rs RPC
 //! server through [`crate::rpc::client::RpcClient`]. The DAP session loop is
@@ -18,7 +18,7 @@ use probe_rs_debug::{
 };
 use tokio::runtime::Handle;
 
-use super::{DapBackend, FlashingBackend};
+use super::{RttRemoteSeed, SemihostingHandleResult, SemihostingUiEvent};
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
     DisassembledInstruction, EvaluateArguments, EvaluateResponseBody, Scope, Source, Variable,
@@ -38,11 +38,10 @@ use crate::rpc::{
         stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
     },
 };
-use async_trait::async_trait;
 
 /// Convert an [`anyhow::Error`] coming out of the RPC client into the
 /// [`probe_rs::Error`] surface the DAP server expects.
-fn rpc_err(err: anyhow::Error) -> Error {
+pub(crate) fn rpc_err(err: anyhow::Error) -> Error {
     // Typed `probe_rs::Error` values lose their variant when crossing the
     // RPC boundary (they come back as an opaque `anyhow::Error` carrying only
     // the `Display` text). Best-effort reconstruct the common variants call
@@ -60,7 +59,7 @@ fn rpc_err(err: anyhow::Error) -> Error {
 /// `DebugRegister` ordering and DWARF ids match what the server's `unwind`
 /// started from. This keeps client-side `get_stackframe_info` calls
 /// consistent with the server's.
-fn rebuild_debug_registers(
+pub(crate) fn rebuild_debug_registers(
     regs: &'static CoreRegisters,
     wire: &[WireDebugRegister],
 ) -> DebugRegisters {
@@ -77,7 +76,7 @@ fn rebuild_debug_registers(
 /// `probe_rs_debug` [`SourceLocation`]. The wire form encodes `LeftEdge`
 /// columns as `1`, so they round-trip as `Column(1)` — a minor, UI-irrelevant
 /// difference for the RPC path.
-fn from_wire_location(w: &WireSourceLocation) -> DebugSourceLocation {
+pub(crate) fn from_wire_location(w: &WireSourceLocation) -> DebugSourceLocation {
     DebugSourceLocation {
         path: TypedPath::derive(w.file.as_bytes()).to_path_buf(),
         line: w.line,
@@ -88,31 +87,29 @@ fn from_wire_location(w: &WireSourceLocation) -> DebugSourceLocation {
 
 /// A DAP backend that drives a remote target over RPC.
 pub struct RpcBackend {
-    handle: Handle,
-    client: RpcClient,
-    sessid: Key<Session>,
-    cores: Vec<(usize, CoreType)>,
+    pub(crate) handle: Handle,
+    pub(crate) client: RpcClient,
+    pub(crate) sessid: Key<Session>,
+    pub(crate) cores: Vec<(usize, CoreType)>,
     /// A real `Target` obtained from the local registry by name. Never used
     /// for probe I/O client-side; it only supplies `core_index_by_address`,
     /// memory-map metadata and similar introspection the DAP server performs
     /// locally.
-    target: Arc<Target>,
-    /// Per-core metadata cached at attach-time so static-property
-    /// [`DapBackend`] methods (register file, is_64_bit, ...) need no round
-    /// trip.
-    core_metadata: Vec<CoreMetadata>,
+    pub(crate) target: Arc<Target>,
+    /// Per-core metadata cached at attach-time so static-property methods
+    /// (register file, architecture, ...) need no round trip.
+    pub(crate) core_metadata: Vec<CoreMetadata>,
 }
 
 #[derive(Clone)]
-struct CoreMetadata {
-    architecture: Architecture,
-    registers: &'static CoreRegisters,
+pub(crate) struct CoreMetadata {
+    pub(crate) architecture: Architecture,
+    pub(crate) registers: &'static CoreRegisters,
 }
 
 impl RpcBackend {
     /// The RPC client backing this session, used for session-level
-    /// operations that are not expressible through the [`DapBackend`] trait
-    /// (eg. uploading a binary and issuing a flash over the wire).
+    /// operations that are not expressed as core round trips
     pub(crate) fn session_interface(&self) -> SessionInterface {
         SessionInterface::new(self.client.clone(), self.sessid)
     }
@@ -188,27 +185,25 @@ pub struct CorePerAttachInfo {
     pub fp_register_count: Option<usize>,
 }
 
-#[async_trait(?Send)]
-impl DapBackend for RpcBackend {
-    fn list_cores(&self) -> Vec<(usize, CoreType)> {
+impl RpcBackend {
+    pub(crate) fn list_cores(&self) -> Vec<(usize, CoreType)> {
         self.cores.clone()
     }
 
-    fn target(&self) -> &Target {
+    pub(crate) fn target(&self) -> &Target {
         &self.target
     }
 
-    fn core(&mut self, _core_index: usize) -> Result<Core<'_>, Error> {
-        // RPC drives the target via async `DapBackend` round trips and never
-        // hands out a synchronous `Core`. All remaining `backend.core()`
-        // callers are local-backend-only paths unreachable for an RPC
-        // session.
+    pub(crate) fn core(&mut self, _core_index: usize) -> Result<Core<'_>, Error> {
+        // RPC drives the target via async round trips and never hands out a
+        // synchronous `Core`. All remaining `backend.core()` callers are
+        // local-backend-only paths unreachable for an RPC session.
         unreachable!(
-            "RpcBackend::core is not used; RPC drives the target via async DapBackend methods"
+            "RpcBackend::core is not used; RPC drives the target via async round trips"
         )
     }
 
-    fn rtt_remote_seed(&self) -> Option<super::RttRemoteSeed> {
+    pub(crate) fn rtt_remote_seed(&self) -> Option<RttRemoteSeed> {
         Some(super::RttRemoteSeed {
             session: self.session_interface(),
         })
@@ -218,14 +213,14 @@ impl DapBackend for RpcBackend {
     /// `SemihostingCommand`; the server-side `core/handle_semihosting`
     /// endpoint re-derives the real command from the live core, so the
     /// client never needs target memory access here.
-    async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
+    pub(crate) async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         let wire: WireCoreStatus = client.status().await.map_err(rpc_err)?;
         Ok(wire.into())
     }
 
-    async fn set_hw_breakpoints(
+    pub(crate) async fn set_hw_breakpoints(
         &mut self,
         core_index: usize,
         addresses: Vec<u64>,
@@ -235,7 +230,7 @@ impl DapBackend for RpcBackend {
         client.set_hw_breakpoints(addresses).await.map_err(rpc_err)
     }
 
-    async fn clear_hw_breakpoints(
+    pub(crate) async fn clear_hw_breakpoints(
         &mut self,
         core_index: usize,
         addresses: Vec<u64>,
@@ -248,7 +243,7 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
-    async fn read_memory(
+    pub(crate) async fn read_memory(
         &mut self,
         core_index: usize,
         address: u64,
@@ -259,7 +254,7 @@ impl DapBackend for RpcBackend {
         client.read_bytes(address, count).await.map_err(rpc_err)
     }
 
-    async fn write_memory(
+    pub(crate) async fn write_memory(
         &mut self,
         core_index: usize,
         address: u64,
@@ -270,7 +265,7 @@ impl DapBackend for RpcBackend {
         client.write_memory_8(address, data).await.map_err(rpc_err)
     }
 
-    async fn halt(
+    pub(crate) async fn halt(
         &mut self,
         core_index: usize,
         timeout: Duration,
@@ -281,7 +276,7 @@ impl DapBackend for RpcBackend {
         Ok(info.into())
     }
 
-    async fn run(&mut self, core_index: usize) -> Result<(), Error> {
+    pub(crate) async fn run(&mut self, core_index: usize) -> Result<(), Error> {
         // The server-owned VariableCache is about to go stale: drop it so
         // stale variable handles are not served before the next halt
         // rebuilds them.
@@ -294,7 +289,7 @@ impl DapBackend for RpcBackend {
         client.run().await.map_err(rpc_err)
     }
 
-    async fn reset_and_halt(
+    pub(crate) async fn reset_and_halt(
         &mut self,
         core_index: usize,
         timeout: Duration,
@@ -305,20 +300,20 @@ impl DapBackend for RpcBackend {
         Ok(info.into())
     }
 
-    async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
+    pub(crate) async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.core_halted().await.map_err(rpc_err)
     }
 
-    async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
+    pub(crate) async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
         self.core_metadata
             .get(core_index)
             .map(|m| m.architecture)
             .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
     }
 
-    async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
+    pub(crate) async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
         self.core_metadata
             .get(core_index)
             .and_then(|m| m.registers.pc())
@@ -326,19 +321,19 @@ impl DapBackend for RpcBackend {
             .ok_or_else(|| Error::Other(format!("No PC register for core {core_index}")))
     }
 
-    async fn set_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+    pub(crate) async fn set_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.set_hw_breakpoint(address).await.map_err(rpc_err)
     }
 
-    async fn clear_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+    pub(crate) async fn clear_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.clear_hw_breakpoint(address).await.map_err(rpc_err)
     }
 
-    async fn set_variable(
+    pub(crate) async fn set_variable(
         &mut self,
         core_index: usize,
         parent_key: i64,
@@ -351,7 +346,7 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
-    async fn disassemble(
+    pub(crate) async fn disassemble(
         &mut self,
         core_index: usize,
         _debug_info: Option<&probe_rs_debug::DebugInfo>,
@@ -377,7 +372,7 @@ impl DapBackend for RpcBackend {
         Ok(wire.into_iter().map(Into::into).collect())
     }
 
-    async fn read_core_reg(
+    pub(crate) async fn read_core_reg(
         &mut self,
         core_index: usize,
         register_id: RegisterId,
@@ -391,7 +386,7 @@ impl DapBackend for RpcBackend {
         Ok(wire.into())
     }
 
-    async fn write_core_reg(
+    pub(crate) async fn write_core_reg(
         &mut self,
         core_index: usize,
         register_id: RegisterId,
@@ -405,7 +400,7 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
-    async fn read_core_registers(
+    pub(crate) async fn read_core_registers(
         &mut self,
         core_index: usize,
         ids: Vec<RegisterId>,
@@ -420,14 +415,14 @@ impl DapBackend for RpcBackend {
             .collect())
     }
 
-    fn register_file(
+    pub(crate) fn register_file(
         &mut self,
         core_index: usize,
     ) -> Result<&'static probe_rs::CoreRegisters, Error> {
         Ok(self.core_metadata[core_index].registers)
     }
 
-    async fn read_memory_8(
+    pub(crate) async fn read_memory_8(
         &mut self,
         core_index: usize,
         address: u64,
@@ -438,7 +433,7 @@ impl DapBackend for RpcBackend {
         client.read_memory_8(address, count).await.map_err(rpc_err)
     }
 
-    async fn dump_core(
+    pub(crate) async fn dump_core(
         &mut self,
         core_index: usize,
         ranges: Vec<std::ops::Range<u64>>,
@@ -461,12 +456,10 @@ impl DapBackend for RpcBackend {
         })
     }
 
-    async fn handle_semihosting(
+    pub(crate) async fn handle_semihosting(
         &mut self,
         core_index: usize,
-        _state: &mut crate::cmd::dap_server::server::core_data::ClientSemihostingState,
-    ) -> Result<crate::cmd::dap_server::backend::SemihostingHandleResult, Error> {
-        use crate::cmd::dap_server::backend::{SemihostingHandleResult, SemihostingUiEvent};
+    ) -> Result<SemihostingHandleResult, Error> {
         use crate::rpc::functions::core_ops::WireSemihostingUiEvent;
 
         let client =
@@ -497,13 +490,13 @@ impl DapBackend for RpcBackend {
         })
     }
 
-    async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+    pub(crate) async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.kickoff_test(address).await.map_err(rpc_err)
     }
 
-    async fn enable_vector_catch(
+    pub(crate) async fn enable_vector_catch(
         &mut self,
         core_index: usize,
         condition: VectorCatchCondition,
@@ -516,7 +509,40 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
-    async fn clear_rtt_blocks(
+    /// Halt if running, enable each requested condition, then resume if the
+    /// core was halted on entry.
+    pub(crate) async fn apply_vector_catch(
+        &mut self,
+        core_index: usize,
+        config: &crate::cmd::dap_server::server::configuration::CoreConfig,
+    ) -> Result<(), Error> {
+        let needs_vector_catch =
+            config.catch_hardfault || config.catch_reset || config.catch_svc || config.catch_hlt;
+        if !needs_vector_catch {
+            return Ok(());
+        }
+        let was_halted = self.core_halted(core_index).await?;
+        if !was_halted {
+            self.halt(core_index, Duration::from_millis(100)).await?;
+        }
+        let requested: [(bool, VectorCatchCondition); 4] = [
+            (config.catch_hardfault, VectorCatchCondition::HardFault),
+            (config.catch_reset, VectorCatchCondition::CoreReset),
+            (config.catch_svc, VectorCatchCondition::Svc),
+            (config.catch_hlt, VectorCatchCondition::Hlt),
+        ];
+        for (enabled, condition) in requested {
+            if enabled && let Err(e) = self.enable_vector_catch(core_index, condition).await {
+                tracing::error!("Failed to enable_vector_catch: {:?}", e);
+            }
+        }
+        if was_halted {
+            self.run(core_index).await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn clear_rtt_blocks(
         &mut self,
         core_index: usize,
         scan: &probe_rs::rtt::ScanRegion,
@@ -528,7 +554,7 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
-    async fn debug_step(
+    pub(crate) async fn debug_step(
         &mut self,
         core_index: usize,
         mode: SteppingMode,
@@ -556,7 +582,7 @@ impl DapBackend for RpcBackend {
     /// rebuild lightweight [`StackFrame`]s with `local_variables: None` —
     /// subsequent `scopes`/`variables` requests resolve server-side. Source
     /// locations are taken from the wire (the server already resolved them).
-    async fn unwind_stack(
+    pub(crate) async fn unwind_stack(
         &mut self,
         core_index: usize,
         program_binary: Option<&Path>,
@@ -622,7 +648,7 @@ impl DapBackend for RpcBackend {
         Ok(frames)
     }
 
-    async fn scopes(
+    pub(crate) async fn scopes(
         &mut self,
         core_index: usize,
         frame_id: u32,
@@ -651,7 +677,7 @@ impl DapBackend for RpcBackend {
         ))
     }
 
-    async fn variables(
+    pub(crate) async fn variables(
         &mut self,
         core_index: usize,
         variables_reference: u32,
@@ -681,7 +707,7 @@ impl DapBackend for RpcBackend {
         ))
     }
 
-    async fn evaluate(
+    pub(crate) async fn evaluate(
         &mut self,
         core_index: usize,
         arguments: &EvaluateArguments,
@@ -713,10 +739,8 @@ impl DapBackend for RpcBackend {
             value_location_reference: None,
         }))
     }
-}
 
-impl FlashingBackend for RpcBackend {
-    async fn flash_binary(
+    pub(crate) async fn flash_binary(
         &mut self,
         path_to_elf: &Path,
         config: &FlashingConfig,

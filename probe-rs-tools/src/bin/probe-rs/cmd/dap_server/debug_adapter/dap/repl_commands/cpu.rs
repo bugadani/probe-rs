@@ -1,5 +1,5 @@
 use crate::cmd::dap_server::{
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -46,7 +46,7 @@ static STEP: ReplCommand = ReplCommand {
 };
 
 async fn continue_repl<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -57,7 +57,7 @@ async fn continue_repl<'a>(
 }
 
 async fn reset_repl<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -70,7 +70,7 @@ async fn reset_repl<'a>(
 }
 
 async fn step_repl<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,

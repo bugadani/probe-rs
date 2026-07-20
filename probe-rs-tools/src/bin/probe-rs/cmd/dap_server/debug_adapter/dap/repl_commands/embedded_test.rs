@@ -1,7 +1,7 @@
 use crate::cmd::{
     dap_server::{
         DebuggerError,
-        backend::DapBackend,
+        backend::rpc::RpcBackend,
         debug_adapter::{
             dap::{
                 adapter::DebugAdapter,
@@ -43,7 +43,7 @@ pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
 };
 
 async fn list_tests<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -64,7 +64,7 @@ async fn list_tests<'a>(
 }
 
 async fn run_test<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     test_name: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,

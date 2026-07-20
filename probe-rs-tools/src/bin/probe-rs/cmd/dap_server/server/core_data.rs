@@ -1,6 +1,4 @@
 use std::any::Any;
-use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::ops::Range;
 
 use super::session_data;
@@ -56,23 +54,8 @@ pub struct CoreData {
     /// Cache of the server-side RTT client handle between attach attempts,
     /// so we only call `create_rtt` once per core (RPC backend).
     pub rtt_remote_handle: Option<Key<RttClient>>,
-    pub semihosting_state: ClientSemihostingState,
     pub repl_commands: Vec<ReplCommand>,
     pub test_data: Box<dyn Any>,
-}
-
-/// Client-owned per-core semihosting file state (used by the local backend;
-/// for RPC the state is server-owned and this is unused).
-pub struct ClientSemihostingState {
-    pub handles: HashMap<u32, SemihostingFile>,
-    pub next_handle: u32,
-}
-
-/// File descriptor for files opened by the target.
-pub struct SemihostingFile {
-    pub(crate) handle: NonZeroU32,
-    pub(crate) path: String,
-    pub(crate) mode: &'static str,
 }
 
 /// [CoreHandle] provides handles to various data structures required to debug a single instance of a core. The actual state is stored in [session_data::SessionData].

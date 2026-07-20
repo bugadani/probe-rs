@@ -1,7 +1,7 @@
 use super::{dap_types::EvaluateArguments, repl_types::*};
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -28,12 +28,12 @@ pub(crate) mod rtt;
 
 /// Returns a boxed future so handlers can `.await` backend round trips without
 /// a `block_on` bridge, while still being stored as a plain `fn` pointer in
-/// the static [`REPL_COMMANDS`] table — which is shared across all backends,
-/// hence `&mut dyn DapBackend` rather than a generic `B: DapBackend`.
+/// the static [`REPL_COMMANDS`] table — which is shared across all sessions,
+/// hence `&mut RpcBackend` rather than a generic `B`.
 //
 // TODO: Make this less confusing by having a different struct for this.
 pub(crate) type ReplHandler = for<'a> fn(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     evaluate_arguments: &'a EvaluateArguments,
@@ -45,7 +45,7 @@ pub(crate) type ReplHandler = for<'a> fn(
 macro_rules! async_fn {
     ($handler:ident) => {{
         fn wrapper<'a>(
-            backend: &'a mut dyn DapBackend,
+            backend: &'a mut RpcBackend,
             core_data: &'a mut CoreData,
             command_arguments: &'a str,
             evaluate_arguments: &'a EvaluateArguments,
@@ -121,7 +121,7 @@ static QUIT: ReplCommand = ReplCommand {
 };
 
 async fn print_help<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
@@ -142,7 +142,7 @@ async fn print_help<'a>(
 }
 
 async fn need_subcommand<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     _core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
@@ -156,7 +156,7 @@ async fn need_subcommand<'a>(
 
 /// Halt the target and emit the `terminated` event (REPL `quit`).
 async fn quit_repl<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,
@@ -187,7 +187,7 @@ pub type EvalResult = Result<EvalResponse, DebuggerError>;
 /// Placeholder handler for unimplemented commands; required so the command
 /// appears in the help/completion table.
 pub(crate) async fn unimplemented_repl<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     _core_data: &'a mut CoreData,
     _: &'a str,
     _: &'a EvaluateArguments,

@@ -8,7 +8,6 @@ use super::{
 use crate::{
     cmd::dap_server::{
         DebuggerError,
-        backend::{DapBackend, FlashingBackend, rpc::RpcBackend},
         debug_adapter::{
             dap::{
                 adapter::{DebugAdapter, get_arguments},
@@ -103,9 +102,9 @@ impl Debugger {
     ///   - If the [`super::core_data::CoreData::last_known_status`] is `Halted(_)`, then we stop polling the Probe until the next DAP-Client request attempts an action
     ///   - If the `new_status` is an Err, then the probe is no longer available, and we  end the debugging session
     ///   - If the `new_status` is `Running`, then we have to poll on a regular basis, until the Probe stops for good reasons like breakpoints, or bad reasons like panics.
-    pub(crate) async fn process_next_request<P: ProtocolAdapter, B: DapBackend>(
+    pub(crate) async fn process_next_request<P: ProtocolAdapter>(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         debug_adapter: &mut DebugAdapter<P>,
     ) -> Result<DebugSessionStatus, DebuggerError> {
         self.debug_logger.flush_to_dap(debug_adapter)?;
@@ -118,9 +117,9 @@ impl Debugger {
         }
     }
 
-    async fn handle_request<P: ProtocolAdapter, B: DapBackend>(
+    async fn handle_request<P: ProtocolAdapter>(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         debug_adapter: &mut DebugAdapter<P>,
         request: Request,
     ) -> Result<DebugSessionStatus, DebuggerError> {
@@ -336,9 +335,9 @@ impl Debugger {
         Ok(debug_session)
     }
 
-    async fn no_request_poll<P: ProtocolAdapter, B: DapBackend>(
+    async fn no_request_poll<P: ProtocolAdapter>(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         debug_adapter: &mut DebugAdapter<P>,
     ) -> Result<DebugSessionStatus, DebuggerError> {
         let _poll_span = tracing::trace_span!("Polling for core status").entered();
@@ -389,10 +388,10 @@ impl Debugger {
     ) -> Result<(), DebuggerError> {
         let timestamp_offset = self.timestamp_offset;
         let result = self
-            .debug_session_impl::<P, RpcBackend, _>(
+            .debug_session_impl::<P, _>(
                 debug_adapter,
                 async move |config: &mut SessionConfig| {
-                    SessionData::<RpcBackend>::new_remote(client, config, timestamp_offset).await
+                    SessionData::new_remote(client, config, timestamp_offset).await
                 },
             )
             .await;
@@ -408,15 +407,14 @@ impl Debugger {
     /// Generic driver for a DAP session. Both entry points funnel through this
     /// method, supplying a [`SessionData`] factory appropriate for their
     /// backend.
-    async fn debug_session_impl<P, B, F>(
+    async fn debug_session_impl<P, F>(
         &mut self,
         mut debug_adapter: DebugAdapter<P>,
         make_session: F,
     ) -> Result<(), DebuggerError>
     where
         P: ProtocolAdapter,
-        B: FlashingBackend,
-        F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData<B>, DebuggerError>,
+        F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData, DebuggerError>,
     {
         // Handle the initialize + attach/launch sequence before entering the
         // request loop.
@@ -498,15 +496,14 @@ impl Debugger {
     /// This function then handles this request and returns the session data.
     ///
     /// The function exits with no session if a "disconnect" request is received.
-    async fn start_session<P, B, F>(
+    async fn start_session<P, F>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
         make_session: F,
-    ) -> Result<Option<SessionData<B>>, DebuggerError>
+    ) -> Result<Option<SessionData>, DebuggerError>
     where
         P: ProtocolAdapter,
-        B: FlashingBackend,
-        F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData<B>, DebuggerError>,
+        F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData, DebuggerError>,
     {
         loop {
             // Wait for a request
@@ -558,17 +555,16 @@ impl Debugger {
 
     /// Process launch or attach request
     #[tracing::instrument(skip_all, name = "Handle Launch/Attach Request")]
-    async fn handle_launch_attach<P, B, F>(
+    async fn handle_launch_attach<P, F>(
         &mut self,
         launch_attach_request: &Request,
         requested_target_session_type: TargetSessionType,
         debug_adapter: &mut DebugAdapter<P>,
         make_session: F,
-    ) -> Result<SessionData<B>, DebuggerError>
+    ) -> Result<SessionData, DebuggerError>
     where
         P: ProtocolAdapter,
-        B: FlashingBackend,
-        F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData<B>, DebuggerError>,
+        F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData, DebuggerError>,
     {
         self.config = get_arguments(debug_adapter, launch_attach_request)?;
 
@@ -671,10 +667,10 @@ impl Debugger {
     }
 
     #[tracing::instrument(skip_all)]
-    async fn restart<P: ProtocolAdapter, B: FlashingBackend>(
+    async fn restart<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         request: &Request,
     ) -> Result<(), DebuggerError> {
         let Some(target_core_config) = self.config.core_configs.first() else {
@@ -748,15 +744,15 @@ impl Debugger {
     /// Flash the given binary, and report the progress to the
     /// debug adapter.
     //
-    // The actual flashing is delegated to [`FlashingBackend::flash_binary`] so
+    // The actual flashing is delegated to [`RpcBackend::flash_binary`] so
     // that local `Session` and remote `RpcBackend` can share this DAP-level
     // progress plumbing.
-    async fn flash<P: ProtocolAdapter, B: FlashingBackend>(
+    async fn flash<P: ProtocolAdapter>(
         config: &SessionConfig,
         path_to_elf: &Path,
         debug_adapter: &mut DebugAdapter<P>,
         launch_attach_request: &Request,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
     ) -> Result<(), DebuggerError> {
         debug_adapter.log_to_console(format!(
             "FLASHING: Starting write of {} to device memory",

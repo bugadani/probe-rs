@@ -5,7 +5,7 @@ use typed_path::TypedPath;
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -103,7 +103,7 @@ fn source_from_path(path: &str) -> Source {
 }
 
 async fn create_breakpoint<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -243,7 +243,7 @@ async fn create_breakpoint<'a>(
 }
 
 async fn clear_breakpoint<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,

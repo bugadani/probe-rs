@@ -2,7 +2,7 @@ use linkme::distributed_slice;
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -38,7 +38,7 @@ static RTT_COMMANDS: ReplCommand = ReplCommand {
 };
 
 async fn rtt_write<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     input: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,

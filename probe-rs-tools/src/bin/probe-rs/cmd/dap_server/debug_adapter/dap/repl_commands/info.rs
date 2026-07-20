@@ -6,7 +6,7 @@ use probe_rs_debug::VariableName;
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -77,7 +77,7 @@ static INFO: ReplCommand = ReplCommand {
 };
 
 async fn print_registers<'a>(
-    backend: &'a mut dyn DapBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -131,7 +131,7 @@ async fn print_registers<'a>(
 }
 
 async fn print_breakpoints<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -156,7 +156,7 @@ async fn print_breakpoints<'a>(
 }
 
 async fn info_locals<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     evaluate_arguments: &'a EvaluateArguments,

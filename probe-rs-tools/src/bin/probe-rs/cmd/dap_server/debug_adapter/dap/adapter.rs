@@ -4,7 +4,7 @@ use super::{
     repl_commands_helpers::{build_expanded_commands, command_completions},
     request_helpers::{get_dap_source, get_svd_variable_reference, get_variable_reference},
 };
-use crate::cmd::dap_server::backend::DapBackend;
+use crate::cmd::dap_server::backend::rpc::RpcBackend;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
@@ -99,9 +99,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.configuration_done
     }
 
-    pub(crate) async fn pause<B: DapBackend>(
+    pub(crate) async fn pause(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -128,9 +128,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, response)
     }
 
-    pub(crate) async fn disconnect<B: DapBackend>(
+    pub(crate) async fn disconnect(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -149,9 +149,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response::<DisconnectResponse>(request, Ok(None))
     }
 
-    pub(crate) async fn read_memory<B: DapBackend>(
+    pub(crate) async fn read_memory(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -202,9 +202,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         }
     }
 
-    pub(crate) async fn write_memory<B: DapBackend>(
+    pub(crate) async fn write_memory(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -265,9 +265,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
     /// `scopes` handler: tries the backend (RPC) first, else falls back to
     /// the local `CoreHandle` path.
-    pub(crate) async fn scopes<B: DapBackend>(
+    pub(crate) async fn scopes(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -289,9 +289,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
     /// `variables` handler: tries the backend (RPC) first, else falls back
     /// to the local `CoreHandle` path.
-    pub(crate) async fn variables<B: DapBackend>(
+    pub(crate) async fn variables(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -314,9 +314,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// `evaluate` handler: tries the backend (RPC) first for watch/hover
     /// expressions, else falls back to the local `CoreHandle` path (which
     /// also handles `repl`/`clipboard`).
-    pub(crate) async fn evaluate<B: DapBackend>(
+    pub(crate) async fn evaluate(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -598,9 +598,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(response_body)))
     }
 
-    async fn handle_repl<B: DapBackend>(
+    async fn handle_repl(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         arguments: &EvaluateArguments,
     ) -> EvalResult {
@@ -655,11 +655,11 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
     /// Async REPL dispatch: resolves the core's [`CoreData`] and hands off to
     /// the [`ReplCommand`] handler, which `.await`s the backend directly.
-    async fn dispatch_repl_command<B: DapBackend>(
+    async fn dispatch_repl_command(
         &mut self,
         leaf: ReplCommand,
         _command_root: &str,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         argument_string: &str,
         arguments: &EvaluateArguments,
@@ -680,9 +680,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
-    pub(crate) async fn rtt_window_opened<B: DapBackend>(
+    pub(crate) async fn rtt_window_opened(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -712,9 +712,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
-    pub(crate) async fn completions<B: DapBackend>(
+    pub(crate) async fn completions(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -735,9 +735,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Set the variable with the given name in the variable container to a new value.
-    pub(crate) async fn set_variable<B: DapBackend>(
+    pub(crate) async fn set_variable(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -1058,9 +1058,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     #[tracing::instrument(level = "debug", skip_all, name = "Handle configuration done")]
-    pub(crate) async fn configuration_done<B: DapBackend>(
+    pub(crate) async fn configuration_done(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -1119,9 +1119,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response::<()>(request, Ok(None))
     }
 
-    pub(crate) async fn set_breakpoints<B: DapBackend>(
+    pub(crate) async fn set_breakpoints(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -1319,9 +1319,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(breakpoint_body)))
     }
 
-    pub(crate) async fn set_instruction_breakpoints<B: DapBackend>(
+    pub(crate) async fn set_instruction_breakpoints(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -1499,9 +1499,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         )
     }
 
-    pub(crate) async fn threads<B: DapBackend>(
+    pub(crate) async fn threads(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -1529,9 +1529,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(ThreadsResponseBody { threads })))
     }
 
-    pub(crate) async fn stack_trace<B: DapBackend>(
+    pub(crate) async fn stack_trace(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -1765,9 +1765,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     ///   - Reached the required number of instructions.
     ///   - We encounter 'unreadable' memory on the target.
     ///     - In this case, pad the results with, as the api requires, "implementation defined invalid instructions"
-    pub(crate) async fn disassemble<B: DapBackend>(
+    pub(crate) async fn disassemble(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -2035,9 +2035,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         }
     }
 
-    pub(crate) async fn r#continue<B: DapBackend>(
+    pub(crate) async fn r#continue(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -2074,9 +2074,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// Steps through the code at the requested granularity.
     /// - [SteppingMode::StepInstruction]: If MS DAP [SteppingGranularity::Instruction] (usually sent from the disassembly view)
     /// - [SteppingMode::OverStatement]: In all other cases.
-    pub(crate) async fn next<B: DapBackend>(
+    pub(crate) async fn next(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -2094,9 +2094,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// Steps through the code at the requested granularity.
     /// - [SteppingMode::StepInstruction]: If MS DAP [SteppingGranularity::Instruction] (usually sent from the disassembly view)
     /// - [SteppingMode::IntoStatement]: In all other cases.
-    pub(crate) async fn step_in<B: DapBackend>(
+    pub(crate) async fn step_in(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -2113,9 +2113,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// Steps through the code at the requested granularity.
     /// - [SteppingMode::StepInstruction]: If MS DAP [SteppingGranularity::Instruction] (usually sent from the disassembly view)
     /// - [SteppingMode::OutOfStatement]: In all other cases.
-    pub(crate) async fn step_out<B: DapBackend>(
+    pub(crate) async fn step_out(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<()> {
@@ -2131,10 +2131,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Common code for the `next`, `step_in`, and `step_out` methods.
-    async fn debug_step<B: DapBackend>(
+    async fn debug_step(
         &mut self,
         stepping_mode: SteppingMode,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: &Request,
     ) -> Result<(), anyhow::Error> {
@@ -2158,9 +2158,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     /// optionally resume via `continue_impl_async`, emitting the
     /// `stopped`/`continued` DAP events. The per-core `reset_and_halt_core`
     /// remains for the REPL path until cluster 6.8.
-    pub(crate) async fn restart_async<B: DapBackend>(
+    pub(crate) async fn restart_async(
         &mut self,
-        session_data: &mut SessionData<B>,
+        session_data: &mut SessionData,
         core_index: usize,
         request: Option<&Request>,
     ) -> Result<()> {
@@ -2452,7 +2452,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
     /// Halt the core (REPL/DAP `pause`).
     pub(crate) async fn pause_impl_async(
         &mut self,
-        backend: &mut dyn DapBackend,
+        backend: &mut RpcBackend,
         core_data: &mut CoreData,
     ) -> Result<CoreInformation> {
         let core_index = core_data.core_index;
@@ -2478,7 +2478,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
     /// Resume the core (REPL `c` / DAP `continue`).
     pub(crate) async fn continue_impl_async(
         &mut self,
-        backend: &mut dyn DapBackend,
+        backend: &mut RpcBackend,
         core_data: &mut CoreData,
     ) -> Result<bool> {
         backend.run(core_data.core_index).await?;
@@ -2491,7 +2491,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
     /// hardware breakpoints on RISC-V / Xtensa.
     pub(crate) async fn reset_and_halt_core_async(
         &mut self,
-        backend: &mut dyn DapBackend,
+        backend: &mut RpcBackend,
         core_data: &mut CoreData,
     ) -> Result<CoreInformation> {
         let core_index = core_data.core_index;
@@ -2526,7 +2526,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
     pub(crate) async fn step_impl_async(
         &mut self,
         stepping_mode: SteppingMode,
-        backend: &mut dyn DapBackend,
+        backend: &mut RpcBackend,
         core_data: &mut CoreData,
     ) -> Result<u64> {
         let core_index = core_data.core_index;

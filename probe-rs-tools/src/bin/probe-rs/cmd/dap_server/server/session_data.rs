@@ -11,7 +11,7 @@ use crate::{
     cmd::{
         dap_server::{
             DebuggerError,
-            backend::{DapBackend, rpc::RpcBackend},
+            backend::rpc::RpcBackend,
             debug_adapter::{
                 dap::{
                     adapter::DebugAdapter,
@@ -33,7 +33,7 @@ use probe_rs::{
     rtt::{ScanRegion, find_rtt_control_block_in_raw_file},
 };
 use probe_rs_debug::{ColumnType, SourceLocation, VerifiedBreakpoint, debug_info::DebugInfo};
-use std::{any::Any, collections::HashMap, env::set_current_dir, path::Path};
+use std::{any::Any, env::set_current_dir, path::Path};
 use time::UtcOffset;
 
 use crate::util::rtt::{self, DataFormat};
@@ -68,13 +68,11 @@ pub struct ActiveBreakpoint {
 /// To get access to the [CoreHandle] for a specific [probe_rs::Core], the
 /// TODO: Adjust [SessionConfig] to allow multiple cores (and if appropriate, their binaries) to be specified.
 ///
-/// Generic over the [`DapBackend`] that provides access to the target. The
-/// The DAP server is generic over the [`DapBackend`] that provides access to
-/// the target. In production this is always [`RpcBackend`]: even local
-/// sessions drive the target through the in-process RPC server, so the
-/// debugger never touches a [`probe_rs::Session`] directly.
-pub(crate) struct SessionData<B: DapBackend = RpcBackend> {
-    pub(crate) backend: B,
+/// The DAP server drives the target through an [`RpcBackend`]: even local
+/// sessions run through the in-process RPC server, so the debugger never
+/// touches a [`probe_rs::Session`] directly.
+pub(crate) struct SessionData {
+    pub(crate) backend: RpcBackend,
     /// [SessionData] will manage one [CoreData] per target core, that is also present in [SessionConfig::core_configs]
     pub(crate) core_data: Vec<CoreData>,
 
@@ -84,7 +82,7 @@ pub(crate) struct SessionData<B: DapBackend = RpcBackend> {
     timestamp_offset: UtcOffset,
 }
 
-impl SessionData<RpcBackend> {
+impl SessionData {
     /// Build a [`SessionData`] backed by an [`RpcBackend`] against the
     /// supplied [`RpcClient`].
     ///
@@ -195,7 +193,7 @@ impl SessionData<RpcBackend> {
     }
 }
 
-impl<B: DapBackend> SessionData<B> {
+impl SessionData {
     pub(crate) fn load_rtt_location(
         &mut self,
         config: &configuration::SessionConfig,
@@ -801,7 +799,7 @@ impl<B: DapBackend> SessionData<B> {
                 }
             }
 
-            // Semihosting handling runs via `DapBackend::handle_semihosting`
+            // Semihosting handling runs via `RpcBackend::handle_semihosting`
             // (local: drives the live `Core` + client-owned state; RPC:
             // server-owned state). The backend returns UI events (RTT
             // window open, console/RTT output) that we replay on the DAP
@@ -809,7 +807,7 @@ impl<B: DapBackend> SessionData<B> {
             if let Some(_command) = semihosting_command {
                 let result = self
                     .backend
-                    .handle_semihosting(core_index, &mut self.core_data[cd_idx].semihosting_state)
+                    .handle_semihosting(core_index)
                     .await?;
                 for event in result.events {
                     match event {
@@ -880,7 +878,7 @@ impl<B: DapBackend> SessionData<B> {
                         Some(debug_info.create_static_scope_cache());
                 }
 
-                // Defer the unwind: `DapBackend::unwind_stack` borrows
+                // Defer the unwind: `RpcBackend::unwind_stack` borrows
                 // `&mut self.backend`, which is free now (the scoped
                 // `CoreHandle` is dropped).
                 needs_unwind.push(core_index);
@@ -1030,13 +1028,6 @@ fn build_core_data(
         rtt_client: None,
         rtt_remote_seed: None,
         rtt_remote_handle: None,
-
-        // We're abusing the RTT window machinery here for simplicity.
-        // Let's assume there are less than 1024 RTT channels.
-        semihosting_state: crate::cmd::dap_server::server::core_data::ClientSemihostingState {
-            handles: HashMap::new(),
-            next_handle: 1024,
-        },
         repl_commands,
         test_data,
     })
@@ -1046,8 +1037,8 @@ fn build_core_data(
 /// single-core invariant, filter config entries down to cores that
 /// actually exist on the target, apply vector-catch settings, and build
 /// the [`CoreData`] vector.
-fn initialize_core_data<B: DapBackend>(
-    backend: &mut B,
+fn initialize_core_data(
+    backend: &mut RpcBackend,
     config: &configuration::SessionConfig,
 ) -> Result<Vec<CoreData>, DebuggerError> {
     if config.core_configs.len() != 1 {

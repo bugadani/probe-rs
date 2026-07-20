@@ -4,7 +4,7 @@ use linkme::distributed_slice;
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::DapBackend,
+    backend::rpc::RpcBackend,
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -39,7 +39,7 @@ static BACKTRACE: ReplCommand = ReplCommand {
 };
 
 async fn print_backtrace<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -63,7 +63,7 @@ async fn print_backtrace<'a>(
 }
 
 async fn save_backtrace_to_yaml<'a>(
-    _backend: &'a mut dyn DapBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
