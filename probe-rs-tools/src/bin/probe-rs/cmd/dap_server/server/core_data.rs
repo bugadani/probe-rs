@@ -20,8 +20,7 @@ use crate::{
         debug_adapter::{
             dap::{
                 adapter::DebugAdapter,
-                core_status::DapStatus,
-                dap_types::{Source, StoppedEventBody},
+                dap_types::Source,
             },
             protocol::ProtocolAdapter,
         },
@@ -647,28 +646,6 @@ impl CoreHandle<'_> {
 
         self.core.run()?;
         Ok(CoreStatus::Running)
-    }
-
-    pub fn notify_halted<P: ProtocolAdapter>(
-        &mut self,
-        debug_adapter: &mut DebugAdapter<P>,
-        status: CoreStatus,
-    ) -> Result<(), DebuggerError> {
-        let program_counter = self.core.read_core_reg(self.core.program_counter()).ok();
-        let (reason, description) = status.short_long_status(program_counter);
-        let event_body = Some(StoppedEventBody {
-            reason: reason.to_string(),
-            description: Some(description),
-            thread_id: Some(self.id() as i64),
-            preserve_focus_hint: Some(false),
-            text: None,
-            all_threads_stopped: Some(debug_adapter.all_cores_halted),
-            hit_breakpoint_ids: None,
-        });
-        debug_adapter.send_event("stopped", event_body)?;
-        tracing::trace!("Notified DAP client that the core halted: {:?}", status);
-
-        Ok(())
     }
 
     pub(crate) fn reapply_breakpoints(&mut self) {

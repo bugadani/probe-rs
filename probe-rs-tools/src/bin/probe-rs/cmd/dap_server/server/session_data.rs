@@ -498,7 +498,12 @@ impl<B: DapBackend> SessionData<B> {
             // `&mut self.backend` borrow is released before the deferred
             // unwind / next iteration.
             let rtt_enabled = core_config.rtt_config.enabled;
-            if rtt_enabled || semihosting_command.is_some() {
+
+            // RTT polling needs a live `Core` (local path reads target
+            // memory; remote path drives the server-side `RttClient`). Scoped
+            // so the `&mut self.backend` borrow is released before the
+            // deferred unwind / next iteration.
+            if rtt_enabled {
                 let Ok(mut target_core) = self.attach_core(core_index) else {
                     tracing::debug!(
                         "Failed to attach to target core #{}. Cannot poll for RTT data.",
@@ -507,50 +512,54 @@ impl<B: DapBackend> SessionData<B> {
                     continue;
                 };
 
-                // If appropriate, check for RTT data.
-                if rtt_enabled {
-                    if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
-                        // We should poll the target for rtt data, and if any RTT data was processed, we clear the flag.
-                        if core_rtt
-                            .process_rtt_data(debug_adapter, &mut target_core.core)
-                            .await
-                        {
-                            suggest_delay_required = false;
-                        }
-                    } else if debug_adapter.configuration_is_done() {
-                        // Make sure we only attempt attaching when we're ready.
-                        if let Err(error) = target_core
-                            .attach_to_rtt(
-                                debug_adapter,
-                                core_config.program_binary.as_deref(),
-                                &core_config.rtt_config,
-                                timestamp_offset,
-                            )
-                            .await
-                        {
-                            debug_adapter
-                                .show_error_message(&DebuggerError::Other(error))
-                                .ok();
-                        }
-                    }
-                }
-
-                if let Some(command) = semihosting_command {
-                    // Handle semihosting commands. If the command is handled,
-                    // the core will be resumed, so we need to update the status.
-                    // If the command is not handled, the core will remain halted and we
-                    // need to notify the UI.
-                    current_core_status = target_core.handle_semihosting(debug_adapter, command)?;
-
-                    if current_core_status.is_halted() {
-                        // poll_core did not notify about the halt, so we need to do it manually.
-                        target_core.notify_halted(debug_adapter, current_core_status)?;
-                    } else {
-                        // If the semihosting command was handled, we do not need to suggest a delay.
+                if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
+                    // We should poll the target for rtt data, and if any RTT data was processed, we clear the flag.
+                    if core_rtt
+                        .process_rtt_data(debug_adapter, &mut target_core.core)
+                        .await
+                    {
                         suggest_delay_required = false;
                     }
-                    target_core.core_data.last_known_status = current_core_status;
+                } else if debug_adapter.configuration_is_done() {
+                    // Make sure we only attempt attaching when we're ready.
+                    if let Err(error) = target_core
+                        .attach_to_rtt(
+                            debug_adapter,
+                            core_config.program_binary.as_deref(),
+                            &core_config.rtt_config,
+                            timestamp_offset,
+                        )
+                        .await
+                    {
+                        debug_adapter
+                            .show_error_message(&DebuggerError::Other(error))
+                            .ok();
+                    }
                 }
+            }
+
+            // Semihosting handling needs a live `Core` (the probe-rs
+            // semihosting API takes `&mut dyn CoreInterface`). Scoped so the
+            // backend borrow is released before `self.notify_halted` (which
+            // reads the PC via the backend, no `Core`).
+            if let Some(command) = semihosting_command {
+                let handled = {
+                    let Ok(mut target_core) = self.attach_core(core_index) else {
+                        continue;
+                    };
+                    target_core.handle_semihosting(debug_adapter, command)?
+                };
+                current_core_status = handled;
+
+                if current_core_status.is_halted() {
+                    // poll_core did not notify about the halt, so we need to do it manually.
+                    self.notify_halted(debug_adapter, cd_idx, current_core_status)
+                        .await?;
+                } else {
+                    // If the semihosting command was handled, we do not need to suggest a delay.
+                    suggest_delay_required = false;
+                }
+                self.core_data[cd_idx].last_known_status = current_core_status;
             }
 
             // Non-semihosting status change: log the new status (with the PC
