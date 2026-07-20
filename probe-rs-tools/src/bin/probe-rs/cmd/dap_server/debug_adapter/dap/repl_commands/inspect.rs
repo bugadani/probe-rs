@@ -140,7 +140,7 @@ async fn examine_memory<'a>(
                 })?;
         } else if let Some(reg) = input_argument.strip_prefix('$') {
             let id = {
-                let regs = backend.register_file(core_index)?;
+                let regs = backend.core_metadata[core_index].registers;
                 regs.all_registers()
                     .find(|r| {
                         std::iter::once(r.name().to_string())

@@ -11,7 +11,7 @@ use crate::{
     cmd::{
         dap_server::{
             DebuggerError,
-            backend::rpc::RpcBackend,
+            backend::{rpc::{RpcBackend, rpc_err}, RttRemoteSeed},
             debug_adapter::{
                 dap::{
                     adapter::DebugAdapter,
@@ -201,7 +201,7 @@ impl SessionData {
         // Filter `CoreConfig` entries based on those that match an actual core on the target probe.
         let valid_core_configs = config.core_configs.iter().filter(|&core_config| {
             self.backend
-                .list_cores()
+                .cores
                 .iter()
                 .any(|(target_core_index, _)| *target_core_index == core_config.core_index)
         });
@@ -210,7 +210,7 @@ impl SessionData {
             .flashing_config
             .format_options
             .binary_format
-            .resolve(self.backend.target());
+            .resolve(&self.backend.target);
 
         for core_configuration in valid_core_configs {
             let Some(core_data) = self
@@ -249,9 +249,14 @@ impl SessionData {
     /// startup code will reinitialize the block from `.data`.
     pub(crate) async fn clear_rtt_blocks(&mut self) -> Result<(), DebuggerError> {
         for core_data in self.core_data.iter() {
+            let wire = crate::cmd::dap_server::server::core_data::wire_scan_region(
+                &core_data.rtt_scan_ranges,
+            );
             self.backend
-                .clear_rtt_blocks(core_data.core_index, &core_data.rtt_scan_ranges)
+                .session_interface()
+                .clear_rtt_control_block(core_data.core_index as u32, wire)
                 .await
+                .map_err(rpc_err)
                 .map_err(DebuggerError::ProbeRs)?;
         }
         Ok(())
@@ -1048,8 +1053,8 @@ fn initialize_core_data(
         )));
     }
 
-    let available_cores = backend.list_cores();
-    let target_name = backend.target().name.clone();
+    let available_cores = backend.cores.clone();
+    let target_name = backend.target.name.clone();
 
     let valid_core_configs = config.core_configs.iter().filter(|&core_config| {
         available_cores
@@ -1060,7 +1065,9 @@ fn initialize_core_data(
     let mut core_data_vec = vec![];
     for core_configuration in valid_core_configs {
         let mut core_data = build_core_data(core_configuration, &target_name)?;
-        core_data.rtt_remote_seed = backend.rtt_remote_seed();
+        core_data.rtt_remote_seed = Some(RttRemoteSeed {
+            session: backend.session_interface(),
+        });
         core_data_vec.push(core_data);
     }
     Ok(core_data_vec)

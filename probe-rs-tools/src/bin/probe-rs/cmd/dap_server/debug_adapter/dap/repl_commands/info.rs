@@ -86,7 +86,7 @@ async fn print_registers<'a>(
     let core_index = core_data.core_index;
     let register_name = command_arguments.trim();
     let registers: Vec<&'static CoreRegister> = {
-        let regs = backend.register_file(core_index)?;
+        let regs = backend.core_metadata[core_index].registers;
         regs.all_registers()
             .filter(|reg| {
                 register_name.is_empty() || reg.name().eq_ignore_ascii_case(register_name)

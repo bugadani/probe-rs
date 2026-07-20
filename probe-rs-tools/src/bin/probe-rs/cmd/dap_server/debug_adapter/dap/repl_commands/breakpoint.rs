@@ -5,7 +5,7 @@ use typed_path::TypedPath;
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::rpc::RpcBackend,
+    backend::rpc::{RpcBackend, rpc_err},
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
@@ -22,6 +22,7 @@ use crate::cmd::dap_server::{
     server::core_data::CoreData,
     server::session_data::{ActiveBreakpoint, BreakpointType, SourceLocationScope},
 };
+use crate::rpc::client::CoreInterface as RpcCoreClient;
 
 #[distributed_slice(REPL_COMMANDS)]
 static BREAK: ReplCommand = ReplCommand {
@@ -273,7 +274,10 @@ async fn clear_breakpoint<'a>(
         }
     };
 
-    backend.clear_hw_breakpoint(core_index, address).await?;
+    RpcCoreClient::new_for_backend(backend.client.clone(), backend.sessid, core_index as u32)
+        .clear_hw_breakpoint(address)
+        .await
+        .map_err(rpc_err)?;
     let before = core_data.breakpoints.len();
     core_data.breakpoints.retain(|ab| ab.address != address);
     let removed = before != core_data.breakpoints.len();

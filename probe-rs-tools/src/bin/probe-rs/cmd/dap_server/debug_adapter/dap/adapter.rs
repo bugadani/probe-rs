@@ -4,7 +4,8 @@ use super::{
     repl_commands_helpers::{build_expanded_commands, command_completions},
     request_helpers::{get_dap_source, get_svd_variable_reference, get_variable_reference},
 };
-use crate::cmd::dap_server::backend::rpc::RpcBackend;
+use crate::cmd::dap_server::backend::rpc::{RpcBackend, rpc_err};
+use crate::rpc::client::CoreInterface as RpcCoreClient;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
@@ -170,11 +171,15 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 );
             }
         };
-        let result_buffer = session_data
-            .backend
-            .read_memory(core_index, address, arguments.count as usize)
-            .await
-            .unwrap_or_default();
+        let result_buffer = RpcCoreClient::new_for_backend(
+            session_data.backend.client.clone(),
+            session_data.backend.sessid,
+            core_index as u32,
+        )
+        .read_bytes(address, arguments.count as usize)
+        .await
+        .map_err(rpc_err)
+        .unwrap_or_default();
         let num_bytes_unread = arguments.count as usize - result_buffer.len();
         // Currently, VSCode sends a request with count=0 after the last successful one ... so
         // let's ignore it.
@@ -236,10 +241,14 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             }
         };
 
-        if let Err(error) = session_data
-            .backend
-            .write_memory(core_index, address, data_bytes.clone())
-            .await
+        if let Err(error) = RpcCoreClient::new_for_backend(
+            session_data.backend.client.clone(),
+            session_data.backend.sessid,
+            core_index as u32,
+        )
+        .write_memory_8(address, data_bytes.clone())
+        .await
+        .map_err(rpc_err)
         {
             return self.send_response::<()>(request, Err(&DebuggerError::ProbeRs(error)));
         }
@@ -2495,14 +2504,22 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
         core_data: &mut CoreData,
     ) -> Result<CoreInformation> {
         let core_index = core_data.core_index;
-        let core_info = backend
-            .reset_and_halt(core_index, Duration::from_millis(500))
-            .await
-            .map_err(DebuggerError::ProbeRs)?;
+        let core_info: CoreInformation = RpcCoreClient::new_for_backend(
+            backend.client.clone(),
+            backend.sessid,
+            core_index as u32,
+        )
+        .reset_and_halt(Duration::from_millis(500))
+        .await
+        .map_err(rpc_err)
+        .map_err(DebuggerError::ProbeRs)?
+        .into();
 
         let arch = backend
-            .core_architecture(core_index)
-            .await
+            .core_metadata
+            .get(core_index)
+            .map(|m| m.architecture)
+            .ok_or_else(|| probe_rs::Error::Other(format!("No core metadata for core {core_index}")))
             .map_err(DebuggerError::ProbeRs)?;
         if [Architecture::Riscv, Architecture::Xtensa].contains(&arch) {
             let addrs: Vec<u64> = core_data.breakpoints.iter().map(|bp| bp.address).collect();

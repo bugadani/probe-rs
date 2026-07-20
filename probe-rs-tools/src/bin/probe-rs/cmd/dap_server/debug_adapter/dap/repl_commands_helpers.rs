@@ -2,9 +2,10 @@ use probe_rs_debug::{ObjectRef, VariableName};
 
 use crate::cmd::dap_server::{
     DebuggerError,
-    backend::rpc::RpcBackend,
+    backend::rpc::{RpcBackend, rpc_err},
     debug_adapter::dap::repl_commands::{EvalResponse, EvalResult},
 };
+use crate::rpc::client::CoreInterface as RpcCoreClient;
 
 use super::{
     dap_types::{
@@ -130,14 +131,19 @@ pub(crate) async fn memory_read_async(
 
         Ok(EvalResponse::Message(formatted_output))
     } else {
-        let memory = backend
-            .read_memory_8(core_index, address, gdb_nuf.get_size())
-            .await
-            .map_err(|err| {
-                DebuggerError::UserMessage(format!(
-                    "Cannot read memory at address {address:#010x}: {err:?}"
-                ))
-            })?;
+        let memory = RpcCoreClient::new_for_backend(
+            backend.client.clone(),
+            backend.sessid,
+            core_index as u32,
+        )
+        .read_memory_8(address, gdb_nuf.get_size())
+        .await
+        .map_err(rpc_err)
+        .map_err(|err| {
+            DebuggerError::UserMessage(format!(
+                "Cannot read memory at address {address:#010x}: {err:?}"
+            ))
+        })?;
         Ok(EvalResponse::Message(
             GdbNufMemoryResult {
                 nuf: &gdb_nuf,

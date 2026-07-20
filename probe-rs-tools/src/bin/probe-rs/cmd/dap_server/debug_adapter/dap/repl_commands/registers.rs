@@ -85,7 +85,7 @@ async fn write_register<'a>(
     let (register_name, value) = parse_wreg_args(command_arguments)?;
 
     let (id, name, size_in_bits): (RegisterId, &'static str, usize) = {
-        let regs = backend.register_file(core_index)?;
+        let regs = backend.core_metadata[core_index].registers;
         let register = regs
             .all_registers()
             .find(|r| register_matches(r, register_name))

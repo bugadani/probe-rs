@@ -1,7 +1,7 @@
 use crate::cmd::{
     dap_server::{
         DebuggerError,
-        backend::rpc::RpcBackend,
+        backend::rpc::{RpcBackend, rpc_err},
         debug_adapter::{
             dap::{
                 adapter::DebugAdapter,
@@ -15,6 +15,7 @@ use crate::cmd::{
     },
     run::EmbeddedTestElfInfo,
 };
+use crate::rpc::client::CoreInterface as RpcCoreClient;
 
 pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
     command: "test",
@@ -91,9 +92,10 @@ async fn run_test<'a>(
     adapter
         .reset_and_halt_core_async(backend, core_data)
         .await?;
-    backend
-        .kickoff_test(core_data.core_index, address as u64)
+    RpcCoreClient::new_for_backend(backend.client.clone(), backend.sessid, core_data.core_index as u32)
+        .kickoff_test(address as u64)
         .await
+        .map_err(rpc_err)
         .map_err(DebuggerError::ProbeRs)?;
 
     core_data.last_known_status = probe_rs::CoreStatus::Unknown;

@@ -18,7 +18,7 @@ use probe_rs_debug::{
 };
 use tokio::runtime::Handle;
 
-use super::{RttRemoteSeed, SemihostingHandleResult, SemihostingUiEvent};
+use super::{SemihostingHandleResult, SemihostingUiEvent};
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
     DisassembledInstruction, EvaluateArguments, EvaluateResponseBody, Scope, Source, Variable,
@@ -186,14 +186,6 @@ pub struct CorePerAttachInfo {
 }
 
 impl RpcBackend {
-    pub(crate) fn list_cores(&self) -> Vec<(usize, CoreType)> {
-        self.cores.clone()
-    }
-
-    pub(crate) fn target(&self) -> &Target {
-        &self.target
-    }
-
     pub(crate) fn core(&mut self, _core_index: usize) -> Result<Core<'_>, Error> {
         // RPC drives the target via async round trips and never hands out a
         // synchronous `Core`. All remaining `backend.core()` callers are
@@ -201,12 +193,6 @@ impl RpcBackend {
         unreachable!(
             "RpcBackend::core is not used; RPC drives the target via async round trips"
         )
-    }
-
-    pub(crate) fn rtt_remote_seed(&self) -> Option<RttRemoteSeed> {
-        Some(super::RttRemoteSeed {
-            session: self.session_interface(),
-        })
     }
 
     /// The wire conversion surfaces `GetCommandLine` as a placeholder
@@ -243,28 +229,6 @@ impl RpcBackend {
             .map_err(rpc_err)
     }
 
-    pub(crate) async fn read_memory(
-        &mut self,
-        core_index: usize,
-        address: u64,
-        count: usize,
-    ) -> Result<Vec<u8>, Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client.read_bytes(address, count).await.map_err(rpc_err)
-    }
-
-    pub(crate) async fn write_memory(
-        &mut self,
-        core_index: usize,
-        address: u64,
-        data: Vec<u8>,
-    ) -> Result<(), Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client.write_memory_8(address, data).await.map_err(rpc_err)
-    }
-
     pub(crate) async fn halt(
         &mut self,
         core_index: usize,
@@ -289,28 +253,10 @@ impl RpcBackend {
         client.run().await.map_err(rpc_err)
     }
 
-    pub(crate) async fn reset_and_halt(
-        &mut self,
-        core_index: usize,
-        timeout: Duration,
-    ) -> Result<CoreInformation, Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        let info = client.reset_and_halt(timeout).await.map_err(rpc_err)?;
-        Ok(info.into())
-    }
-
     pub(crate) async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.core_halted().await.map_err(rpc_err)
-    }
-
-    pub(crate) async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
-        self.core_metadata
-            .get(core_index)
-            .map(|m| m.architecture)
-            .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
     }
 
     pub(crate) async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
@@ -325,12 +271,6 @@ impl RpcBackend {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.set_hw_breakpoint(address).await.map_err(rpc_err)
-    }
-
-    pub(crate) async fn clear_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client.clear_hw_breakpoint(address).await.map_err(rpc_err)
     }
 
     pub(crate) async fn set_variable(
@@ -415,24 +355,6 @@ impl RpcBackend {
             .collect())
     }
 
-    pub(crate) fn register_file(
-        &mut self,
-        core_index: usize,
-    ) -> Result<&'static probe_rs::CoreRegisters, Error> {
-        Ok(self.core_metadata[core_index].registers)
-    }
-
-    pub(crate) async fn read_memory_8(
-        &mut self,
-        core_index: usize,
-        address: u64,
-        count: usize,
-    ) -> Result<Vec<u8>, Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client.read_memory_8(address, count).await.map_err(rpc_err)
-    }
-
     pub(crate) async fn dump_core(
         &mut self,
         core_index: usize,
@@ -490,12 +412,6 @@ impl RpcBackend {
         })
     }
 
-    pub(crate) async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client.kickoff_test(address).await.map_err(rpc_err)
-    }
-
     pub(crate) async fn enable_vector_catch(
         &mut self,
         core_index: usize,
@@ -540,18 +456,6 @@ impl RpcBackend {
             self.run(core_index).await?;
         }
         Ok(())
-    }
-
-    pub(crate) async fn clear_rtt_blocks(
-        &mut self,
-        core_index: usize,
-        scan: &probe_rs::rtt::ScanRegion,
-    ) -> Result<(), Error> {
-        let wire = crate::cmd::dap_server::server::core_data::wire_scan_region(scan);
-        self.session_interface()
-            .clear_rtt_control_block(core_index as u32, wire)
-            .await
-            .map_err(rpc_err)
     }
 
     pub(crate) async fn debug_step(
