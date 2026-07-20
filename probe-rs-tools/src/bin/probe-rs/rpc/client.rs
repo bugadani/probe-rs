@@ -48,8 +48,8 @@ use crate::{
             RttDownEndpoint, RunTestEndpoint, ScopesEndpoint, SelectProbeEndpoint,
             SetVariableEndpoint, StackTraceStepEndpoint, TakeRichStackTraceEndpoint,
             TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
-            TempFileDataEndpoint, TokioSpawner, VariablesEndpoint, VerifyEndpoint,
-            WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
+            TempFileDataEndpoint, TestKickoffEndpoint, TokioSpawner, VariablesEndpoint,
+            VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
             WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
@@ -85,7 +85,7 @@ use crate::{
                 RttClientData, RttDownRequest, RttPollResult, ScanRegion,
             },
             stack_trace::{RichStackTraces, StackTraces, TakeStackTraceRequest},
-            test::{ListTestsRequest, RunTestRequest, Test, TestResult, Tests},
+            test::{ListTestsRequest, RunTestRequest, Test, TestKickoffRequest, TestResult, Tests},
         },
         transport::memory::{PostcardReceiver, PostcardSender, WireRx, WireTx},
         utils::semihosting::SemihostingOptions,
@@ -1231,6 +1231,19 @@ impl CoreInterface {
             .send_resp::<HandleSemihostingEndpoint, _>(&HandleSemihostingRequest {
                 sessid: self.sessid,
                 core: self.core,
+            })
+            .await
+    }
+
+    /// Kick off a single embedded-test case server-side: run until the
+    /// `GetCommandLine` semihosting call, write `run_addr {address}` as the
+    /// command line, then resume. Used by the DAP REPL `test run` command.
+    pub async fn kickoff_test(&self, address: u64) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<TestKickoffEndpoint, _>(&TestKickoffRequest {
+                sessid: self.sessid,
+                core: self.core,
+                address,
             })
             .await
     }

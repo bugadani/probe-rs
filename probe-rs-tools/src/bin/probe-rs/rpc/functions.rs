@@ -58,8 +58,8 @@ use crate::{
                 take_rich_stack_trace, take_stack_trace,
             },
             test::{
-                ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse, list_tests,
-                run_test,
+                ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse,
+                TestKickoffRequest, TestKickoffResponse, list_tests, run_test, test_kickoff,
             },
         },
         transport::memory::{WireRx, WireTx},
@@ -561,6 +561,7 @@ endpoints! {
 
     | ListTestsEndpoint         | ListTestsRequest        | ListTestsResponse       | "tests/list"       |
     | RunTestEndpoint           | RunTestRequest          | RunTestResponse         | "tests/run"        |
+    | TestKickoffEndpoint       | TestKickoffRequest      | TestKickoffResponse     | "tests/kickoff"    |
 
     | CreateTempFileEndpoint    | ()                      | CreateFileResponse      | "temp_file/new"    |
     | TempFileDataEndpoint      | AppendFileRequest       | NoResponse              | "temp_file/append" |
@@ -664,6 +665,7 @@ postcard_rpc::define_dispatch! {
 
         | ListTestsEndpoint         | spawn     | list_tests        |
         | RunTestEndpoint           | spawn     | run_test          |
+        | TestKickoffEndpoint       | async     | test_kickoff      |
 
         | CreateTempFileEndpoint    | async     | create_temp_file  |
         | TempFileDataEndpoint      | async     | append_temp_file  |

@@ -552,6 +552,30 @@ pub trait DapBackend {
         })
     }
 
+    /// Kick off a single embedded-test case (DAP REPL `test run`): run until
+    /// the `GetCommandLine` semihosting call, write `run_addr {address}` as
+    /// the command line, then resume. Default via [`DapBackend::core`]; the
+    /// RPC backend overrides this to `.await` the `tests/kickoff` round trip.
+    async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+        use probe_rs::{BreakpointCause, CoreStatus, HaltReason};
+        use probe_rs::semihosting::SemihostingCommand;
+
+        let mut core = self.core(core_index)?;
+        core.run()?;
+        core.wait_for_core_halted(Duration::from_secs(1))?;
+        let CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(
+            SemihostingCommand::GetCommandLine(cmd),
+        ))) = core.status()?
+        else {
+            return Err(Error::Other(
+                "Could not start test: target did not halt on GetCommandLine".to_string(),
+            ));
+        };
+        cmd.write_command_line_to_target(&mut core, &format!("run_addr {address}"))?;
+        core.run()?;
+        Ok(())
+    }
+
     /// Write a single core register. Default via [`DapBackend::core`]; the
     /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
     async fn write_core_reg(

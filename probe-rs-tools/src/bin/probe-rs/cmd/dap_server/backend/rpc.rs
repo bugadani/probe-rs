@@ -723,6 +723,12 @@ impl DapBackend for RpcBackend {
         })
     }
 
+    async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        client.kickoff_test(address).await.map_err(rpc_err)
+    }
+
     async fn debug_step(
         &mut self,
         core_index: usize,

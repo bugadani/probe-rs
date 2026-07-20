@@ -15,19 +15,13 @@ pub(crate) type ChannelNames = Vec<(u32, String)>;
 use crate::{
     cmd::dap_server::{
         DebuggerError,
-        debug_adapter::{
-            dap::{
-                adapter::DebugAdapter,
-                dap_types::Source,
-            },
-            protocol::ProtocolAdapter,
-        },
+        debug_adapter::dap::dap_types::Source,
         peripherals::svd_variables::SvdCache,
         server::debug_rtt,
     },
 };
 use anyhow::{Result, anyhow};
-use probe_rs::{Architecture, BreakpointError};
+use probe_rs::{BreakpointError};
 use probe_rs::{Core, CoreStatus, rtt::ScanRegion};
 use probe_rs_debug::VerifiedBreakpoint;
 use probe_rs_debug::{
@@ -101,18 +95,6 @@ pub struct CoreHandle<'p> {
 }
 
 impl CoreHandle<'_> {
-
-    /// Some MS DAP requests (e.g. `step`) implicitly expect the core to resume processing and then to optionally halt again, before the request completes.
-    ///
-    /// This method is used to set the `last_known_status` to [`CoreStatus::Unknown`] (because we cannot verify that it will indeed resume running until we have polled it again),
-    ///   as well as [`DebugAdapter::all_cores_halted`] = `false`, without notifying the client of any status changes.
-    pub(crate) fn reset_core_status<P: ProtocolAdapter + ?Sized>(
-        &mut self,
-        debug_adapter: &mut DebugAdapter<P>,
-    ) {
-        self.core_data.last_known_status = CoreStatus::Unknown;
-        debug_adapter.all_cores_halted = false;
-    }
 
     /// Search available [`probe_rs::debug::StackFrame`]'s for the given `id`
     pub(crate) fn get_stackframe(
@@ -319,25 +301,6 @@ impl CoreHandle<'_> {
         }
         // Consolidating all memory ranges that are withing 0x400 bytes of each other.
         consolidate_memory_ranges(all_discrete_memory_ranges, 0x400)
-    }
-
-    pub(crate) fn reapply_breakpoints(&mut self) {
-        if [Architecture::Riscv, Architecture::Xtensa].contains(&self.core.architecture()) {
-            let saved_breakpoints = std::mem::take(&mut self.core_data.breakpoints);
-
-            for breakpoint in saved_breakpoints {
-                if let Err(error) =
-                    self.set_breakpoint(breakpoint.address, breakpoint.breakpoint_type.clone())
-                {
-                    // This will cause the debugger to show the user an error, but not stop the debugger.
-                    tracing::error!(
-                        "Failed to re-enable breakpoint {:?} after reset. {}",
-                        breakpoint,
-                        error
-                    );
-                }
-            }
-        }
     }
 }
 

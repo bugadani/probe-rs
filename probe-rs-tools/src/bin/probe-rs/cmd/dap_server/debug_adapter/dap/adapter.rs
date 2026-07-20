@@ -756,6 +756,15 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 tests.sort();
                 Ok(EvalResponse::Message(tests.join("\n")))
             }
+            "test run" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::embedded_test::run_test_async(
+                    self,
+                    session_data,
+                    core_index,
+                    argument_string,
+                )
+                .await
+            }
             "quit" => {
                 session_data
                     .backend
@@ -2631,23 +2640,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 }
 
 impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
-
-    /// Returns whether all cores have continued.
-    pub(crate) fn reset_and_halt_core(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-    ) -> Result<CoreInformation> {
-        let core_info = target_core
-            .core
-            .reset_and_halt(Duration::from_millis(500))?;
-
-        // On some architectures, we need to re-enable any breakpoints that were previously set, because the core reset 'forgets' them.
-        target_core.reapply_breakpoints();
-
-        target_core.reset_core_status(self);
-
-        Ok(core_info)
-    }
 
     pub(crate) async fn step_impl_async<B: DapBackend>(
         &mut self,

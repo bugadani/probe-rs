@@ -1,20 +1,16 @@
-use std::time::Duration;
-
-use probe_rs::{BreakpointCause, CoreStatus, HaltReason, semihosting::SemihostingCommand};
-
 use crate::cmd::{
     dap_server::{
         DebuggerError,
+        backend::DapBackend,
         debug_adapter::{
             dap::{
                 adapter::DebugAdapter,
-                dap_types::EvaluateArguments,
-                repl_commands::{EvalResponse, EvalResult, ReplCommand, need_subcommand},
+                repl_commands::{EvalResponse, EvalResult, ReplCommand, need_subcommand, unimplemented_repl},
                 repl_types::ReplCommandArgs,
             },
             protocol::ProtocolAdapter,
         },
-        server::core_data::CoreHandle,
+        server::session_data::SessionData,
     },
     run::EmbeddedTestElfInfo,
 };
@@ -38,23 +34,24 @@ pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
             requires_target_halted: false,
             sub_commands: &[],
             args: &[ReplCommandArgs::Required("test_name")],
-            handler: run_test,
+            handler: unimplemented_repl,
         },
     ],
     args: &[],
     handler: need_subcommand,
 };
 
-fn run_test(
-    target_core: &mut CoreHandle<'_>,
+pub(crate) async fn run_test_async<B: DapBackend, P: ProtocolAdapter>(
+    adapter: &mut DebugAdapter<P>,
+    session_data: &mut SessionData<B>,
+    core_index: usize,
     test_name: &str,
-    _: &EvaluateArguments,
-    adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
-    let Some(test_data) = target_core
+    let Some(test_data) = session_data
         .core_data
-        .test_data
-        .downcast_ref::<EmbeddedTestElfInfo>()
+        .iter()
+        .find(|c| c.core_index == core_index)
+        .and_then(|c| c.test_data.downcast_ref::<EmbeddedTestElfInfo>())
     else {
         return Err(DebuggerError::UserMessage(
             "Internal error while trying to access test data".to_string(),
@@ -73,32 +70,21 @@ fn run_test(
         )));
     };
 
-    adapter.reset_and_halt_core(target_core)?;
-    target_core.core.run()?;
-    target_core
-        .core
-        .wait_for_core_halted(Duration::from_secs(1))?;
+    adapter.reset_and_halt_core_async(session_data, core_index).await?;
+    session_data
+        .backend
+        .kickoff_test(core_index, address as u64)
+        .await
+        .map_err(DebuggerError::ProbeRs)?;
 
-    let CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(
-        SemihostingCommand::GetCommandLine(request),
-    ))) = target_core.core.status()?
-    else {
-        return Err(DebuggerError::UserMessage(
-            "Could not start test".to_string(),
-        ));
-    };
-
-    // Select and start the test
-    request
-        .write_command_line_to_target(&mut target_core.core, &format!("run_addr {}", address))?;
-
-    // TODO: adapter.resume_core
-    target_core.core.run()?;
-    target_core.reset_core_status(adapter);
-
-    // TODO: wait for a bit (while polling RTT) for the test to either complete
-    // or the target to halt again? That way we could print the _actual_ test result
-    // based on the expectation.
+    if let Some(cd) = session_data
+        .core_data
+        .iter_mut()
+        .find(|c| c.core_index == core_index)
+    {
+        cd.last_known_status = probe_rs::CoreStatus::Unknown;
+    }
+    adapter.all_cores_halted = false;
 
     Ok(EvalResponse::Message(String::new()))
 }
