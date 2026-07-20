@@ -38,7 +38,7 @@ static RTT_COMMANDS: ReplCommand = ReplCommand {
 };
 
 async fn rtt_write<'a>(
-    backend: &'a mut RpcBackend,
+    _backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     input: &'a str,
     _evaluate_arguments: &'a EvaluateArguments,
@@ -61,7 +61,7 @@ async fn rtt_write<'a>(
         .ok_or_else(|| DebuggerError::UserMessage("Not connected to RTT".to_string()))?;
 
     rtt.client
-        .write_down_async(backend, core_data.core_index, channel_id, data.into_bytes())
+        .write_down_async(channel_id, data.into_bytes())
         .await
         .map_err(|e| {
             DebuggerError::UserMessage(format!("Failed to write to channel {channel_id}: {e}"))

@@ -1,4 +1,6 @@
 use std::any::Any;
+
+#[cfg(test)]
 use std::ops::Range;
 
 use super::session_data;
@@ -11,10 +13,8 @@ use crate::util::rtt::client::RttClient;
 /// `(channel number, channel name)` pairs returned while attaching to RTT.
 pub(crate) type ChannelNames = Vec<(u32, String)>;
 use crate::cmd::dap_server::{peripherals::svd_variables::SvdCache, server::debug_rtt};
-use probe_rs::{Core, CoreStatus, rtt::ScanRegion};
-use probe_rs_debug::{
-    ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo,
-};
+use probe_rs::{CoreStatus, rtt::ScanRegion};
+use probe_rs_debug::{VariableCache, debug_info::DebugInfo};
 
 /// Convert [`ScanRegion`] (probe-rs) into the wire [`WireScanRegion`].
 pub(crate) fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
@@ -47,7 +47,6 @@ pub struct CoreData {
     pub breakpoints: Vec<session_data::ActiveBreakpoint>,
     pub rtt_scan_ranges: ScanRegion,
     pub rtt_connection: Option<debug_rtt::RttConnection>,
-    pub rtt_client: Option<RttClient>,
     /// When `Some`, RTT is driven through the server-side `RttClient` over
     /// RPC (RPC backend). When `None`, a local `RttClient` is used.
     pub rtt_remote_seed: Option<RttRemoteSeed>,
@@ -58,86 +57,10 @@ pub struct CoreData {
     pub test_data: Box<dyn Any>,
 }
 
-/// [CoreHandle] provides handles to various data structures required to debug a single instance of a core. The actual state is stored in [session_data::SessionData].
-pub struct CoreHandle<'p> {
-    pub(crate) core: Core<'p>,
-    pub(crate) core_data: &'p mut CoreData,
-}
-
-impl CoreHandle<'_> {
-    /// Search available [`probe_rs::debug::StackFrame`]'s for the given `id`
-    pub(crate) fn get_stackframe(
-        &self,
-        id: ObjectRef,
-    ) -> Option<&probe_rs_debug::stack_frame::StackFrame> {
-        self.core_data
-            .stack_frames
-            .iter()
-            .find(|stack_frame| stack_frame.id == id)
-    }
-
-    /// Traverse all the variables in the available stack frames, and return the memory ranges
-    /// required to resolve the values of these variables. This is used to provide the minimal
-    /// memory ranges required to create a [`CoreDump`](probe_rs::CoreDump) for the current scope.
-    pub(crate) fn get_memory_ranges(&mut self) -> Vec<Range<u64>> {
-        let recursion_limit = 10;
-
-        let mut all_discrete_memory_ranges = Vec::new();
-
-        if let Some(static_variables) = &mut self.core_data.static_variables
-            && let Some(debug_info) = self.core_data.debug_info.as_ref()
-        {
-            static_variables.recurse_deferred_variables(
-                debug_info,
-                &mut self.core,
-                recursion_limit,
-                StackFrameInfo {
-                    registers: &self.core_data.stack_frames[0].registers,
-                    frame_base: self.core_data.stack_frames[0].frame_base,
-                    canonical_frame_address: self.core_data.stack_frames[0].canonical_frame_address,
-                },
-            );
-            all_discrete_memory_ranges.append(&mut static_variables.get_discrete_memory_ranges());
-        }
-
-        // Expand and validate the static and local variables for each stack frame.
-        for frame in self.core_data.stack_frames.iter_mut() {
-            let mut variable_caches = Vec::new();
-            if let Some(local_variables) = &mut frame.local_variables {
-                variable_caches.push(local_variables);
-            }
-            for variable_cache in variable_caches {
-                if let Some(debug_info) = self.core_data.debug_info.as_ref() {
-                    // Cache the deferred top level children of the of the cache.
-                    variable_cache.recurse_deferred_variables(
-                        debug_info,
-                        &mut self.core,
-                        10,
-                        StackFrameInfo {
-                            registers: &frame.registers,
-                            frame_base: frame.frame_base,
-                            canonical_frame_address: frame.canonical_frame_address,
-                        },
-                    );
-                    all_discrete_memory_ranges
-                        .append(&mut variable_cache.get_discrete_memory_ranges());
-                }
-            }
-            // Also capture memory addresses for essential registers.
-            for register in frame.registers.0.iter() {
-                if let Ok(Some(memory_range)) = register.memory_range() {
-                    all_discrete_memory_ranges.push(memory_range);
-                }
-            }
-        }
-        // Consolidating all memory ranges that are withing 0x400 bytes of each other.
-        consolidate_memory_ranges(all_discrete_memory_ranges, 0x400)
-    }
-}
-
 /// Return a Vec of memory ranges that consolidate the adjacent memory ranges of the input ranges.
 /// Note: The concept of "adjacent" is calculated to include a gap of up to specified number of bytes between ranges.
 /// This serves to consolidate memory ranges that are separated by a small gap, but are still close enough for the purpose of the caller.
+#[cfg(test)]
 fn consolidate_memory_ranges(
     mut discrete_memory_ranges: Vec<Range<u64>>,
     include_bytes_between_ranges: u64,

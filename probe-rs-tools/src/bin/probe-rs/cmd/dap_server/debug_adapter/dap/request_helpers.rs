@@ -1,7 +1,6 @@
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::dap::dap_types::{DisassembledInstruction, Source},
-    peripherals::svd_cache::{SvdVariableCache, Variable},
 };
 use addr2line::gimli::RunTimeEndian;
 use anyhow::{Result, anyhow};
@@ -11,7 +10,7 @@ use capstone::{
 };
 use itertools::Itertools;
 use probe_rs::{CoreType, Error, InstructionSet, MemoryInterface};
-use probe_rs_debug::{ColumnType, ObjectRef, SourceLocation};
+use probe_rs_debug::{ColumnType, SourceLocation};
 
 pub(crate) enum DisassemblyAmount {
     Instructions(i64),
@@ -426,63 +425,4 @@ pub(crate) fn get_dap_source(source_location: &SourceLocation) -> Option<Source>
         adapter_data: None,
         checksums: None,
     })
-}
-
-/// The DAP protocol uses three related values to determine how to invoke the `Variables` request.
-/// This function retrieves that information from the `DebugInfo::VariableCache` and returns it as
-/// (`variable_reference`, `named_child_variables_cnt`, `indexed_child_variables_cnt`)
-pub(crate) fn get_variable_reference(
-    parent_variable: &probe_rs_debug::Variable,
-    cache: &probe_rs_debug::VariableCache,
-) -> (ObjectRef, i64, i64) {
-    if !parent_variable.is_valid() {
-        return (ObjectRef::Invalid, 0, 0);
-    }
-
-    let mut named_child_variables_cnt = 0;
-    let mut indexed_child_variables_cnt = 0;
-    for child_variable in cache.get_children(parent_variable.variable_key()) {
-        if child_variable.is_indexed() {
-            indexed_child_variables_cnt += 1;
-        } else {
-            named_child_variables_cnt += 1;
-        }
-    }
-
-    if named_child_variables_cnt > 0 || indexed_child_variables_cnt > 0 {
-        (
-            parent_variable.variable_key(),
-            named_child_variables_cnt,
-            indexed_child_variables_cnt,
-        )
-    } else if parent_variable.variable_node_type.is_deferred()
-        && parent_variable.to_string(cache) != "()"
-    {
-        // We have not yet cached the children for this reference.
-        // Provide DAP Client with a reference so that it will explicitly ask for children when the user expands it.
-        (parent_variable.variable_key(), 0, 0)
-    } else {
-        // Returning 0's allows VSCode DAP Client to behave correctly for frames that have no variables, and variables that have no children.
-        (ObjectRef::Invalid, 0, 0)
-    }
-}
-
-/// The DAP protocol uses three related values to determine how to invoke the `Variables` request.
-/// This function retrieves that information from the `DebugInfo::VariableCache` and returns it as
-/// (`variable_reference`, `named_child_variables_cnt`, `indexed_child_variables_cnt`)
-pub(crate) fn get_svd_variable_reference(
-    parent_variable: &Variable,
-    cache: &SvdVariableCache,
-) -> (ObjectRef, i64) {
-    let named_child_variables_cnt = cache.get_children(parent_variable.variable_key()).len();
-
-    if named_child_variables_cnt > 0 {
-        (
-            parent_variable.variable_key(),
-            named_child_variables_cnt as i64,
-        )
-    } else {
-        // Returning 0's allows VSCode DAP Client to behave correctly for frames that have no variables, and variables that have no children.
-        (ObjectRef::Invalid, 0)
-    }
 }

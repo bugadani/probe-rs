@@ -2,7 +2,7 @@ use super::{
     core_status::DapStatus,
     dap_types,
     repl_commands_helpers::{build_expanded_commands, command_completions},
-    request_helpers::{get_dap_source, get_svd_variable_reference, get_variable_reference},
+    request_helpers::get_dap_source,
 };
 use crate::cmd::dap_server::backend::rpc::{RpcBackend, rpc_err};
 use crate::rpc::client::CoreInterface as RpcCoreClient;
@@ -14,7 +14,7 @@ use crate::cmd::dap_server::{
     },
     server::{
         configuration::ConsoleLog,
-        core_data::{CoreData, CoreHandle},
+        core_data::CoreData,
         session_data::{ActiveBreakpoint, BreakpointType, SessionData, SourceLocationScope},
     },
 };
@@ -28,9 +28,8 @@ use probe_rs::{
     RegisterRole, RegisterValue, UnwindRule,
 };
 use probe_rs_debug::{
-    ColumnType, ObjectRef, SourceLocation, SteppingMode, VariableName, VerifiedBreakpoint,
+    ColumnType, ObjectRef, SourceLocation, SteppingMode, VerifiedBreakpoint,
     registers::{DebugRegister, DebugRegisters},
-    stack_frame::StackFrameInfo,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -282,18 +281,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     ) -> Result<()> {
         let arguments: ScopesArguments = get_arguments(self, request)?;
         let frame_id = arguments.frame_id as u32;
-        if let Some(scopes) = session_data
+        let scopes = session_data
             .backend
             .scopes(core_index, frame_id)
             .await
             .map_err(DebuggerError::ProbeRs)?
-        {
-            return self.send_response(request, Ok(Some(ScopesResponseBody { scopes })));
-        }
-        let mut target_core = session_data
-            .attach_core(core_index)
-            .context("Unable to connect to target core")?;
-        self.scopes_local(&mut target_core, request)
+            .unwrap_or_default();
+        self.send_response(request, Ok(Some(ScopesResponseBody { scopes })))
     }
 
     /// `variables` handler: tries the backend (RPC) first, else falls back
@@ -306,18 +300,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     ) -> Result<()> {
         let arguments: VariablesArguments = get_arguments(self, request)?;
         let variables_reference = arguments.variables_reference as u32;
-        if let Some(variables) = session_data
+        let variables = session_data
             .backend
             .variables(core_index, variables_reference, arguments.filter)
             .await
             .map_err(DebuggerError::ProbeRs)?
-        {
-            return self.send_response(request, Ok(Some(VariablesResponseBody { variables })));
-        }
-        let mut target_core = session_data
-            .attach_core(core_index)
-            .context("Unable to connect to target core")?;
-        self.variables_local(&mut target_core, request)
+            .unwrap_or_default();
+        self.send_response(request, Ok(Some(VariablesResponseBody { variables })))
     }
 
     /// `evaluate` handler: tries the backend (RPC) first for watch/hover
@@ -359,251 +348,20 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             return self.send_response(request, Ok(Some(response_body)));
         }
 
-        let mut target_core = session_data
-            .attach_core(core_index)
-            .context("Unable to connect to target core")?;
-        self.evaluate_local(&mut target_core, request)
-    }
-
-    /// Evaluates the given expression in the context of the top most stack frame.
-    /// The expression has access to any variables and arguments that are in scope.
-    pub(crate) fn evaluate_local(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-        request: &Request,
-    ) -> Result<()> {
-        // TODO: When variables appear in the `watch` context, they will not resolve correctly after a 'step' function. Consider doing the lazy load for 'either/or' of Variables vs. Evaluate
-
-        let arguments: EvaluateArguments = get_arguments(self, request)?;
-
-        // Various fields in the response_body will be updated before we return.
-        let mut response_body = EvaluateResponseBody {
+        // `clipboard` and any other unadvertised context: echo the
+        // expression text. (clipboard is not advertised, so well-behaved
+        // clients never send it; watch/hover are handled server-side above
+        // and `repl` is handled just above.)
+        let response_body = EvaluateResponseBody {
             indexed_variables: None,
             memory_reference: None,
             named_variables: None,
             presentation_hint: None,
-            result: format!("<invalid expression {:?}>", arguments.expression),
+            result: arguments.expression.clone(),
             type_: None,
             variables_reference: 0,
             value_location_reference: None,
         };
-
-        if arguments.context.is_some() {
-            // Handle other contexts: 'watch', 'hover', etc. (clipboard is not advertised, therefore unhandled)
-            // The Variables request sometimes returns the variable name, and other times the variable id, so this expression will be tested to determine if it is an id or not.
-            let expression = arguments.expression.clone();
-
-            let mut expression_resolved = false;
-
-            // Make sure we have a valid StackFrame
-            let frame_index = match arguments.frame_id.map(ObjectRef::try_from).transpose() {
-                Ok(Some(frame_id)) => target_core
-                    .core_data
-                    .stack_frames
-                    .iter()
-                    .position(|stack_frame| stack_frame.id == frame_id),
-                Ok(None) => {
-                    if target_core.core_data.stack_frames.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Invalid frame_id: {e}");
-                    if target_core.core_data.stack_frames.is_empty() {
-                        None
-                    } else {
-                        Some(0)
-                    }
-                }
-            };
-
-            if let Some(frame_index) = frame_index
-                && let Some(stack_frame) = target_core.core_data.stack_frames.get_mut(frame_index)
-            {
-                // Always search the registers first, because we don't have a VariableCache for them.
-                if let Some(register_value) = stack_frame
-                    .registers
-                    .get_register_by_name(expression.as_str())
-                    .and_then(|reg| reg.value)
-                {
-                    response_body.type_ = Some(format!("{}", VariableName::RegistersRoot));
-                    response_body.result = format!("{register_value}");
-                    expression_resolved = true;
-                } else {
-                    // If the expression wasn't pointing to a register, then check if it is a local variable in our stack_frame.
-                    let mut variable: Option<probe_rs_debug::Variable> = None;
-                    let mut variable_cache: Option<&mut probe_rs_debug::VariableCache> = None;
-
-                    if let Some(search_cache) = stack_frame.local_variables.as_mut() {
-                        if search_cache.len() == 1 {
-                            let mut root_variable = search_cache.root_variable().clone();
-
-                            // This is a special case where we have a single variable in the cache, and it is the root of a scope.
-                            // These variables don't have cached children by default, so we need to resolve them before we proceed.
-                            // We check for len() == 1, so unwrap() on first_mut() is safe.
-                            #[allow(clippy::expect_used, reason = "Expect should be unreachable")]
-                            target_core
-                                .core_data
-                                .debug_info
-                                .as_ref()
-                                .expect("This code should not be reached without debug information")
-                                .cache_deferred_variables(
-                                    search_cache,
-                                    &mut target_core.core,
-                                    &mut root_variable,
-                                    StackFrameInfo {
-                                        registers: &stack_frame.registers,
-                                        frame_base: stack_frame.frame_base,
-                                        canonical_frame_address: stack_frame
-                                            .canonical_frame_address,
-                                    },
-                                )?;
-                        }
-
-                        if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
-                            variable = search_cache.get_variable_by_key(expression_as_key);
-                        } else {
-                            variable = search_cache
-                                .get_variable_by_name(&VariableName::Named(expression.clone()));
-                        }
-                        if variable.is_some() {
-                            variable_cache = Some(search_cache);
-                        }
-                    }
-
-                    if let (Some(variable), Some(variable_cache)) = (variable, variable_cache) {
-                        let (
-                            variables_reference,
-                            named_child_variables_cnt,
-                            indexed_child_variables_cnt,
-                        ) = get_variable_reference(&variable, variable_cache);
-                        response_body.indexed_variables = Some(indexed_child_variables_cnt);
-                        response_body.memory_reference = Some(variable.memory_location.to_string());
-                        response_body.named_variables = Some(named_child_variables_cnt);
-                        response_body.result = variable.to_string(variable_cache);
-                        response_body.type_ = Some(variable.type_name());
-                        response_body.variables_reference = variables_reference.into();
-                        expression_resolved = true;
-                    }
-                }
-            }
-
-            if !expression_resolved
-                && let Some(static_cache) = &mut target_core.core_data.static_variables
-            {
-                if static_cache.len() == 1 {
-                    let mut root_variable = static_cache.root_variable().clone();
-                    if root_variable.variable_node_type.is_deferred()
-                        && !static_cache.has_children(&root_variable)
-                    {
-                        if let Some(top_frame) = target_core.core_data.stack_frames.first() {
-                            let registers = top_frame.registers.clone();
-                            let frame_info = StackFrameInfo {
-                                registers: &registers,
-                                frame_base: top_frame.frame_base,
-                                canonical_frame_address: top_frame.canonical_frame_address,
-                            };
-                            #[allow(clippy::expect_used, reason = "Expect should be unreachable")]
-                            target_core
-                                .core_data
-                                .debug_info
-                                .as_ref()
-                                .expect("This code should not be reached without debug information")
-                                .cache_deferred_variables(
-                                    static_cache,
-                                    &mut target_core.core,
-                                    &mut root_variable,
-                                    frame_info,
-                                )?;
-                        } else {
-                            tracing::error!(
-                                "Could not cache deferred static variables. No register data available."
-                            );
-                        }
-                    }
-                }
-
-                let mut static_variable =
-                    if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
-                        static_cache.get_variable_by_key(expression_as_key)
-                    } else {
-                        static_cache.get_variable_by_name(&VariableName::Named(expression.clone()))
-                    };
-
-                if let Some(static_variable) = static_variable.as_mut() {
-                    if static_variable.variable_node_type.is_deferred()
-                        && !static_cache.has_children(static_variable)
-                    {
-                        if let Some(top_frame) = target_core.core_data.stack_frames.first() {
-                            let registers = top_frame.registers.clone();
-                            let frame_info = StackFrameInfo {
-                                registers: &registers,
-                                frame_base: top_frame.frame_base,
-                                canonical_frame_address: top_frame.canonical_frame_address,
-                            };
-                            #[allow(clippy::expect_used, reason = "Expect should be unreachable")]
-                            target_core
-                                .core_data
-                                .debug_info
-                                .as_ref()
-                                .expect("This code should not be reached without debug information")
-                                .cache_deferred_variables(
-                                    static_cache,
-                                    &mut target_core.core,
-                                    static_variable,
-                                    frame_info,
-                                )?;
-                        } else {
-                            tracing::error!(
-                                "Could not cache deferred static variable: {}. No register data available.",
-                                static_variable.name
-                            );
-                        }
-                    }
-
-                    static_variable.extract_value(&mut target_core.core, static_cache);
-                    static_cache.update_variable(static_variable)?;
-
-                    let (
-                        variables_reference,
-                        named_child_variables_cnt,
-                        indexed_child_variables_cnt,
-                    ) = get_variable_reference(static_variable, static_cache);
-                    response_body.indexed_variables = Some(indexed_child_variables_cnt);
-                    response_body.memory_reference =
-                        Some(static_variable.memory_location.to_string());
-                    response_body.named_variables = Some(named_child_variables_cnt);
-                    response_body.result = static_variable.to_string(static_cache);
-                    response_body.type_ = Some(static_variable.type_name());
-                    response_body.variables_reference = variables_reference.into();
-                    expression_resolved = true;
-                }
-            }
-
-            if !expression_resolved
-                && let Some(core_peripherals) = &target_core.core_data.core_peripherals
-            {
-                let svd_cache = &core_peripherals.svd_variable_cache;
-                let svd_variable = if let Ok(expression_as_key) = expression.parse::<ObjectRef>() {
-                    svd_cache.get_variable_by_key(expression_as_key)
-                } else {
-                    svd_cache.get_variable_by_name(&expression)
-                };
-
-                if let Some(svd_variable) = svd_variable {
-                    let (variables_reference, named_child_variables_cnt) =
-                        get_svd_variable_reference(svd_variable, svd_cache);
-                    response_body.indexed_variables = None;
-                    response_body.memory_reference = svd_variable.memory_reference();
-                    response_body.named_variables = Some(named_child_variables_cnt);
-                    response_body.result = svd_variable.get_value(&mut target_core.core);
-                    response_body.type_ = svd_variable.type_name();
-                    response_body.variables_reference = variables_reference.into();
-                }
-            }
-        }
         self.send_response(request, Ok(Some(response_body)))
     }
 
@@ -936,119 +694,34 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             // `VariableCache` (in `CoreData`); the RPC backend has no
             // client-side cache (it lives server-side), so it falls through
             // to `backend.set_variable`.
-            let variable_name = VariableName::Named(arguments.name.clone());
-
-            let mut found_local: Option<(probe_rs_debug::Variable, usize)> = None;
-            for (i, frame) in session_data.core_data[cd_idx]
-                .stack_frames
-                .iter()
-                .enumerate()
+            // RPC path: the `VariableCache` lives server-side, so defer to
+            // the server for every variable update.
+            match session_data
+                .backend
+                .set_variable(
+                    core_index,
+                    parent_key.into(),
+                    arguments.name.clone(),
+                    new_value.clone(),
+                )
+                .await
             {
-                if let Some(search_cache) = &frame.local_variables
-                    && let Some(search_variable) =
-                        search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
-                {
-                    found_local = Some((search_variable, i));
-                    break;
+                Ok(resp) => {
+                    response_body.value = resp.value;
+                    response_body.type_ = resp.type_;
+                    response_body.variables_reference = Some(resp.variables_reference);
+                    response_body.named_variables = resp.named_variables;
+                    response_body.indexed_variables = resp.indexed_variables;
+                    response_body.memory_reference = resp.memory_reference;
                 }
-            }
-
-            let mut found_static: Option<probe_rs_debug::Variable> = None;
-            if found_local.is_none()
-                && let Some(search_cache) = &session_data.core_data[cd_idx].static_variables
-                && let Some(search_variable) =
-                    search_cache.get_variable_by_name_and_parent(&variable_name, parent_key)
-            {
-                found_static = Some(search_variable);
-            }
-
-            if let Some((cache_variable, frame_index)) = found_local {
-                let mut core = session_data.backend.core(core_index)?;
-                #[allow(
-                    clippy::expect_used,
-                    reason = "We just searched for local_variables and found it to be Some"
-                )]
-                let cache = session_data.core_data[cd_idx].stack_frames[frame_index]
-                    .local_variables
-                    .as_mut()
-                    .expect("local_variables was Some during search");
-                match cache_variable.update_value(&mut core, cache, new_value.clone()) {
-                    Ok(()) => {
-                        let (vr, named, indexed) = get_variable_reference(&cache_variable, cache);
-                        response_body.variables_reference = Some(vr.into());
-                        response_body.named_variables = Some(named);
-                        response_body.indexed_variables = Some(indexed);
-                        response_body.type_ = Some(format!("{:?}", cache_variable.type_name()));
-                        response_body.value = new_value;
-                    }
-                    Err(error) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Failed to update variable: {}, with new value {new_value:?}: {error:?}",
-                                cache_variable.name,
-                            ))),
-                        );
-                    }
-                }
-            } else if let Some(cache_variable) = found_static {
-                let mut core = session_data.backend.core(core_index)?;
-                #[allow(
-                    clippy::expect_used,
-                    reason = "We just searched for static_variables and found it to be Some"
-                )]
-                let cache = session_data.core_data[cd_idx]
-                    .static_variables
-                    .as_mut()
-                    .expect("static_variables was Some during search");
-                match cache_variable.update_value(&mut core, cache, new_value.clone()) {
-                    Ok(()) => {
-                        let (vr, named, indexed) = get_variable_reference(&cache_variable, cache);
-                        response_body.variables_reference = Some(vr.into());
-                        response_body.named_variables = Some(named);
-                        response_body.indexed_variables = Some(indexed);
-                        response_body.type_ = Some(format!("{:?}", cache_variable.type_name()));
-                        response_body.value = new_value;
-                    }
-                    Err(error) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Failed to update variable: {}, with new value {new_value:?}: {error:?}",
-                                cache_variable.name,
-                            ))),
-                        );
-                    }
-                }
-            } else {
-                // RPC path: no client-side cache — defer to the server.
-                match session_data
-                    .backend
-                    .set_variable(
-                        core_index,
-                        parent_key.into(),
-                        arguments.name.clone(),
-                        new_value.clone(),
-                    )
-                    .await
-                {
-                    Ok(resp) => {
-                        response_body.value = resp.value;
-                        response_body.type_ = resp.type_;
-                        response_body.variables_reference = Some(resp.variables_reference);
-                        response_body.named_variables = resp.named_variables;
-                        response_body.indexed_variables = resp.indexed_variables;
-                        response_body.memory_reference = resp.memory_reference;
-                    }
-                    Err(error) => {
-                        return self.send_response::<SetVariableResponseBody>(
-                            request,
-                            Err(&DebuggerError::Other(anyhow!(
-                                "Failed to update variable: {}, with new value {new_value:?}: {error}",
-                                variable_name,
-                            ))),
-                        );
-                    }
+                Err(error) => {
+                    return self.send_response::<SetVariableResponseBody>(
+                        request,
+                        Err(&DebuggerError::Other(anyhow!(
+                            "Failed to update variable: {}, with new value {new_value:?}: {error}",
+                            arguments.name,
+                        ))),
+                    );
                 }
             }
         }
@@ -1657,109 +1330,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(body)))
     }
 
-    /// Retrieve available scopes
-    /// - static scope  : Variables with `static` modifier
-    /// - registers     : The [probe_rs::Core::registers] for the target [probe_rs::CoreType]
-    /// - local scope   : Variables defined between start of current frame, and the current pc (program counter)
-    pub(crate) fn scopes_local(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-        request: &Request,
-    ) -> Result<()> {
-        let arguments: ScopesArguments = get_arguments(self, request)?;
-
-        let mut dap_scopes: Vec<Scope> = vec![];
-
-        if let Some(core_peripherals) = &target_core.core_data.core_peripherals {
-            let peripherals_root_variable = core_peripherals.svd_variable_cache.root_variable_key();
-            dap_scopes.push(Scope {
-                line: None,
-                column: None,
-                end_column: None,
-                end_line: None,
-                expensive: true, // VSCode won't open this tree by default.
-                indexed_variables: None,
-                name: "Peripherals".to_string(),
-                presentation_hint: Some("registers".to_string()),
-                named_variables: None,
-                source: None,
-                variables_reference: peripherals_root_variable.into(),
-            });
-        };
-
-        if let Some(static_root_variable) = target_core
-            .core_data
-            .static_variables
-            .as_ref()
-            .map(|stack_frame| stack_frame.root_variable())
-        {
-            dap_scopes.push(Scope {
-                line: None,
-                column: None,
-                end_column: None,
-                end_line: None,
-                expensive: true, // VSCode won't open this tree by default.
-                indexed_variables: None,
-                name: "Static".to_string(),
-                presentation_hint: Some("statics".to_string()),
-                named_variables: None,
-                source: None,
-                variables_reference: static_root_variable.variable_key().into(),
-            });
-        };
-
-        let frame_id: ObjectRef = arguments.frame_id.into();
-
-        tracing::trace!("Getting scopes for frame {:?}", frame_id);
-
-        if let Some(stack_frame) = target_core.get_stackframe(frame_id) {
-            dap_scopes.push(Scope {
-                line: None,
-                column: None,
-                end_column: None,
-                end_line: None,
-                expensive: true, // VSCode won't open this tree by default.
-                indexed_variables: None,
-                name: "Registers".to_string(),
-                presentation_hint: Some("registers".to_string()),
-                named_variables: None,
-                source: None,
-                // We use the stack_frame.id for registers, so that we don't need to cache copies of the registers.
-                variables_reference: stack_frame.id.into(),
-            });
-
-            if let Some(locals_root_variable) = stack_frame
-                .local_variables
-                .as_ref()
-                .map(|stack_frame| stack_frame.root_variable())
-            {
-                dap_scopes.push(Scope {
-                    line: stack_frame
-                        .source_location
-                        .as_ref()
-                        .and_then(|location| location.line.map(|line| line as i64)),
-                    column: stack_frame.source_location.as_ref().and_then(|l| {
-                        l.column.map(|c| match c {
-                            ColumnType::LeftEdge => 0,
-                            ColumnType::Column(c) => c as i64,
-                        })
-                    }),
-                    end_column: None,
-                    end_line: None,
-                    expensive: false, // VSCode will open this tree by default.
-                    indexed_variables: None,
-                    name: "Variables".to_string(),
-                    presentation_hint: Some("locals".to_string()),
-                    named_variables: None,
-                    source: None,
-                    variables_reference: locals_root_variable.variable_key().into(),
-                });
-            }
-        }
-        self.send_response(request, Ok(Some(ScopesResponseBody { scopes: dap_scopes })))
-    }
-
-    /// Implementing the MS DAP for `request Disassemble` has a number of problems:
     /// - The api requires that we return EXACTLY the instruction_count specified.
     ///   - From testing, if we provide slightly fewer or more instructions, the current versions of VSCode will behave in unpredictable ways (frequently causes runaway renderer processes).
     /// - They provide an instruction offset, which we have to convert into bytes. Some architectures use variable length instructions, so the conversion is inexact.
@@ -1818,229 +1388,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     arguments.memory_reference
                 ))),
             )
-        }
-    }
-
-    /// The MS DAP Specification only gives us the unique reference of the variable, and does not tell us which StackFrame it belongs to,
-    /// nor does it specify if this variable is in the local, register or static scope.
-    /// Unfortunately this means we have to search through all the available [`probe_rs::debug::variable_cache::VariableCache`]'s until we find it.
-    /// To minimize the impact of this, we will search in the most 'likely' places first (first stack frame's locals, then statics, then registers, then move to next stack frame, and so on ...)
-    pub(crate) fn variables_local(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-        request: &Request,
-    ) -> Result<()> {
-        let Some(ref debug_info) = target_core.core_data.debug_info else {
-            return self.send_response::<()>(
-                request,
-                Err(&DebuggerError::Other(anyhow!(
-                    "Cannot resolve variables without debug information"
-                ))),
-            );
-        };
-
-        let arguments: VariablesArguments = get_arguments(self, request)?;
-
-        let variable_ref: ObjectRef = arguments.variables_reference.into();
-
-        // First we check the SVD VariableCache, we do this first because it is the lowest computational overhead.
-        if let Some(svd_cache) = target_core
-            .core_data
-            .core_peripherals
-            .as_ref()
-            .map(|cp| &cp.svd_variable_cache)
-            && svd_cache.get_variable_by_key(variable_ref).is_some()
-        {
-            let dap_variables: Vec<Variable> = svd_cache
-                .get_children(variable_ref)
-                .iter()
-                // Convert the `probe_rs::debug::Variable` to `probe_rs_debugger::dap_types::Variable`
-                .map(|variable| {
-                    let (variables_reference, named_child_variables_cnt) =
-                        get_svd_variable_reference(variable, svd_cache);
-
-                    // We use fully qualified Peripheral.Register.Field form to ensure the `evaluate` request can find the right registers and fields by name.
-                    let name = if let Some(last_part) =
-                        variable.name().split_terminator('.').next_back()
-                    {
-                        last_part.to_string()
-                    } else {
-                        variable.name().to_string()
-                    };
-
-                    Variable {
-                        name,
-                        evaluate_name: Some(variable.name().to_string()),
-                        memory_reference: variable.memory_reference(),
-                        indexed_variables: None,
-                        named_variables: Some(named_child_variables_cnt),
-                        presentation_hint: None,
-                        type_: variable.type_name(),
-                        value: {
-                            // The SVD cache is not automatically refreshed on every stack trace, and we only need to refresh the field values.
-                            variable.get_value(&mut target_core.core)
-                        },
-                        variables_reference: variables_reference.into(),
-                        declaration_location_reference: None,
-                        value_location_reference: None,
-                    }
-                })
-                .collect();
-
-            return self.send_response(
-                request,
-                Ok(Some(VariablesResponseBody {
-                    variables: dap_variables,
-                })),
-            );
-        }
-
-        let mut parent_variable: Option<probe_rs_debug::Variable> = None;
-        let mut variable_cache: Option<&mut probe_rs_debug::VariableCache> = None;
-        let mut frame_info: Option<StackFrameInfo<'_>> = None;
-
-        let registers;
-
-        if let Some(search_cache) = &mut target_core.core_data.static_variables
-            && let Some(search_variable) = search_cache.get_variable_by_key(variable_ref)
-        {
-            parent_variable = Some(search_variable);
-            variable_cache = Some(search_cache);
-
-            if let Some(top_level_frame) = target_core.core_data.stack_frames.first() {
-                registers = top_level_frame.registers.clone();
-
-                frame_info = Some(StackFrameInfo {
-                    registers: &registers,
-                    frame_base: top_level_frame.frame_base,
-                    canonical_frame_address: top_level_frame.canonical_frame_address,
-                });
-            }
-        }
-
-        if parent_variable.is_none() {
-            for stack_frame in target_core.core_data.stack_frames.iter_mut() {
-                if let Some(search_cache) = &mut stack_frame.local_variables
-                    && let Some(search_variable) = search_cache.get_variable_by_key(variable_ref)
-                {
-                    parent_variable = Some(search_variable);
-                    variable_cache = Some(search_cache);
-                    frame_info = Some(StackFrameInfo {
-                        registers: &stack_frame.registers,
-                        frame_base: stack_frame.frame_base,
-                        canonical_frame_address: stack_frame.canonical_frame_address,
-                    });
-                    break;
-                }
-
-                if stack_frame.id == variable_ref {
-                    // This is a special case, where we just want to return the stack frame registers.
-
-                    let dap_variables: Vec<Variable> = stack_frame
-                        .registers
-                        .0
-                        .iter()
-                        .map(|register| Variable {
-                            name: register.get_register_name(),
-                            evaluate_name: Some(register.get_register_name()),
-                            memory_reference: None,
-                            indexed_variables: None,
-                            named_variables: None,
-                            presentation_hint: None, // TODO: Implement hint as Hex for registers
-                            type_: Some(format!("{}", VariableName::RegistersRoot)),
-                            value: register.value.unwrap_or_default().to_string(),
-                            variables_reference: 0,
-                            declaration_location_reference: None,
-                            value_location_reference: None,
-                        })
-                        .collect();
-                    return self.send_response(
-                        request,
-                        Ok(Some(VariablesResponseBody {
-                            variables: dap_variables,
-                        })),
-                    );
-                }
-            }
-        }
-
-        // During the initial stack unwind operation, if encounter [Variable]'s with [VariableNodeType::is_deferred()], they will not be auto-expanded and included in the variable cache.
-        // TODO: Use the DAP "Invalidated" event to refresh the variables for this stackframe. It will allow the UI to see updated compound values for pointer variables based on the newly resolved children.
-        if let Some(variable_cache) = variable_cache {
-            if let Some(parent_variable) = parent_variable.as_mut()
-                && parent_variable.variable_node_type.is_deferred()
-                && !variable_cache.has_children(parent_variable)
-            {
-                if let Some(frame_info) = frame_info {
-                    debug_info.cache_deferred_variables(
-                        variable_cache,
-                        &mut target_core.core,
-                        parent_variable,
-                        frame_info,
-                    )?;
-                } else {
-                    tracing::error!(
-                        "Could not cache deferred child variables for variable: {}. No register data available.",
-                        parent_variable.name
-                    );
-                }
-            }
-
-            let dap_variables: Vec<Variable> = variable_cache
-                .get_children(variable_ref)
-                // Filter out requested children, then map them as DAP variables
-                .filter(|variable| match &arguments.filter {
-                    Some(filter) => match filter.as_str() {
-                        "indexed" => variable.is_indexed(),
-                        "named" => !variable.is_indexed(),
-                        other => {
-                            // This will yield an empty Vec, which will result in a user facing error as well as the log below.
-                            tracing::error!("Received invalid variable filter: {}", other);
-                            false
-                        }
-                    },
-                    None => true,
-                })
-                // Convert the `probe_rs::debug::Variable` to `probe_rs_debugger::dap_types::Variable`
-                .map(|variable| {
-                    let (
-                        variables_reference,
-                        named_child_variables_cnt,
-                        indexed_child_variables_cnt,
-                    ) = get_variable_reference(variable, variable_cache);
-                    Variable {
-                        name: variable.name.to_string(),
-                        // evaluate_name: Some(variable.name.to_string()),
-                        // Do NOT use evaluate_name. It is impossible to distinguish between duplicate variable
-                        // TODO: Implement qualified names.
-                        evaluate_name: None,
-                        memory_reference: Some(variable.memory_location.to_string()),
-                        indexed_variables: Some(indexed_child_variables_cnt),
-                        named_variables: Some(named_child_variables_cnt),
-                        presentation_hint: None,
-                        type_: Some(variable.type_name()),
-                        value: variable.to_string(variable_cache),
-                        variables_reference: variables_reference.into(),
-                        declaration_location_reference: None,
-                        value_location_reference: None,
-                    }
-                })
-                .collect();
-            self.send_response(
-                request,
-                Ok(Some(VariablesResponseBody {
-                    variables: dap_variables,
-                })),
-            )
-        } else {
-            let err = DebuggerError::Other(anyhow!(
-                "No variable information found for {}!",
-                arguments.variables_reference
-            ));
-
-            let res: Result<Option<u32>, _> = Err(&err);
-
-            self.send_response(request, res)
         }
     }
 

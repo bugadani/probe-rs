@@ -9,7 +9,7 @@
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
 use probe_rs::{
-    Architecture, Core, CoreInformation, CoreRegisters, CoreStatus, CoreType, Error, RegisterId,
+    Architecture, CoreInformation, CoreRegisters, CoreStatus, CoreType, Error, RegisterId,
     RegisterValue, Session, Target, VectorCatchCondition,
 };
 use probe_rs_debug::{
@@ -186,15 +186,6 @@ pub struct CorePerAttachInfo {
 }
 
 impl RpcBackend {
-    pub(crate) fn core(&mut self, _core_index: usize) -> Result<Core<'_>, Error> {
-        // RPC drives the target via async round trips and never hands out a
-        // synchronous `Core`. All remaining `backend.core()` callers are
-        // local-backend-only paths unreachable for an RPC session.
-        unreachable!(
-            "RpcBackend::core is not used; RPC drives the target via async round trips"
-        )
-    }
-
     /// The wire conversion surfaces `GetCommandLine` as a placeholder
     /// `SemihostingCommand`; the server-side `core/handle_semihosting`
     /// endpoint re-derives the real command from the live core, so the

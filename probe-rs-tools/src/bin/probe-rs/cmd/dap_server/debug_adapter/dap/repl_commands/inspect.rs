@@ -16,7 +16,7 @@ use crate::cmd::dap_server::{
         },
         protocol::ProtocolAdapter,
     },
-    server::core_data::{CoreData, CoreHandle},
+    server::core_data::CoreData,
 };
 
 #[distributed_slice(REPL_COMMANDS)]
@@ -217,20 +217,10 @@ async fn dump_core<'a>(
     );
 
     let ranges = if args.is_empty() {
-        // Auto-detect relies on the client-side variable cache, which only
-        // the local backend populates; RPC falls through to a registers-only dump.
-        let has_client_cache = core_data
-            .stack_frames
-            .iter()
-            .any(|f| f.local_variables.is_some())
-            || core_data.static_variables.is_some();
-        if has_client_cache {
-            let core = backend.core(core_index)?;
-            let mut handle = CoreHandle { core, core_data };
-            handle.get_memory_ranges()
-        } else {
-            Vec::new()
-        }
+        // Auto-detect of memory ranges relied on the client-side variable
+        // cache, which the RPC backend doesn't populate (the cache lives
+        // server-side). Fall through to a registers-only dump.
+        Vec::new()
     } else {
         args
             .chunks(2)

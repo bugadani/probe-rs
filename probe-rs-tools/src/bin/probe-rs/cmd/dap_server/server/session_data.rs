@@ -1,10 +1,9 @@
 use super::{
     configuration::{self, CoreConfig, SessionConfig},
-    core_data::{ChannelNames, CoreData, CoreHandle, wire_scan_region},
+    core_data::{ChannelNames, CoreData, wire_scan_region},
 };
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::PromptKind;
 use crate::cmd::dap_server::server::debug_rtt;
-use crate::util::rtt::client::RttClient;
 use crate::util::rtt::{DefmtProcessor, DefmtState, RttDecoder};
 use crate::{
     FormatKind,
@@ -375,28 +374,6 @@ impl SessionData {
         }
     }
 
-    /// Do a 'light weight' (just get references to existing data structures) attach to the core and return relevant debug data.
-    pub(crate) fn attach_core(
-        &mut self,
-        core_index: usize,
-    ) -> Result<CoreHandle<'_>, DebuggerError> {
-        if let (Ok(target_core), Some(core_data)) = (
-            self.backend.core(core_index),
-            self.core_data
-                .iter_mut()
-                .find(|core_data| core_data.core_index == core_index),
-        ) {
-            Ok(CoreHandle {
-                core: target_core,
-                core_data,
-            })
-        } else {
-            Err(DebuggerError::UnableToOpenProbe(Some(
-                "No core at the specified index.",
-            )))
-        }
-    }
-
     /// Emit the `stopped` event for a halted core without a live `Core`: the
     /// PC is read via `backend.program_counter_id` + `backend.read_core_reg`
     /// (one round trip for the register read; the PC id is cached).
@@ -491,8 +468,6 @@ impl SessionData {
             return Ok(());
         }
 
-        let core_index = self.core_data[cd_idx].core_index;
-
         let mut defmt_data = None;
         let use_auto_formats = rtt_config.channels.is_empty();
 
@@ -562,7 +537,12 @@ impl SessionData {
             debug_rtt::RttClientHandle,
             ChannelNames,
             ChannelNames,
-        ) = if let Some(seed) = self.core_data[cd_idx].rtt_remote_seed.clone() {
+        ) = {
+            let seed = self
+                .core_data[cd_idx]
+                .rtt_remote_seed
+                .clone()
+                .expect("RTT remote seed is always set for RPC sessions");
             let rtt_key = if let Some(k) = self.core_data[cd_idx].rtt_remote_handle {
                 k
             } else {
@@ -606,44 +586,6 @@ impl SessionData {
                 rtt_key,
             ));
 
-            (handle, up, down)
-        } else {
-            let mut core = self.backend.core(core_index)?;
-            let core_data = &mut self.core_data[cd_idx];
-            let client = if let Some(client) = core_data.rtt_client.as_mut() {
-                client
-            } else {
-                core_data.rtt_client.insert(RttClient::new(
-                    rtt_config.clone(),
-                    core_data.rtt_scan_ranges.clone(),
-                    core.target(),
-                ))
-            };
-
-            if client.core_id() != core_index {
-                return Ok(());
-            }
-
-            let Ok(true) = client.try_attach(&mut core) else {
-                return Ok(());
-            };
-
-            let Some(client) = core_data.rtt_client.take() else {
-                return Ok(());
-            };
-
-            let up = client
-                .up_channels()
-                .iter()
-                .map(|c| (c.number(), c.channel_name()))
-                .collect();
-            let down = client
-                .down_channels()
-                .iter()
-                .map(|c| (c.number(), c.channel_name()))
-                .collect();
-
-            let handle = debug_rtt::RttClientHandle::Local(client);
             (handle, up, down)
         };
 
@@ -766,23 +708,9 @@ impl SessionData {
             // scoped block.
             if rtt_enabled {
                 if self.core_data[cd_idx].rtt_connection.is_some() {
-                    let is_remote = self.core_data[cd_idx]
-                        .rtt_connection
-                        .as_ref()
-                        .is_some_and(|c| c.is_remote());
-                    let had_data = if is_remote {
-                        match self.core_data[cd_idx].rtt_connection.as_mut() {
-                            Some(core_rtt) => core_rtt.process_rtt_data_remote(debug_adapter).await,
-                            None => false,
-                        }
-                    } else {
-                        let mut core = self.backend.core(core_index)?;
-                        match self.core_data[cd_idx].rtt_connection.as_mut() {
-                            Some(core_rtt) => {
-                                core_rtt.process_rtt_data(debug_adapter, &mut core).await
-                            }
-                            None => false,
-                        }
+                    let had_data = match self.core_data[cd_idx].rtt_connection.as_mut() {
+                        Some(core_rtt) => core_rtt.process_rtt_data_remote(debug_adapter).await,
+                        None => false,
                     };
                     if had_data {
                         suggest_delay_required = false;
@@ -940,19 +868,8 @@ impl SessionData {
                     continue;
                 };
                 if self.core_data[cd_idx].rtt_connection.is_some() {
-                    let is_remote = self.core_data[cd_idx]
-                        .rtt_connection
-                        .as_ref()
-                        .is_some_and(|c| c.is_remote());
-                    if is_remote {
-                        if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
-                            core_rtt.clean_up_async(None).await?;
-                        }
-                    } else {
-                        let mut core = self.backend.core(core_config.core_index)?;
-                        if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
-                            core_rtt.clean_up_async(Some(&mut core)).await?;
-                        }
+                    if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
+                        core_rtt.clean_up_async().await?;
                     }
                 }
             }
@@ -1030,7 +947,6 @@ fn build_core_data(
         breakpoints: vec![],
         rtt_scan_ranges: ScanRegion::Ranges(vec![]),
         rtt_connection: None,
-        rtt_client: None,
         rtt_remote_seed: None,
         rtt_remote_handle: None,
         repl_commands,
