@@ -5,6 +5,7 @@ use super::{
     request_helpers::{get_dap_source, get_svd_variable_reference, get_variable_reference},
 };
 use crate::cmd::dap_server::backend::DapBackend;
+use crate::cmd::run::EmbeddedTestElfInfo;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
@@ -733,6 +734,27 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                         .short_long_status(Some(pc))
                         .1,
                 ))
+            }
+            "test list" => {
+                let Some(cd) = session_data
+                    .core_data
+                    .iter()
+                    .find(|c| c.core_index == core_index)
+                else {
+                    return Err(DebuggerError::UserMessage("No core data".to_string()));
+                };
+                let Some(test_data) = cd.test_data.downcast_ref::<EmbeddedTestElfInfo>() else {
+                    return Err(DebuggerError::UserMessage(
+                        "Internal error while trying to access test data".to_string(),
+                    ));
+                };
+                let mut tests = test_data
+                    .tests
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect::<Vec<&str>>();
+                tests.sort();
+                Ok(EvalResponse::Message(tests.join("\n")))
             }
             _ => {
                 let mut target_core = session_data

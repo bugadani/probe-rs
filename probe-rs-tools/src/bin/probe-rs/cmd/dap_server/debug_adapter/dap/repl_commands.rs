@@ -149,3 +149,18 @@ pub enum EvalResponse {
 }
 
 pub type EvalResult = Result<EvalResponse, DebuggerError>;
+
+/// Placeholder handler for REPL commands whose logic has been lifted to the
+/// async session-level dispatch (`DebugAdapter::dispatch_repl_command`). The
+/// `handler` field is required by `ReplCommand` for the help/completion
+/// table; this stub is never invoked for migrated commands.
+pub(crate) fn unimplemented_repl(
+    _: &mut CoreHandle<'_>,
+    _: &str,
+    _: &EvaluateArguments,
+    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
+) -> EvalResult {
+    Err(DebuggerError::Other(anyhow::anyhow!(
+        "REPL command handled by async dispatch"
+    )))
+}

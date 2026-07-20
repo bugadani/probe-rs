@@ -30,7 +30,7 @@ pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
             requires_target_halted: false,
             sub_commands: &[],
             args: &[],
-            handler: list_tests,
+            handler: crate::cmd::dap_server::debug_adapter::dap::repl_commands::unimplemented_repl,
         },
         ReplCommand {
             command: "run",
@@ -44,32 +44,6 @@ pub(crate) static EMBEDDED_TEST: ReplCommand = ReplCommand {
     args: &[],
     handler: need_subcommand,
 };
-
-fn list_tests(
-    target_core: &mut CoreHandle<'_>,
-    _: &str,
-    _: &EvaluateArguments,
-    _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
-) -> EvalResult {
-    let Some(test_data) = target_core
-        .core_data
-        .test_data
-        .downcast_ref::<EmbeddedTestElfInfo>()
-    else {
-        return Err(DebuggerError::UserMessage(
-            "Internal error while trying to access test data".to_string(),
-        ));
-    };
-
-    let mut tests = test_data
-        .tests
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect::<Vec<&str>>();
-    tests.sort();
-
-    Ok(EvalResponse::Message(tests.join("\n")))
-}
 
 fn run_test(
     target_core: &mut CoreHandle<'_>,
