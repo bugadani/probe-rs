@@ -141,11 +141,13 @@ async fn examine_memory<'a>(
         } else if let Some(reg) = input_argument.strip_prefix('$') {
             let id = {
                 let regs = backend.register_file(core_index)?;
-                regs.all_registers().find(|r| {
-                    std::iter::once(r.name().to_string())
-                        .chain(r.roles.iter().map(|role| role.to_string()))
-                        .any(|name| name.eq_ignore_ascii_case(reg))
-                }).map(|r| r.id())
+                regs.all_registers()
+                    .find(|r| {
+                        std::iter::once(r.name().to_string())
+                            .chain(r.roles.iter().map(|role| role.to_string()))
+                            .any(|name| name.eq_ignore_ascii_case(reg))
+                    })
+                    .map(|r| r.id())
             };
             let Some(id) = id else {
                 return Err(DebuggerError::UserMessage(format!(
@@ -228,10 +230,7 @@ async fn dump_core<'a>(
         if has_client_cache {
             let core = backend.core(core_index)?;
             let ranges = {
-                let mut handle = CoreHandle {
-                    core,
-                    core_data,
-                };
+                let mut handle = CoreHandle { core, core_data };
                 handle.get_memory_ranges()
             };
             ranges

@@ -13,7 +13,6 @@ use itertools::Itertools;
 use probe_rs::{CoreType, Error, InstructionSet, MemoryInterface};
 use probe_rs_debug::{ColumnType, ObjectRef, SourceLocation};
 
-
 pub(crate) enum DisassemblyAmount {
     Instructions(i64),
     #[allow(unused)]

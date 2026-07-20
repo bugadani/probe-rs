@@ -10,7 +10,9 @@ use crate::cmd::dap_server::{
         dap::{
             adapter::DebugAdapter,
             core_status::DapStatus,
-            dap_types::{Breakpoint, BreakpointEventBody, EvaluateArguments, MemoryAddress, Source},
+            dap_types::{
+                Breakpoint, BreakpointEventBody, EvaluateArguments, MemoryAddress, Source,
+            },
             repl_commands::{EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, async_fn},
             repl_types::ReplCommandArgs,
             request_helpers::get_dap_source,
@@ -147,13 +149,11 @@ async fn create_breakpoint<'a>(
                     {
                         breakpoint_response.id = Some(address as i64);
                         breakpoint_response.source = get_dap_source(&source_location);
-                        breakpoint_response.line =
-                            source_location.line.map(|l| l as i64);
-                        breakpoint_response.column =
-                            source_location.column.map(|col| match col {
-                                ColumnType::LeftEdge => 0_i64,
-                                ColumnType::Column(c) => c as i64,
-                            });
+                        breakpoint_response.line = source_location.line.map(|l| l as i64);
+                        breakpoint_response.column = source_location.column.map(|col| match col {
+                            ColumnType::LeftEdge => 0_i64,
+                            ColumnType::Column(c) => c as i64,
+                        });
                         breakpoint_response.message = Some(format!(
                             "Instruction breakpoint set @:{address:#010x}. File: {}: Line: {}, Column: {}",
                             source_location
@@ -185,9 +185,11 @@ async fn create_breakpoint<'a>(
                 None
             };
             adapter.dyn_send_event("breakpoint", body)?;
-            Ok(EvalResponse::Message(breakpoint_response.message.unwrap_or_else(
-                || format!("Unexpected error creating breakpoint at {address:#x}."),
-            )))
+            Ok(EvalResponse::Message(
+                breakpoint_response.message.unwrap_or_else(|| {
+                    format!("Unexpected error creating breakpoint at {address:#x}.")
+                }),
+            ))
         }
 
         BreakpointLocation::FileLine { path, line, column } => {

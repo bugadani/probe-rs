@@ -33,7 +33,10 @@ pub struct RemoteRttClient {
 
 impl RemoteRttClient {
     pub(crate) fn new(session: SessionInterface, rtt_client: Key<RttClient>) -> Self {
-        Self { session, rtt_client }
+        Self {
+            session,
+            rtt_client,
+        }
     }
 
     /// Async write to a down channel over the RPC session — no local `Core`
@@ -48,7 +51,6 @@ impl RemoteRttClient {
             .await
     }
 }
-
 
 impl RttClientHandle {
     /// Poll multiple up channels in one go. The local path copies each
@@ -156,12 +158,10 @@ impl RttClientHandle {
                     .map_err(|e| RttError::Other(anyhow!(e)))?;
                 client.write_down_channel(&mut core, channel, &data)
             }
-            RttClientHandle::Remote(remote) => {
-                remote
-                    .write_down_remote(channel, data)
-                    .await
-                    .map_err(RttError::Other)
-            }
+            RttClientHandle::Remote(remote) => remote
+                .write_down_remote(channel, data)
+                .await
+                .map_err(RttError::Other),
         }
     }
 }

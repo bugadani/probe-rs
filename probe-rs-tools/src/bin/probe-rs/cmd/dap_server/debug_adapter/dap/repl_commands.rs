@@ -69,8 +69,15 @@ macro_rules! async_fn {
             command_arguments: &'a str,
             evaluate_arguments: &'a EvaluateArguments,
             adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-        ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = EvalResult> + 'a>> {
-            ::std::boxed::Box::pin($handler(backend, core_data, command_arguments, evaluate_arguments, adapter))
+        ) -> ::std::pin::Pin<::std::boxed::Box<dyn ::std::future::Future<Output = EvalResult> + 'a>>
+        {
+            ::std::boxed::Box::pin($handler(
+                backend,
+                core_data,
+                command_arguments,
+                evaluate_arguments,
+                adapter,
+            ))
         }
         wrapper
     }};

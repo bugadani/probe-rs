@@ -22,7 +22,6 @@ use tokio::runtime::Handle;
 
 use super::{DapBackend, FlashingBackend};
 use crate::cmd::dap_server::DebuggerError;
-use async_trait::async_trait;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
     DisassembledInstruction, EvaluateArguments, EvaluateResponseBody, Scope, Source, Variable,
 };
@@ -41,6 +40,7 @@ use crate::rpc::{
         stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
     },
 };
+use async_trait::async_trait;
 
 /// Convert an [`anyhow::Error`] coming out of the RPC client into the
 /// [`probe_rs::Error`] surface the DAP server expects.
@@ -208,7 +208,9 @@ impl DapBackend for RpcBackend {
         // `Core`. All remaining `attach_core`/`backend.core()` callers are
         // local-backend-only code paths that are unreachable for an RPC
         // session, so this should never be invoked.
-        unreachable!("RpcBackend::core is not used; RPC drives the target via async DapBackend methods")
+        unreachable!(
+            "RpcBackend::core is not used; RPC drives the target via async DapBackend methods"
+        )
     }
 
     fn rtt_remote_seed(&self) -> Option<super::RttRemoteSeed> {
@@ -417,10 +419,7 @@ impl DapBackend for RpcBackend {
         let wire_ids: Vec<WireRegisterId> = ids.iter().copied().map(Into::into).collect();
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        let results = client
-            .read_registers(wire_ids)
-            .await
-            .map_err(rpc_err)?;
+        let results = client.read_registers(wire_ids).await.map_err(rpc_err)?;
         Ok(results
             .into_iter()
             .map(|r| r.value.map(RegisterValue::from))
@@ -442,10 +441,7 @@ impl DapBackend for RpcBackend {
     ) -> Result<Vec<u8>, Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client
-            .read_memory_8(address, count)
-            .await
-            .map_err(rpc_err)
+        client.read_memory_8(address, count).await.map_err(rpc_err)
     }
 
     async fn dump_core(
@@ -455,10 +451,7 @@ impl DapBackend for RpcBackend {
     ) -> Result<probe_rs::CoreDump, Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        let wire = client
-            .dump_core(ranges)
-            .await
-            .map_err(rpc_err)?;
+        let wire = client.dump_core(ranges).await.map_err(rpc_err)?;
         Ok(probe_rs::CoreDump {
             registers: wire
                 .registers
@@ -489,9 +482,15 @@ impl DapBackend for RpcBackend {
             .events
             .into_iter()
             .map(|e| match e {
-                WireSemihostingUiEvent::RttWindow { handle, path, format } => {
-                    SemihostingUiEvent::RttWindow { handle, path, format }
-                }
+                WireSemihostingUiEvent::RttWindow {
+                    handle,
+                    path,
+                    format,
+                } => SemihostingUiEvent::RttWindow {
+                    handle,
+                    path,
+                    format,
+                },
                 WireSemihostingUiEvent::LogToConsole(s) => SemihostingUiEvent::LogToConsole(s),
                 WireSemihostingUiEvent::RttOutput { handle, data } => {
                     SemihostingUiEvent::RttOutput { handle, data }
@@ -781,7 +780,6 @@ impl FlashingBackend for RpcBackend {
         Ok(())
     }
 }
-
 
 impl From<WireSource> for Source {
     fn from(s: WireSource) -> Self {

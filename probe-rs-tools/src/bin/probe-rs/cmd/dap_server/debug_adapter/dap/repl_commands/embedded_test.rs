@@ -6,9 +6,7 @@ use crate::cmd::{
             dap::{
                 adapter::DebugAdapter,
                 dap_types::EvaluateArguments,
-                repl_commands::{
-                    EvalResponse, EvalResult, ReplCommand, async_fn, need_subcommand,
-                },
+                repl_commands::{EvalResponse, EvalResult, ReplCommand, async_fn, need_subcommand},
                 repl_types::ReplCommandArgs,
             },
             protocol::ProtocolAdapter,
@@ -51,10 +49,7 @@ async fn list_tests<'a>(
     _evaluate_arguments: &'a EvaluateArguments,
     _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
 ) -> EvalResult {
-    let Some(test_data) = core_data
-        .test_data
-        .downcast_ref::<EmbeddedTestElfInfo>()
-    else {
+    let Some(test_data) = core_data.test_data.downcast_ref::<EmbeddedTestElfInfo>() else {
         return Err(DebuggerError::UserMessage(
             "Internal error while trying to access test data".to_string(),
         ));
@@ -75,10 +70,7 @@ async fn run_test<'a>(
     _evaluate_arguments: &'a EvaluateArguments,
     adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
 ) -> EvalResult {
-    let Some(test_data) = core_data
-        .test_data
-        .downcast_ref::<EmbeddedTestElfInfo>()
-    else {
+    let Some(test_data) = core_data.test_data.downcast_ref::<EmbeddedTestElfInfo>() else {
         return Err(DebuggerError::UserMessage(
             "Internal error while trying to access test data".to_string(),
         ));
@@ -96,7 +88,9 @@ async fn run_test<'a>(
         )));
     };
 
-    adapter.reset_and_halt_core_async(backend, core_data).await?;
+    adapter
+        .reset_and_halt_core_async(backend, core_data)
+        .await?;
     backend
         .kickoff_test(core_data.core_index, address as u64)
         .await

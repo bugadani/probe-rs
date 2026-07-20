@@ -88,7 +88,9 @@ async fn print_registers<'a>(
     let registers: Vec<&'static CoreRegister> = {
         let regs = backend.register_file(core_index)?;
         regs.all_registers()
-            .filter(|reg| register_name.is_empty() || reg.name().eq_ignore_ascii_case(register_name))
+            .filter(|reg| {
+                register_name.is_empty() || reg.name().eq_ignore_ascii_case(register_name)
+            })
             .collect::<Vec<&'static CoreRegister>>()
     };
     if registers.is_empty() {
@@ -138,7 +140,12 @@ async fn print_breakpoints<'a>(
     let mut response_message = String::new();
     for (idx, ab) in core_data.breakpoints.iter().enumerate() {
         #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
-        writeln!(&mut response_message, "Breakpoint #{idx} @ {:010X}", ab.address).unwrap();
+        writeln!(
+            &mut response_message,
+            "Breakpoint #{idx} @ {:010X}",
+            ab.address
+        )
+        .unwrap();
     }
 
     if response_message.is_empty() {

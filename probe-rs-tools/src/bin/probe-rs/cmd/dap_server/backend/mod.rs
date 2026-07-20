@@ -18,21 +18,22 @@ use std::path::Path;
 use std::time::Duration;
 
 use probe_rs::{
-    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error, MemoryInterface,
-    RegisterId, RegisterValue, Session, Target, VectorCatchCondition, flashing::FlashError,
+    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error,
+    MemoryInterface, RegisterId, RegisterValue, Session, Target, VectorCatchCondition,
+    flashing::FlashError,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
 };
 
 use crate::cmd::dap_server::DebuggerError;
-use async_trait::async_trait;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
     EvaluateArguments, EvaluateResponseBody, Scope, Variable,
 };
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
 use crate::util::rtt::DataFormat;
+use async_trait::async_trait;
 
 /// UI event produced by semihosting handling, to be replayed on the DAP
 /// adapter (RTT window open, console/RTT output). Backend-agnostic mirror of
@@ -46,7 +47,10 @@ pub enum SemihostingUiEvent {
         format: DataFormat,
     },
     LogToConsole(String),
-    RttOutput { handle: u32, data: String },
+    RttOutput {
+        handle: u32,
+        data: String,
+    },
 }
 
 /// Result of [`DapBackend::handle_semihosting`]: the post-handling core
@@ -106,10 +110,10 @@ fn handle_semihosting_local(
     command: probe_rs::semihosting::SemihostingCommand,
     events: &mut Vec<SemihostingUiEvent>,
 ) -> Result<CoreStatus, Error> {
-    use std::num::NonZeroU32;
-    use probe_rs::{BreakpointCause, HaltReason};
-    use probe_rs::semihosting::SemihostingCommand;
     use crate::cmd::dap_server::server::core_data::SemihostingFile;
+    use probe_rs::semihosting::SemihostingCommand;
+    use probe_rs::{BreakpointCause, HaltReason};
+    use std::num::NonZeroU32;
 
     match command {
         SemihostingCommand::Open(request) => {
@@ -551,8 +555,8 @@ pub trait DapBackend {
     /// the command line, then resume. Default via [`DapBackend::core`]; the
     /// RPC backend overrides this to `.await` the `tests/kickoff` round trip.
     async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
-        use probe_rs::{BreakpointCause, CoreStatus, HaltReason};
         use probe_rs::semihosting::SemihostingCommand;
+        use probe_rs::{BreakpointCause, CoreStatus, HaltReason};
 
         let mut core = self.core(core_index)?;
         core.run()?;
@@ -611,9 +615,7 @@ pub trait DapBackend {
             (config.catch_hlt, VectorCatchCondition::Hlt),
         ];
         for (enabled, condition) in requested {
-            if enabled
-                && let Err(e) = self.enable_vector_catch(core_index, condition).await
-            {
+            if enabled && let Err(e) = self.enable_vector_catch(core_index, condition).await {
                 tracing::error!("Failed to enable_vector_catch: {:?}", e);
             }
         }

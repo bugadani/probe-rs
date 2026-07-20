@@ -112,7 +112,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     .core_data
                     .iter_mut()
                     .find(|c| c.core_index == core_index)
-                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?,
+                    .ok_or_else(|| {
+                        DebuggerError::Other(anyhow!("No core data for core {core_index}"))
+                    })?,
             )
             .await
         {
@@ -694,7 +696,14 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             .iter_mut()
             .find(|c| c.core_index == core_index)
             .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?;
-        (leaf.handler)(&mut session_data.backend, core_data, argument_string, arguments, self).await
+        (leaf.handler)(
+            &mut session_data.backend,
+            core_data,
+            argument_string,
+            arguments,
+            self,
+        )
+        .await
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
@@ -712,12 +721,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         {
             let arguments: RttWindowOpenedArguments = get_arguments(self, request)?;
 
-            if let Some(rtt_channel) = debugger_rtt_target
-                .debugger_rtt_channels
-                .iter_mut()
-                .find(|debugger_rtt_channel| {
-                    debugger_rtt_channel.channel_number == arguments.channel_number
-                })
+            if let Some(rtt_channel) =
+                debugger_rtt_target
+                    .debugger_rtt_channels
+                    .iter_mut()
+                    .find(|debugger_rtt_channel| {
+                        debugger_rtt_channel.channel_number == arguments.channel_number
+                    })
             {
                 rtt_channel.has_client_window = arguments.window_is_open;
             }
@@ -1083,19 +1093,16 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     CoreStatus::Halted(HaltReason::Breakpoint(_))
                 )
             {
-                let program_counter = match session_data
-                    .backend
-                    .program_counter_id(core_index)
-                    .await
-                {
-                    Ok(id) => session_data
-                        .backend
-                        .read_core_reg(core_index, id)
-                        .await
-                        .ok()
-                        .and_then(|v| v.try_into().ok()),
-                    Err(_) => None,
-                };
+                let program_counter =
+                    match session_data.backend.program_counter_id(core_index).await {
+                        Ok(id) => session_data
+                            .backend
+                            .read_core_reg(core_index, id)
+                            .await
+                            .ok()
+                            .and_then(|v| v.try_into().ok()),
+                        Err(_) => None,
+                    };
                 let event_body = Some(StoppedEventBody {
                     reason: current_core_status
                         .short_long_status(program_counter)
@@ -2061,7 +2068,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     .core_data
                     .iter_mut()
                     .find(|c| c.core_index == core_index)
-                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?,
+                    .ok_or_else(|| {
+                        DebuggerError::Other(anyhow!("No core data for core {core_index}"))
+                    })?,
             )
             .await
         {
@@ -2186,7 +2195,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     .core_data
                     .iter_mut()
                     .find(|c| c.core_index == core_index)
-                    .ok_or_else(|| DebuggerError::Other(anyhow!("No core data for core {core_index}")))?,
+                    .ok_or_else(|| {
+                        DebuggerError::Other(anyhow!("No core data for core {core_index}"))
+                    })?,
             )
             .await
         {
@@ -2462,7 +2473,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 }
 
 impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
-
     /// Halt the core (REPL/DAP `pause`). Driven against `&mut dyn DapBackend`
     /// + `&mut CoreData` so it is callable from the REPL handler path (which
     /// only holds those two disjoint borrows), with no `block_on` bridge.

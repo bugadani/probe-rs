@@ -14,8 +14,7 @@ use crate::{
                 adapter::{DebugAdapter, get_arguments},
                 dap_types::{
                     Capabilities, DisconnectResponse, Event, ExitedEventBody,
-                    InitializeRequestArguments, MessageSeverity, Request,
-                    TerminatedEventBody,
+                    InitializeRequestArguments, MessageSeverity, Request, TerminatedEventBody,
                 },
             },
             protocol::ProtocolAdapter,
@@ -331,8 +330,7 @@ impl Debugger {
                     .await?;
                 DebugSessionStatus::Continue(Duration::ZERO)
             }
-            _ => dispatch_request(debug_adapter, request)
-                .context("Error executing request.")?,
+            _ => dispatch_request(debug_adapter, request).context("Error executing request.")?,
         };
 
         if unhalt_me && let Err(error) = session_data.backend.run(core_index).await {
@@ -1777,4 +1775,3 @@ mod test {
         execute_test(protocol_adapter, true).await.unwrap();
     }
 }
-

@@ -10,8 +10,8 @@ use crate::{
     rpc::{
         Key,
         functions::{
-            ListTestsEndpoint, RpcContext, RpcResult, RpcSpawnContext, RunTestEndpoint,
-            WireTxImpl, flash::BootInfo,
+            ListTestsEndpoint, RpcContext, RpcResult, RpcSpawnContext, RunTestEndpoint, WireTxImpl,
+            flash::BootInfo,
             monitor::{MonitorSender, RttPoller, SemihostingEvent},
         },
         utils::{

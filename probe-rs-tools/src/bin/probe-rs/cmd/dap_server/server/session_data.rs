@@ -2,6 +2,10 @@ use super::{
     configuration::{self, CoreConfig, SessionConfig},
     core_data::{ChannelNames, CoreData, CoreHandle, wire_scan_region},
 };
+use crate::cmd::dap_server::debug_adapter::dap::dap_types::PromptKind;
+use crate::cmd::dap_server::server::debug_rtt;
+use crate::util::rtt::client::RttClient;
+use crate::util::rtt::{DefmtProcessor, DefmtState, RttDecoder};
 use crate::{
     FormatKind,
     cmd::{
@@ -24,10 +28,6 @@ use crate::{
     util::{cli::attach_probe as attach_probe_rpc, common_options::OperationError},
 };
 use anyhow::{Result, anyhow};
-use crate::cmd::dap_server::debug_adapter::dap::dap_types::PromptKind;
-use crate::cmd::dap_server::server::debug_rtt;
-use crate::util::rtt::client::RttClient;
-use crate::util::rtt::{DefmtProcessor, DefmtState, RttDecoder};
 use probe_rs::{
     BreakpointCause, CoreStatus, HaltReason, Session, VectorCatchCondition,
     config::{Registry, TargetSelector},
@@ -361,9 +361,9 @@ impl<B: DapBackend> SessionData<B> {
             .iter_mut()
             .find(|cd| cd.core_index == core_index)
         {
-            core_data
-                .breakpoints
-                .retain(|bp| !matches!(&bp.breakpoint_type, BreakpointType::SourceBreakpoint { .. }));
+            core_data.breakpoints.retain(|bp| {
+                !matches!(&bp.breakpoint_type, BreakpointType::SourceBreakpoint { .. })
+            });
         }
         let set_addrs: Vec<u64> = to_set.iter().map(|(a, _, _)| *a).collect();
         let set_results = self
@@ -563,8 +563,9 @@ impl<B: DapBackend> SessionData<B> {
                     let defmt_state = if let Some(data) = defmt_data.as_ref() {
                         data
                     } else if let Some(program_binary) = program_binary {
-                        let elf = std::fs::read(program_binary)
-                            .map_err(|error| anyhow!("Error attempting to attach to RTT: {error}"))?;
+                        let elf = std::fs::read(program_binary).map_err(|error| {
+                            anyhow!("Error attempting to attach to RTT: {error}")
+                        })?;
                         defmt_data.insert(DefmtState::try_from_bytes(&elf)?)
                     } else {
                         defmt_data.insert(None)
@@ -627,7 +628,11 @@ impl<B: DapBackend> SessionData<B> {
                 return Ok(());
             }
 
-            let up = channels.up.into_iter().map(|m| (m.number, m.name)).collect();
+            let up = channels
+                .up
+                .into_iter()
+                .map(|m| (m.number, m.name))
+                .collect();
             let down = channels
                 .down
                 .into_iter()
@@ -1163,4 +1168,3 @@ fn initialize_core_data<B: DapBackend>(
     }
     Ok(core_data_vec)
 }
-

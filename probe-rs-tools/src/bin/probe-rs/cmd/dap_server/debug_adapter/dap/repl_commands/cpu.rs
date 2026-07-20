@@ -11,9 +11,9 @@ use crate::cmd::dap_server::{
     },
     server::core_data::CoreData,
 };
+use linkme::distributed_slice;
 use probe_rs::{CoreStatus, HaltReason};
 use probe_rs_debug::SteppingMode;
-use linkme::distributed_slice;
 
 #[distributed_slice(REPL_COMMANDS)]
 static CONTINUE: ReplCommand = ReplCommand {
@@ -45,7 +45,6 @@ static STEP: ReplCommand = ReplCommand {
     handler: async_fn!(step_repl),
 };
 
-
 async fn continue_repl<'a>(
     backend: &'a mut dyn DapBackend,
     core_data: &'a mut CoreData,
@@ -64,7 +63,9 @@ async fn reset_repl<'a>(
     _evaluate_arguments: &'a EvaluateArguments,
     adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
 ) -> EvalResult {
-    adapter.reset_and_halt_core_async(backend, core_data).await?;
+    adapter
+        .reset_and_halt_core_async(backend, core_data)
+        .await?;
     Ok(EvalResponse::Message(String::new()))
 }
 

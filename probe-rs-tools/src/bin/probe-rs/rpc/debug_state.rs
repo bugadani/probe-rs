@@ -69,9 +69,11 @@ impl ServerDebugState {
     /// Get the per-core semihosting state, creating it (with handles starting
     /// at 1024 to avoid collision with RTT channel numbers) on first access.
     pub fn semihosting_state(&mut self, core_index: usize) -> &mut CoreSemihostingState {
-        self.semihosting.entry(core_index).or_insert_with(|| CoreSemihostingState {
-            handles: HashMap::new(),
-            next_handle: 1024,
-        })
+        self.semihosting
+            .entry(core_index)
+            .or_insert_with(|| CoreSemihostingState {
+                handles: HashMap::new(),
+                next_handle: 1024,
+            })
     }
 }

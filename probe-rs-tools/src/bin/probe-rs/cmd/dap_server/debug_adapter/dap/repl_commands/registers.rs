@@ -111,7 +111,9 @@ async fn write_register<'a>(
         RegisterValue::U128(value)
     };
 
-    backend.write_core_reg(core_index, id, register_value).await?;
+    backend
+        .write_core_reg(core_index, id, register_value)
+        .await?;
     let read_back = backend.read_core_reg(core_index, id).await?;
 
     Ok(EvalResponse::Message(format!("{name}: {read_back}")))

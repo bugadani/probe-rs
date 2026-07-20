@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
-use std::{ops::Range};
+use std::ops::Range;
 
 use super::session_data;
 use crate::cmd::dap_server::backend::RttRemoteSeed;
@@ -12,14 +12,11 @@ use crate::util::rtt::client::RttClient;
 
 /// `(channel number, channel name)` pairs returned while attaching to RTT.
 pub(crate) type ChannelNames = Vec<(u32, String)>;
-use crate::{
-    cmd::dap_server::{
-        peripherals::svd_variables::SvdCache,
-        server::debug_rtt,
-    },
-};
+use crate::cmd::dap_server::{peripherals::svd_variables::SvdCache, server::debug_rtt};
 use probe_rs::{Core, CoreStatus, rtt::ScanRegion};
-use probe_rs_debug::{ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo};
+use probe_rs_debug::{
+    ObjectRef, VariableCache, debug_info::DebugInfo, stack_frame::StackFrameInfo,
+};
 
 /// Convert [`ScanRegion`] (probe-rs) into the wire [`WireScanRegion`].
 pub(crate) fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
@@ -87,7 +84,6 @@ pub struct CoreHandle<'p> {
 }
 
 impl CoreHandle<'_> {
-
     /// Search available [`probe_rs::debug::StackFrame`]'s for the given `id`
     pub(crate) fn get_stackframe(
         &self,
