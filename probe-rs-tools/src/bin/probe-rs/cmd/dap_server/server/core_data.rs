@@ -90,15 +90,11 @@ pub struct SemihostingFile {
 ///
 /// Usage: To get access to this structure please use the [session_data::SessionData::attach_core] method. Please keep access/locks to this to a minimum duration.
 pub struct CoreHandle<'p> {
-    pub(crate) core_id: usize,
     pub(crate) core: Core<'p>,
     pub(crate) core_data: &'p mut CoreData,
 }
 
 impl CoreHandle<'_> {
-    pub(crate) fn id(&self) -> usize {
-        self.core_id
-    }
 
     /// Some MS DAP requests (e.g. `step`) implicitly expect the core to resume processing and then to optionally halt again, before the request completes.
     ///

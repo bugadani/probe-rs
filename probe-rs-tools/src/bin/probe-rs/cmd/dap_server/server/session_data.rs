@@ -320,7 +320,6 @@ impl<B: DapBackend> SessionData<B> {
                 .find(|core_data| core_data.core_index == core_index),
         ) {
             Ok(CoreHandle {
-                core_id: core_index,
                 core: target_core,
                 core_data,
             })

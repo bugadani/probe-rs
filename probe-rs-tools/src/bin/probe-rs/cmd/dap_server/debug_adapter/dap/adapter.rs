@@ -117,7 +117,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, response)
     }
 
-    async fn pause_impl_async<B: DapBackend>(
+    pub(crate) async fn pause_impl_async<B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
         core_index: usize,
@@ -775,6 +775,18 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             }
             "bt yaml" => {
                 crate::cmd::dap_server::debug_adapter::dap::repl_commands::backtrace::save_backtrace_to_yaml_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
+            "break" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::breakpoint::create_breakpoint_async(
+                    self, session_data, core_index, argument_string,
+                )
+                .await
+            }
+            "clear" => {
+                crate::cmd::dap_server::debug_adapter::dap::repl_commands::breakpoint::clear_breakpoint_async(
                     self, session_data, core_index, argument_string,
                 )
                 .await
@@ -2570,31 +2582,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 }
 
 impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
-    pub(crate) fn pause_impl(
-        &mut self,
-        target_core: &mut CoreHandle<'_>,
-    ) -> Result<CoreInformation> {
-        let cpu_info = target_core.core.halt(Duration::from_millis(500))?;
-
-        let new_status = target_core.core.status()?;
-        let event_body = Some(StoppedEventBody {
-            reason: "pause".to_owned(),
-            description: Some(new_status.short_long_status(Some(cpu_info.pc)).1),
-            thread_id: Some(target_core.id() as i64),
-            preserve_focus_hint: Some(false),
-            text: None,
-            all_threads_stopped: Some(self.all_cores_halted),
-            hit_breakpoint_ids: None,
-        });
-        // We override the halt reason to prevent duplicate stopped events.
-        target_core.core_data.last_known_status = CoreStatus::Halted(HaltReason::Request);
-
-        self.dyn_send_event(
-            "stopped",
-            event_body.map(|event_body| serde_json::to_value(event_body).unwrap_or_default()),
-        )?;
-        Ok(cpu_info)
-    }
 
     /// Returns whether all cores have continued.
     pub(crate) fn reset_and_halt_core(
