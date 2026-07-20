@@ -155,7 +155,6 @@ impl SessionData<RpcBackend> {
         timestamp_offset: UtcOffset,
     ) -> Result<Self, DebuggerError> {
         use crate::cmd::dap_server::backend::rpc::CorePerAttachInfo;
-        use probe_rs::Endian;
 
         let chip_name = config
             .chip
@@ -199,8 +198,6 @@ impl SessionData<RpcBackend> {
             .iter()
             .map(|(_, core_type)| CorePerAttachInfo {
                 architecture: core_type.architecture(),
-                endian: Endian::Little,
-                is_64_bit: matches!(core_type, probe_rs::CoreType::Riscv64),
                 fpu_support: false,
                 fp_register_count: None,
             })

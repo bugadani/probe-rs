@@ -24,7 +24,6 @@ use probe_rs::{
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
 };
-use tokio::runtime::Handle;
 
 use crate::cmd::dap_server::DebuggerError;
 use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
@@ -55,12 +54,6 @@ pub enum SemihostingUiEvent {
 pub struct SemihostingHandleResult {
     pub status: CoreStatus,
     pub events: Vec<SemihostingUiEvent>,
-}
-
-/// Sync↔async bridge: drive `fut` to completion on `handle` without
-/// blocking the runtime (via `block_in_place`).
-pub(crate) fn block_on<F: std::future::Future>(handle: &Handle, fut: F) -> F::Output {
-    tokio::task::block_in_place(|| handle.block_on(fut))
 }
 
 /// Lossy chunked byte read against a [`probe_rs::Core`]: reads as much as
