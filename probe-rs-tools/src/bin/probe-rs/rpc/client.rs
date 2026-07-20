@@ -38,6 +38,7 @@ use crate::{
             CoreInstructionSetEndpoint, CoreReadRegEndpoint, CoreReadRegistersEndpoint,
             CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint, CoreStatusEndpoint,
             CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
+            HandleSemihostingEndpoint,
             CreateRttClientEndpoint, CreateTempFileEndpoint, DisassembleEndpoint, EraseEndpoint,
             EvaluateEndpoint, FlashEndpoint, GetRttChannelsEndpoint, ListChipFamiliesEndpoint,
             ListProbesEndpoint, ListTestsEndpoint, LoadChipFamilyEndpoint, MonitorEndpoint,
@@ -55,8 +56,8 @@ use crate::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
                 CoreHaltRequest, CoreReadRegRequest, CoreReadRegistersRequest,
                 CoreVectorCatchRequest, CoreWaitHaltedRequest, CoreWriteRegRequest,
-                WireCoreDump, WireCoreInformation, WireCoreStatus, WireInstructionSet,
-                WireRegisterId, WireRegisterReadResult, WireRegisterValue,
+                HandleSemihostingRequest, WireCoreDump, WireCoreInformation, WireCoreStatus,
+                WireInstructionSet, WireRegisterId, WireRegisterReadResult, WireRegisterValue,
                 WireVectorCatchCondition,
             },
             debug_vars::{
@@ -1216,6 +1217,20 @@ impl CoreInterface {
                 sessid: self.sessid,
                 core: self.core,
                 ranges,
+            })
+            .await
+    }
+
+    /// Handle a semihosting halt server-side: the server performs the file I/O
+    /// next to the target and returns the resulting core status plus the UI
+    /// events the client must replay (RTT window open, console/RTT output).
+    pub async fn handle_semihosting(
+        &self,
+    ) -> anyhow::Result<crate::rpc::functions::core_ops::HandleSemihostingResult> {
+        self.client
+            .send_resp::<HandleSemihostingEndpoint, _>(&HandleSemihostingRequest {
+                sessid: self.sessid,
+                core: self.core,
             })
             .await
     }

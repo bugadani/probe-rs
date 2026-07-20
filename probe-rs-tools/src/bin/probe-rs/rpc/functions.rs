@@ -17,11 +17,12 @@ use crate::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
                 CoreHaltRequest, CoreReadRegRequest, CoreReadRegistersRequest,
                 CoreVectorCatchRequest, CoreWaitHaltedRequest, CoreWriteRegRequest,
-                WireCoreInformation, WireCoreStatus, WireCoreDump, WireInstructionSet,
-                WireRegisterReadResult, WireRegisterValue, core_available_bp_units,
-                core_clear_hw_bp, core_clear_hw_bps, core_disable_vc, core_enable_vc, core_dump,
-                core_halt, core_halted, core_instruction_set, core_read_reg, core_read_registers,
-                core_run, core_set_hw_bp, core_set_hw_bps, core_status, core_step, core_wait_halted,
+                HandleSemihostingRequest, WireCoreInformation, WireCoreStatus, WireCoreDump,
+                WireInstructionSet, WireRegisterReadResult, WireRegisterValue,
+                core_available_bp_units, core_clear_hw_bp, core_clear_hw_bps,
+                core_disable_vc, core_dump, core_enable_vc, core_handle_semihosting, core_halt,
+                core_halted, core_instruction_set, core_read_reg, core_read_registers, core_run,
+                core_set_hw_bp, core_set_hw_bps, core_status, core_step, core_wait_halted,
                 core_write_reg,
             },
             debug_vars::{
@@ -525,6 +526,8 @@ type CoreU32Response = RpcResult<u32>;
 type CoreInstructionSetResponse = RpcResult<WireInstructionSet>;
 type CoreReadRegistersResponse = RpcResult<Vec<WireRegisterReadResult>>;
 type CoreDumpResponse = RpcResult<WireCoreDump>;
+type HandleSemihostingResponse =
+    RpcResult<crate::rpc::functions::core_ops::HandleSemihostingResult>;
 type CoreSetHwBpsResponse = RpcResult<Vec<bool>>;
 
 endpoints! {
@@ -589,6 +592,7 @@ endpoints! {
     | CoreInstructionSetEndpoint | CoreAccessRequest      | CoreInstructionSetResponse    | "core/instruction_set"    |
     | CoreReadRegistersEndpoint | CoreReadRegistersRequest | CoreReadRegistersResponse    | "core/read_registers"     |
     | CoreDumpEndpoint          | CoreDumpRequest         | CoreDumpResponse             | "core/dump"                |
+    | HandleSemihostingEndpoint | HandleSemihostingRequest | HandleSemihostingResponse    | "core/handle_semihosting"  |
 
     | ReadMemory8Endpoint       | ReadMemoryRequest       | ReadMemory8Response     | "memory/read8"     |
     | ReadMemory16Endpoint      | ReadMemoryRequest       | ReadMemory16Response    | "memory/read16"    |
@@ -691,6 +695,7 @@ postcard_rpc::define_dispatch! {
         | CoreInstructionSetEndpoint   | async | core_instruction_set   |
         | CoreReadRegistersEndpoint    | async | core_read_registers    |
         | CoreDumpEndpoint             | async | core_dump             |
+        | HandleSemihostingEndpoint    | async | core_handle_semihosting |
 
         | ReadMemory8Endpoint       | async     | read_memory       |
         | ReadMemory16Endpoint      | async     | read_memory       |

@@ -515,13 +515,6 @@ impl DapBackend for RpcBackend {
         client.run().await.map_err(rpc_err)
     }
 
-    async fn reset(&mut self, core_index: usize) -> Result<(), Error> {
-        self.invalidate_core_caches(core_index);
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client.reset().await.map_err(rpc_err)
-    }
-
     async fn reset_and_halt(
         &mut self,
         core_index: usize,
@@ -531,14 +524,6 @@ impl DapBackend for RpcBackend {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         let info = client.reset_and_halt(timeout).await.map_err(rpc_err)?;
-        Ok(info.into())
-    }
-
-    async fn step(&mut self, core_index: usize) -> Result<CoreInformation, Error> {
-        self.invalidate_core_caches(core_index);
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        let info = client.step().await.map_err(rpc_err)?;
         Ok(info.into())
     }
 
@@ -553,30 +538,6 @@ impl DapBackend for RpcBackend {
             .get(core_index)
             .map(|m| m.architecture)
             .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
-    }
-
-    async fn core_type(&mut self, core_index: usize) -> Result<CoreType, Error> {
-        self.core_metadata
-            .get(core_index)
-            .map(|m| m.core_type)
-            .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
-    }
-
-    async fn core_endianness(&mut self, core_index: usize) -> Result<Endian, Error> {
-        self.core_metadata
-            .get(core_index)
-            .map(|m| m.endian)
-            .ok_or_else(|| Error::Other(format!("No core metadata for core {core_index}")))
-    }
-
-    async fn core_instruction_set(&mut self, core_index: usize) -> Result<InstructionSet, Error> {
-        let client =
-            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
-        client
-            .instruction_set()
-            .await
-            .map_err(rpc_err)
-            .map(InstructionSet::from)
     }
 
     async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
@@ -729,6 +690,36 @@ impl DapBackend for RpcBackend {
             core_type: wire.core_type.into(),
             fpu_support: wire.fpu_support,
             floating_point_register_count: wire.floating_point_register_count.map(|c| c as usize),
+        })
+    }
+
+    async fn handle_semihosting(
+        &mut self,
+        core_index: usize,
+        _state: &mut crate::cmd::dap_server::server::core_data::ClientSemihostingState,
+    ) -> Result<crate::cmd::dap_server::backend::SemihostingHandleResult, Error> {
+        use crate::cmd::dap_server::backend::{SemihostingHandleResult, SemihostingUiEvent};
+        use crate::rpc::functions::core_ops::WireSemihostingUiEvent;
+
+        let client =
+            RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
+        let result = client.handle_semihosting().await.map_err(rpc_err)?;
+        let events = result
+            .events
+            .into_iter()
+            .map(|e| match e {
+                WireSemihostingUiEvent::RttWindow { handle, path, format } => {
+                    SemihostingUiEvent::RttWindow { handle, path, format }
+                }
+                WireSemihostingUiEvent::LogToConsole(s) => SemihostingUiEvent::LogToConsole(s),
+                WireSemihostingUiEvent::RttOutput { handle, data } => {
+                    SemihostingUiEvent::RttOutput { handle, data }
+                }
+            })
+            .collect();
+        Ok(SemihostingHandleResult {
+            status: result.status.into(),
+            events,
         })
     }
 

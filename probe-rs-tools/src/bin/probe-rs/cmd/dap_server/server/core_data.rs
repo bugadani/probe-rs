@@ -73,10 +73,16 @@ pub struct CoreData {
     /// Cache of the server-side RTT client handle between attach attempts,
     /// so we only call `create_rtt` once per core (RPC backend).
     pub rtt_remote_handle: Option<Key<RttClient>>,
-    pub next_semihosting_handle: u32,
-    pub semihosting_handles: HashMap<u32, SemihostingFile>,
+    pub semihosting_state: ClientSemihostingState,
     pub repl_commands: Vec<ReplCommand>,
     pub test_data: Box<dyn Any>,
+}
+
+/// Client-owned per-core semihosting file state (used by the local backend;
+/// for RPC the state is server-owned and this is unused).
+pub struct ClientSemihostingState {
+    pub handles: HashMap<u32, SemihostingFile>,
+    pub next_handle: u32,
 }
 
 /// File descriptor for files opened by the target.

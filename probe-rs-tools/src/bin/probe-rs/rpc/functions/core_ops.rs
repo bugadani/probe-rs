@@ -5,17 +5,21 @@
 //! endpoints so that a remote DAP server can drive a target through the same
 //! [`probe_rs::Core`] API as a local one.
 
+use std::num::NonZeroU32;
 use std::ops::Range;
 use std::time::Duration;
 
 use postcard_rpc::header::VarHeader;
 use postcard_schema::Schema;
 use probe_rs::{
-    CoreDump, CoreInformation, CoreStatus, HaltReason, InstructionSet, RegisterId, RegisterValue,
-    Session, VectorCatchCondition,
+    BreakpointCause, CoreDump, CoreInformation, CoreStatus, HaltReason, InstructionSet, RegisterId,
+    RegisterValue, Session, VectorCatchCondition,
     semihosting::{ExitErrorDetails, SemihostingCommand, UnknownCommandDetails},
 };
 use serde::{Deserialize, Serialize};
+
+use crate::rpc::debug_state::{CoreSemihostingState, SemihostingFile};
+use crate::util::rtt::DataFormat;
 
 use crate::rpc::{
     Key,
@@ -810,36 +814,34 @@ pub enum WireCoreType {
 
 impl From<probe_rs::CoreType> for WireCoreType {
     fn from(value: probe_rs::CoreType) -> Self {
-        use probe_rs::CoreType::*;
         match value {
-            Armv6m => WireCoreType::Armv6m,
-            Armv7a => WireCoreType::Armv7a,
-            Armv7r => WireCoreType::Armv7r,
-            Armv7m => WireCoreType::Armv7m,
-            Armv7em => WireCoreType::Armv7em,
-            Armv8a => WireCoreType::Armv8a,
-            Armv8m => WireCoreType::Armv8m,
-            Riscv => WireCoreType::Riscv,
-            Riscv64 => WireCoreType::Riscv64,
-            Xtensa => WireCoreType::Xtensa,
+            probe_rs::CoreType::Armv6m => WireCoreType::Armv6m,
+            probe_rs::CoreType::Armv7a => WireCoreType::Armv7a,
+            probe_rs::CoreType::Armv7r => WireCoreType::Armv7r,
+            probe_rs::CoreType::Armv7m => WireCoreType::Armv7m,
+            probe_rs::CoreType::Armv7em => WireCoreType::Armv7em,
+            probe_rs::CoreType::Armv8a => WireCoreType::Armv8a,
+            probe_rs::CoreType::Armv8m => WireCoreType::Armv8m,
+            probe_rs::CoreType::Riscv => WireCoreType::Riscv,
+            probe_rs::CoreType::Riscv64 => WireCoreType::Riscv64,
+            probe_rs::CoreType::Xtensa => WireCoreType::Xtensa,
         }
     }
 }
 
 impl From<WireCoreType> for probe_rs::CoreType {
     fn from(value: WireCoreType) -> Self {
-        use probe_rs::CoreType::*;
         match value {
-            WireCoreType::Armv6m => Armv6m,
-            WireCoreType::Armv7a => Armv7a,
-            WireCoreType::Armv7r => Armv7r,
-            WireCoreType::Armv7m => Armv7m,
-            WireCoreType::Armv7em => Armv7em,
-            WireCoreType::Armv8a => Armv8a,
-            WireCoreType::Armv8m => Armv8m,
-            WireCoreType::Riscv => Riscv,
-            WireCoreType::Riscv64 => Riscv64,
-            WireCoreType::Xtensa => Xtensa,
+            WireCoreType::Armv6m => probe_rs::CoreType::Armv6m,
+            WireCoreType::Armv7a => probe_rs::CoreType::Armv7a,
+            WireCoreType::Armv7r => probe_rs::CoreType::Armv7r,
+            WireCoreType::Armv7m => probe_rs::CoreType::Armv7m,
+            WireCoreType::Armv7em => probe_rs::CoreType::Armv7em,
+            WireCoreType::Armv8a => probe_rs::CoreType::Armv8a,
+            WireCoreType::Armv8m => probe_rs::CoreType::Armv8m,
+            WireCoreType::Riscv => probe_rs::CoreType::Riscv,
+            WireCoreType::Riscv64 => probe_rs::CoreType::Riscv64,
+            WireCoreType::Xtensa => probe_rs::CoreType::Xtensa,
         }
     }
 }
@@ -867,4 +869,199 @@ pub async fn core_dump(
         fpu_support: dump.fpu_support,
         floating_point_register_count: dump.floating_point_register_count.map(|c| c as u64),
     })
+}
+
+// -- semihosting -------------------------------------------------------------
+
+/// UI event produced by server-side semihosting handling, to be replayed on
+/// the client so the DAP UI (RTT windows, console) behaves as if the
+/// semihosting call ran locally.
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub enum WireSemihostingUiEvent {
+    /// Open an RTT window for a newly-allocated semihosting file handle.
+    RttWindow {
+        handle: u32,
+        path: String,
+        format: DataFormat,
+    },
+    /// Write a line to the DAP console.
+    LogToConsole(String),
+    /// Emit RTT output for a previously-opened handle.
+    RttOutput { handle: u32, data: String },
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct HandleSemihostingRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+}
+
+#[derive(Serialize, Deserialize, Schema, Clone)]
+pub struct HandleSemihostingResult {
+    pub status: WireCoreStatus,
+    pub events: Vec<WireSemihostingUiEvent>,
+}
+
+pub type HandleSemihostingResponse = RpcResult<HandleSemihostingResult>;
+
+/// Read the core status server-side; if it halted on a semihosting command,
+/// perform the file I/O next to the target, mutating the server-owned
+/// per-core semihosting state, and return the resulting [`CoreStatus`] plus
+/// the UI events the client must replay.
+pub async fn core_handle_semihosting(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: HandleSemihostingRequest,
+) -> HandleSemihostingResponse {
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
+
+    // Take the session/core AFTER locking debug_states: `probe_rs::Core` is
+    // `!Send`, so it must not be held across an `.await`.
+    let mut session = ctx.session(request.sessid).await;
+    let mut core = session.core(request.core as usize)?;
+
+    let status = core.status()?;
+    let command = match status {
+        CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(c))) => Some(c),
+        _ => None,
+    };
+    let Some(command) = command else {
+        return Ok(HandleSemihostingResult {
+            status: status.into(),
+            events: vec![],
+        });
+    };
+
+    let Some(state) = guard.get_mut(&request.sessid) else {
+        Err("No debug state for session")?
+    };
+    let sh = state.semihosting_state(request.core as usize);
+
+    let mut events = Vec::new();
+    let result = handle_semihosting_impl(&mut core, sh, command, &mut events)?;
+    Ok(HandleSemihostingResult {
+        status: result.into(),
+        events,
+    })
+}
+
+fn handle_semihosting_impl(
+    core: &mut probe_rs::Core,
+    sh: &mut CoreSemihostingState,
+    command: SemihostingCommand,
+    events: &mut Vec<WireSemihostingUiEvent>,
+) -> Result<CoreStatus, probe_rs::Error> {
+    match command {
+        SemihostingCommand::Open(request) => {
+            tracing::debug!("Semihosting request: open {request:?}");
+            let path = request.path(core)?;
+            let mode = request.mode();
+
+            let is_write = mode.starts_with('w') || mode.starts_with('a');
+            let is_append = mode.starts_with('a');
+            let is_stdio = path == ":tt";
+
+            let path = if is_stdio {
+                if is_append { "stderr" } else { "stdout" }.to_string()
+            } else {
+                path
+            };
+
+            let is_binary = mode.ends_with('b');
+            let format = if is_binary {
+                DataFormat::BinaryLE
+            } else {
+                DataFormat::String
+            };
+
+            if is_write {
+                if let Some(file) = sh.handles.values().find(|f| f.path == path) {
+                    request.respond_with_handle(core, file.handle)?;
+                } else {
+                    let handle = sh.next_handle;
+                    #[expect(clippy::unwrap_used, reason = "Infallible from 1024")]
+                    let nz_handle = NonZeroU32::new(handle).unwrap();
+                    sh.handles.insert(
+                        handle,
+                        SemihostingFile {
+                            handle: nz_handle,
+                            path: path.clone(),
+                            mode,
+                        },
+                    );
+                    sh.next_handle += 1;
+
+                    events.push(WireSemihostingUiEvent::RttWindow {
+                        handle,
+                        path,
+                        format,
+                    });
+                    request.respond_with_handle(core, nz_handle)?;
+                }
+            }
+        }
+        SemihostingCommand::Close(request) => {
+            tracing::debug!("Semihosting request: close {request:?}");
+            request.success(core)?;
+        }
+        SemihostingCommand::WriteConsole(request) => {
+            tracing::debug!("Semihosting request: write console {request:?}");
+            let string = request.read(core)?;
+            events.push(WireSemihostingUiEvent::LogToConsole(string));
+        }
+        SemihostingCommand::Write(request) => {
+            tracing::debug!("Semihosting request: write {request:?}");
+            let handle = request.file_handle();
+            let bytes = request.read(core)?;
+
+            if let Some(file) = sh.handles.get(&handle) {
+                let data = if file.mode.ends_with('b') {
+                    let mut string = String::new();
+                    for byte in bytes {
+                        if !string.is_empty() {
+                            string.push(' ');
+                        }
+                        string.push_str(&format!("{byte:02x}"));
+                    }
+                    string
+                } else {
+                    String::from_utf8_lossy(&bytes).to_string()
+                };
+
+                events.push(WireSemihostingUiEvent::RttOutput { handle, data });
+                request.write_status(core, 0)?;
+            }
+        }
+        SemihostingCommand::Errno(request) => {
+            request.write_errno(core, 0)?;
+        }
+
+        SemihostingCommand::ExitSuccess => {
+            events.push(WireSemihostingUiEvent::LogToConsole(
+                "Application has exited with success.".to_string(),
+            ));
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(SemihostingCommand::ExitSuccess),
+            )));
+        }
+        SemihostingCommand::ExitError(details) => {
+            events.push(WireSemihostingUiEvent::LogToConsole(format!(
+                "Application has exited with {details}"
+            )));
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(SemihostingCommand::ExitError(details)),
+            )));
+        }
+
+        unhandled => {
+            tracing::warn!("Unhandled semihosting command: {:?}", unhandled);
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(unhandled),
+            )));
+        }
+    };
+
+    core.run()?;
+    Ok(CoreStatus::Running)
 }

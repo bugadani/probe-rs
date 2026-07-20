@@ -18,9 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use probe_rs::{
-    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Endian, Error,
-    InstructionSet, MemoryInterface, RegisterId, RegisterValue, Session, Target,
-    flashing::FlashError,
+    Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error, MemoryInterface,
+    RegisterId, RegisterValue, Session, Target, flashing::FlashError,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
@@ -33,6 +32,30 @@ use crate::cmd::dap_server::debug_adapter::dap::dap_types::{
 };
 use crate::cmd::dap_server::server::configuration::FlashingConfig;
 use crate::rpc::functions::flash::ProgressEvent as WireProgressEvent;
+use crate::util::rtt::DataFormat;
+
+/// UI event produced by semihosting handling, to be replayed on the DAP
+/// adapter (RTT window open, console/RTT output). Backend-agnostic mirror of
+/// the RPC `WireSemihostingUiEvent` so the trait method is available without
+/// the `remote` feature.
+#[derive(Debug, Clone)]
+pub enum SemihostingUiEvent {
+    RttWindow {
+        handle: u32,
+        path: String,
+        format: DataFormat,
+    },
+    LogToConsole(String),
+    RttOutput { handle: u32, data: String },
+}
+
+/// Result of [`DapBackend::handle_semihosting`]: the post-handling core
+/// status and the UI events the caller must replay on the DAP adapter.
+#[derive(Debug, Clone)]
+pub struct SemihostingHandleResult {
+    pub status: CoreStatus,
+    pub events: Vec<SemihostingUiEvent>,
+}
 
 /// Sync↔async bridge: drive `fut` to completion on `handle` without
 /// blocking the runtime (via `block_in_place`).
@@ -77,6 +100,135 @@ fn read_memory_lossy(
     }
 
     Ok(result_buffer)
+}
+
+/// Local semihosting handler: performs the file I/O against the live `core`
+/// and mutates the client-owned `state`, pushing UI `events` for the caller
+/// to replay on the DAP adapter. Mirrors the historical
+/// `CoreHandle::handle_semihosting` body.
+fn handle_semihosting_local(
+    core: &mut Core<'_>,
+    state: &mut crate::cmd::dap_server::server::core_data::ClientSemihostingState,
+    command: probe_rs::semihosting::SemihostingCommand,
+    events: &mut Vec<SemihostingUiEvent>,
+) -> Result<CoreStatus, Error> {
+    use std::num::NonZeroU32;
+    use probe_rs::{BreakpointCause, HaltReason};
+    use probe_rs::semihosting::SemihostingCommand;
+    use crate::cmd::dap_server::server::core_data::SemihostingFile;
+
+    match command {
+        SemihostingCommand::Open(request) => {
+            tracing::debug!("Semihosting request: open {request:?}");
+            let path = request.path(core)?;
+            let mode = request.mode();
+
+            let is_write = mode.starts_with('w') || mode.starts_with('a');
+            let is_append = mode.starts_with('a');
+            let is_stdio = path == ":tt";
+
+            let path = if is_stdio {
+                if is_append { "stderr" } else { "stdout" }.to_string()
+            } else {
+                path
+            };
+
+            let is_binary = mode.ends_with('b');
+            let format = if is_binary {
+                DataFormat::BinaryLE
+            } else {
+                DataFormat::String
+            };
+
+            if is_write {
+                if let Some(file) = state.handles.values().find(|f| f.path == path) {
+                    request.respond_with_handle(core, file.handle)?;
+                } else {
+                    let handle = state.next_handle;
+                    #[expect(clippy::unwrap_used, reason = "Infallible from 1024")]
+                    let nz_handle = NonZeroU32::new(handle).unwrap();
+                    state.handles.insert(
+                        handle,
+                        SemihostingFile {
+                            handle: nz_handle,
+                            path: path.clone(),
+                            mode,
+                        },
+                    );
+                    state.next_handle += 1;
+
+                    events.push(SemihostingUiEvent::RttWindow {
+                        handle,
+                        path,
+                        format,
+                    });
+                    request.respond_with_handle(core, nz_handle)?;
+                }
+            }
+        }
+        SemihostingCommand::Close(request) => {
+            tracing::debug!("Semihosting request: close {request:?}");
+            request.success(core)?;
+        }
+        SemihostingCommand::WriteConsole(request) => {
+            tracing::debug!("Semihosting request: write console {request:?}");
+            let string = request.read(core)?;
+            events.push(SemihostingUiEvent::LogToConsole(string));
+        }
+        SemihostingCommand::Write(request) => {
+            tracing::debug!("Semihosting request: write {request:?}");
+            let handle = request.file_handle();
+            let bytes = request.read(core)?;
+
+            if let Some(file) = state.handles.get(&handle) {
+                let data = if file.mode.ends_with('b') {
+                    let mut string = String::new();
+                    for byte in bytes {
+                        if !string.is_empty() {
+                            string.push(' ');
+                        }
+                        string.push_str(&format!("{byte:02x}"));
+                    }
+                    string
+                } else {
+                    String::from_utf8_lossy(&bytes).to_string()
+                };
+
+                events.push(SemihostingUiEvent::RttOutput { handle, data });
+                request.write_status(core, 0)?;
+            }
+        }
+        SemihostingCommand::Errno(request) => {
+            request.write_errno(core, 0)?;
+        }
+
+        SemihostingCommand::ExitSuccess => {
+            events.push(SemihostingUiEvent::LogToConsole(
+                "Application has exited with success.".to_string(),
+            ));
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(SemihostingCommand::ExitSuccess),
+            )));
+        }
+        SemihostingCommand::ExitError(details) => {
+            events.push(SemihostingUiEvent::LogToConsole(format!(
+                "Application has exited with {details}"
+            )));
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(SemihostingCommand::ExitError(details)),
+            )));
+        }
+
+        unhandled => {
+            tracing::warn!("Unhandled semihosting command: {:?}", unhandled);
+            return Ok(CoreStatus::Halted(HaltReason::Breakpoint(
+                BreakpointCause::Semihosting(unhandled),
+            )));
+        }
+    };
+
+    core.run()?;
+    Ok(CoreStatus::Running)
 }
 
 /// Seed for driving the server-side RTT client over RPC. Only the RPC
@@ -188,13 +340,6 @@ pub trait DapBackend {
         core.run()
     }
 
-    /// Reset the core (no halt). Default via [`DapBackend::core`]; the RPC
-    /// backend overrides this to `.await` the `reset` round trip.
-    async fn reset(&mut self, core_index: usize) -> Result<(), Error> {
-        let mut core = self.core(core_index)?;
-        core.reset()
-    }
-
     /// Reset and halt the core, returning [`CoreInformation`]. Default via
     /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
     /// `reset_and_halt` round trip (which returns the wire `CoreInformation`).
@@ -205,15 +350,6 @@ pub trait DapBackend {
     ) -> Result<CoreInformation, Error> {
         let mut core = self.core(core_index)?;
         core.reset_and_halt(timeout)
-    }
-
-    /// Single-instruction step, returning [`CoreInformation`]. Default via
-    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
-    /// `core/step` round trip. (Full `SteppingMode` stepping is a separate
-    /// server-side endpoint — see `stack_trace/step`.)
-    async fn step(&mut self, core_index: usize) -> Result<CoreInformation, Error> {
-        let mut core = self.core(core_index)?;
-        core.step()
     }
 
     /// Whether the core is halted. Default via [`DapBackend::core`]; the RPC
@@ -230,30 +366,6 @@ pub trait DapBackend {
     async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
         let core = self.core(core_index)?;
         Ok(core.architecture())
-    }
-
-    /// Static `CoreType` for the core. Default via [`DapBackend::core`]; the
-    /// RPC backend overrides this to read cached `core_metadata` (no round
-    /// trip), so callers can branch on core type without a `Core`.
-    async fn core_type(&mut self, core_index: usize) -> Result<CoreType, Error> {
-        let core = self.core(core_index)?;
-        Ok(core.core_type())
-    }
-
-    /// Runtime `Endian` of the core. Default via [`DapBackend::core`]; the
-    /// RPC backend overrides this to read cached `core_metadata` (no round
-    /// trip).
-    async fn core_endianness(&mut self, core_index: usize) -> Result<Endian, Error> {
-        let mut core = self.core(core_index)?;
-        core.endianness()
-    }
-
-    /// Runtime `InstructionSet` of the core. Default via
-    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
-    /// `core/instruction_set` round trip.
-    async fn core_instruction_set(&mut self, core_index: usize) -> Result<InstructionSet, Error> {
-        let mut core = self.core(core_index)?;
-        core.instruction_set()
     }
 
     /// Static `RegisterId` of the program counter. Default via
@@ -404,6 +516,40 @@ pub trait DapBackend {
     ) -> Result<probe_rs::CoreDump, Error> {
         let mut core = self.core(core_index)?;
         probe_rs::CoreDump::dump_core(&mut core, ranges)
+    }
+
+    /// Handle a semihosting halt: perform the file I/O (open/read/write) and
+    /// return the resulting [`CoreStatus`] plus the UI events the caller must
+    /// replay on the DAP adapter. The default (local) impl drives the live
+    /// [`probe_rs::Core`] via [`DapBackend::core`] and mutates the supplied
+    /// [`ClientSemihostingState`]; the RPC backend overrides this to `.await`
+    /// the `core/handle_semihosting` round trip (the state is server-owned
+    /// and the `state` argument is unused).
+    async fn handle_semihosting(
+        &mut self,
+        core_index: usize,
+        state: &mut crate::cmd::dap_server::server::core_data::ClientSemihostingState,
+    ) -> Result<SemihostingHandleResult, Error> {
+        use probe_rs::{BreakpointCause, HaltReason};
+
+        let mut core = self.core(core_index)?;
+        let status = core.status()?;
+        let Some(command) = (match status {
+            CoreStatus::Halted(HaltReason::Breakpoint(BreakpointCause::Semihosting(c))) => Some(c),
+            _ => None,
+        }) else {
+            return Ok(SemihostingHandleResult {
+                status,
+                events: vec![],
+            });
+        };
+
+        let mut events = Vec::new();
+        let result = handle_semihosting_local(&mut core, state, command, &mut events)?;
+        Ok(SemihostingHandleResult {
+            status: result,
+            events,
+        })
     }
 
     /// Write a single core register. Default via [`DapBackend::core`]; the
