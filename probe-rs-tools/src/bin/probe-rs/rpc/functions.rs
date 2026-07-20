@@ -25,9 +25,10 @@ use crate::{
                 core_set_hw_bps, core_status, core_step, core_wait_halted, core_write_reg,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, SetVariableRequest,
-                StepRequest, VariablesRequest, clear_core_debug_state, evaluate as debug_evaluate,
-                scopes as debug_scopes, set_variable as debug_set_variable, step as debug_step,
+                ClearCoreDebugStateRequest, EvaluateRequest, LoadSvdRequest, ScopesRequest,
+                SetVariableRequest, StepRequest, VariablesRequest, clear_core_debug_state,
+                evaluate as debug_evaluate, load_svd as debug_load_svd, scopes as debug_scopes,
+                set_variable as debug_set_variable, step as debug_step,
                 variables as debug_variables,
             },
             disassemble::{DisassembleRequest, disassemble as disassemble_handler},
@@ -531,6 +532,7 @@ type VariablesResponse = RpcResult<Vec<debug_vars::WireVariable>>;
 type EvaluateResponse = RpcResult<debug_vars::WireEvaluateResponse>;
 type StepResponse = RpcResult<debug_vars::StepResponse>;
 type SetVariableResponse = RpcResult<debug_vars::WireSetVariableResponse>;
+type LoadSvdResponse = RpcResult<()>;
 type DisassembleResponse = RpcResult<Vec<disassemble::WireDisassembledInstruction>>;
 
 type WriteMemory8Request = WriteMemoryRequest<u8>;
@@ -572,6 +574,7 @@ endpoints! {
     | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
     | VariablesEndpoint         | VariablesRequest        | VariablesResponse       | "stack_trace/variables" |
     | ClearCoreDebugStateEndpoint | ClearCoreDebugStateRequest | NoResponse           | "debug_state/clear_core" |
+    | LoadSvdEndpoint           | LoadSvdRequest          | LoadSvdResponse          | "debug_state/load_svd" |
     | EvaluateEndpoint          | EvaluateRequest          | EvaluateResponse       | "stack_trace/evaluate" |
     | StackTraceStepEndpoint    | StepRequest             | StepResponse            | "stack_trace/step" |
     | SetVariableEndpoint       | SetVariableRequest      | SetVariableResponse     | "stack_trace/set_variable" |
@@ -673,6 +676,7 @@ postcard_rpc::define_dispatch! {
         | ScopesEndpoint            | async     | debug_scopes      |
         | VariablesEndpoint         | async     | debug_variables   |
         | ClearCoreDebugStateEndpoint | async   | clear_core_debug_state |
+        | LoadSvdEndpoint           | async   | debug_load_svd       |
         | EvaluateEndpoint          | async     | debug_evaluate    |
         | StackTraceStepEndpoint    | async     | debug_step        |
         | SetVariableEndpoint       | async     | debug_set_variable |

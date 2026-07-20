@@ -18,7 +18,6 @@ use crate::{
             },
             protocol::ProtocolAdapter,
         },
-        peripherals::svd_variables::SvdCache,
         server::configuration::SessionConfig,
     },
     rpc::{
@@ -388,12 +387,9 @@ impl Debugger {
     ) -> Result<(), DebuggerError> {
         let timestamp_offset = self.timestamp_offset;
         let result = self
-            .debug_session_impl::<P, _>(
-                debug_adapter,
-                async move |config: &mut SessionConfig| {
-                    SessionData::new_remote(client, config, timestamp_offset).await
-                },
-            )
+            .debug_session_impl::<P, _>(debug_adapter, async move |config: &mut SessionConfig| {
+                SessionData::new_remote(client, config, timestamp_offset).await
+            })
             .await;
         // Drop the session-scoped temporary directory holding any client-uploaded
         // files (program binary, SVD, chip description). Done at session end rather
@@ -631,23 +627,17 @@ impl Debugger {
             .await
             .map_err(DebuggerError::from)?;
 
-        // Before we complete, load the (optional) CMSIS-SVD file and its variable cache.
-        if let Some(svd_file) = &target_core_config.svd_file {
-            let cd_idx = session_data
-                .core_data
-                .iter()
-                .position(|c| c.core_index == core_index);
-            if let Some(cd_idx) = cd_idx {
-                session_data.core_data[cd_idx].core_peripherals =
-                    match SvdCache::new(svd_file, debug_adapter, launch_attach_request.seq) {
-                        Ok(core_peripherals) => Some(core_peripherals),
-                        Err(error) => {
-                            // This is not a fatal error. We can continue the debug session without the SVD file.
-                            tracing::warn!("{:?}", error);
-                            None
-                        }
-                    };
-            }
+        // Before we complete, upload the (optional) CMSIS-SVD file so the
+        // server can build the per-core peripheral variable cache and surface
+        // peripheral registers/fields through the scopes/variables endpoints.
+        if let Some(svd_file) = &target_core_config.svd_file
+            && let Err(error) = session_data
+                .backend
+                .load_svd(core_index, svd_file.clone())
+                .await
+        {
+            // This is not a fatal error. We can continue the debug session without the SVD file.
+            tracing::warn!("Failed to load SVD file {}: {error:?}", svd_file.display());
         }
 
         if requested_target_session_type == TargetSessionType::LaunchRequest {
@@ -1018,9 +1008,7 @@ mod test {
     use probe_rs::{
         architecture::arm::FullyQualifiedApAddress,
         integration::{FakeProbe, Operation},
-        probe::{
-            DebugProbe, DebugProbeError, DebugProbeInfo, DebugProbeSelector, ProbeFactory,
-        },
+        probe::{DebugProbe, DebugProbeError, DebugProbeInfo, DebugProbeSelector, ProbeFactory},
     };
     use serde_json::json;
     use std::{
@@ -1435,8 +1423,7 @@ mod test {
         // Spawn an in-process RPC server backed by the test lister (so the
         // `FakeProbe` is visible to `probe/attach`), and drive the DAP
         // session through `RpcBackend` — the same path production uses.
-        let (mut local_server, tx, rx) =
-            RpcApp::create_server_with_lister(16, lister);
+        let (mut local_server, tx, rx) = RpcApp::create_server_with_lister(16, lister);
         let handle = tokio::spawn(async move { local_server.run().await });
 
         let client = RpcClient::new_local_from_wire(tx, rx);

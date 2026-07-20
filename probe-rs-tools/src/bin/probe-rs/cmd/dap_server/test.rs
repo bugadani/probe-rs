@@ -20,6 +20,10 @@ impl TestLister {
 
 impl ProbeLister for TestLister {
     fn open(&self, selector: &DebugProbeSelector) -> Result<Probe, DebugProbeError> {
+        #[expect(
+            clippy::unwrap_used,
+            reason = "Test lister: a poisoned mutex is unrecoverable"
+        )]
         let mut probes = self.probes.lock().unwrap();
         let probe_index = probes.iter().position(|(info, _)| {
             info.product_id == selector.product_id
@@ -39,9 +43,12 @@ impl ProbeLister for TestLister {
     }
 
     fn list(&self, selector: Option<&DebugProbeSelector>) -> Vec<DebugProbeInfo> {
-        self.probes
-            .lock()
-            .unwrap()
+        #[expect(
+            clippy::unwrap_used,
+            reason = "Test lister: a poisoned mutex is unrecoverable"
+        )]
+        let probes = self.probes.lock().unwrap();
+        probes
             .iter()
             .filter_map(|(info, _)| {
                 if selector

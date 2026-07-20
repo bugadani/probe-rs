@@ -20,6 +20,11 @@ pub struct ServerDebugState {
 pub struct CoreDebugState {
     pub stack_frames: Vec<StackFrame>,
     pub static_variables: Option<VariableCache>,
+    /// Server-side CMSIS-SVD peripheral variable cache for this core.
+    /// Populated by the `load_svd` endpoint and queried by the
+    /// `scopes`/`variables` endpoints. `None` when no SVD file was
+    /// supplied for the core.
+    pub svd_variables: Option<crate::rpc::svd::SvdVariableCache>,
 }
 
 /// Server-side per-core semihosting state, mirroring the client's
@@ -51,11 +56,19 @@ impl ServerDebugState {
         stack_frames: Vec<StackFrame>,
         static_variables: Option<VariableCache>,
     ) {
+        // Preserve the SVD cache across stack-frame refreshes: `store_core`
+        // is invoked on every halt, but the SVD cache is built once per
+        // session (by `load_svd`) and must survive the refresh.
+        let svd_variables = self
+            .per_core
+            .get(&core_index)
+            .and_then(|c| c.svd_variables.clone());
         self.per_core.insert(
             core_index,
             CoreDebugState {
                 stack_frames,
                 static_variables,
+                svd_variables,
             },
         );
     }

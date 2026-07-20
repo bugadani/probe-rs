@@ -92,11 +92,15 @@ async fn run_test<'a>(
     adapter
         .reset_and_halt_core_async(backend, core_data)
         .await?;
-    RpcCoreClient::new_for_backend(backend.client.clone(), backend.sessid, core_data.core_index as u32)
-        .kickoff_test(address as u64)
-        .await
-        .map_err(rpc_err)
-        .map_err(DebuggerError::ProbeRs)?;
+    RpcCoreClient::new_for_backend(
+        backend.client.clone(),
+        backend.sessid,
+        core_data.core_index as u32,
+    )
+    .kickoff_test(address as u64)
+    .await
+    .map_err(rpc_err)
+    .map_err(DebuggerError::ProbeRs)?;
 
     core_data.last_known_status = probe_rs::CoreStatus::Unknown;
     adapter.all_cores_halted = false;

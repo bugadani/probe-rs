@@ -49,6 +49,17 @@ pub struct ClearCoreDebugStateRequest {
 }
 
 #[derive(Serialize, Deserialize, Schema)]
+pub struct LoadSvdRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    /// Server-side path to the CMSIS-SVD file (the client uploads it via the
+    /// temp-file endpoints, then passes the resulting path here).
+    pub path: String,
+}
+
+pub type LoadSvdResponse = crate::rpc::functions::RpcResult<()>;
+
+#[derive(Serialize, Deserialize, Schema)]
 pub struct EvaluateRequest {
     pub sessid: Key<Session>,
     pub core: u32,
@@ -128,6 +139,21 @@ pub async fn scopes(
             name: "Static".to_string(),
             presentation_hint: Some("statics".to_string()),
             variables_reference: i64::from(static_cache.root_variable().variable_key()),
+            named_variables: None,
+            indexed_variables: None,
+            expensive: true,
+            line: None,
+            column: None,
+            end_line: None,
+            end_column: None,
+        });
+    }
+
+    if let Some(svd_cache) = &core_state.svd_variables {
+        scopes.push(WireScope {
+            name: "Peripherals".to_string(),
+            presentation_hint: None,
+            variables_reference: i64::from(svd_cache.root_variable_key()),
             named_variables: None,
             indexed_variables: None,
             expensive: true,
@@ -241,6 +267,34 @@ pub async fn variables(
         return Ok(regs);
     }
 
+    // SVD peripheral variables: resolved against the server-side
+    // `SvdVariableCache`, reading register/field values from the live `Core`.
+    // SVD variables are not indexed, so the indexed/named filter is ignored
+    // here (matching the original client-side SVD path, which returned all
+    // children).
+    if let Some(svd_cache) = core_state.svd_variables.as_ref()
+        && svd_cache.get_variable_by_key(variable_ref).is_some()
+    {
+        let dap_variables: Vec<WireVariable> = svd_cache
+            .get_children(variable_ref)
+            .into_iter()
+            .map(|variable| {
+                let child_count = svd_cache.get_children(variable.variable_key()).len() as i64;
+                WireVariable {
+                    name: variable.name().to_string(),
+                    evaluate_name: None,
+                    memory_reference: variable.memory_reference(),
+                    indexed_variables: Some(0),
+                    named_variables: Some(child_count),
+                    type_: variable.type_name(),
+                    value: variable.get_value(&mut core),
+                    variables_reference: i64::from(variable.variable_key()),
+                }
+            })
+            .collect();
+        return Ok(dap_variables);
+    }
+
     if let Some(search_cache) = core_state.static_variables.as_mut()
         && let Some(search_variable) = search_cache.get_variable_by_key(variable_ref)
     {
@@ -327,6 +381,30 @@ pub async fn clear_core_debug_state(
     if let Some(state) = guard.get_mut(&request.sessid) {
         state.clear_core(request.core as usize);
     }
+    Ok(())
+}
+
+/// Parse the CMSIS-SVD file at `request.path` and store the resulting
+/// [`SvdVariableCache`] in the per-core debug state. Requires the session
+/// state to already exist (created by `load_debug_info` during session
+/// start); if it does not, the client should warn and continue without
+/// peripheral variables. The cache is stored on the per-core entry (created
+/// here if necessary) and is preserved across stack-frame refreshes by
+/// [`ServerDebugState::store_core`].
+pub async fn load_svd(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: LoadSvdRequest,
+) -> LoadSvdResponse {
+    let svd_cache = crate::rpc::svd::parse_svd_file(std::path::Path::new(&request.path))?;
+
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
+    let Some(state) = guard.get_mut(&request.sessid) else {
+        Err("No debug state for session (load debug info first)")?
+    };
+    let core_state = state.per_core.entry(request.core as usize).or_default();
+    core_state.svd_variables = Some(svd_cache);
     Ok(())
 }
 

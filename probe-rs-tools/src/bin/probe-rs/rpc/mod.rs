@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 pub mod client;
 pub mod debug_state;
 pub mod functions;
+pub mod svd;
 pub mod transport;
 pub mod utils;
 

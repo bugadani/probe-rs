@@ -10,7 +10,10 @@ use crate::{
     cmd::{
         dap_server::{
             DebuggerError,
-            backend::{rpc::{RpcBackend, rpc_err}, RttRemoteSeed},
+            backend::{
+                RttRemoteSeed,
+                rpc::{RpcBackend, rpc_err},
+            },
             debug_adapter::{
                 dap::{
                     adapter::DebugAdapter,
@@ -177,7 +180,9 @@ impl SessionData {
                 .session_interface()
                 .load_debug_info(path.to_path_buf())
                 .await
-                .map_err(|e| DebuggerError::Other(anyhow::anyhow!("Failed to load debug info: {e}")))?;
+                .map_err(|e| {
+                    DebuggerError::Other(anyhow::anyhow!("Failed to load debug info: {e}"))
+                })?;
         }
 
         let mut this = SessionData {
@@ -452,10 +457,9 @@ impl SessionData {
         Ok(status)
     }
 
-    /// Attach to the target's RTT interface without a `CoreHandle`: the local
-    /// path acquires a `Core` via `self.backend.core()` (disjoint from
-    /// `self.core_data`); the remote path drives the server-side `RttClient`
-    /// via the cached `RttRemoteSeed` and needs no `Core`.
+    /// Attach to the target's RTT interface without a `CoreHandle`: the
+    /// remote path drives the server-side `RttClient` via the cached
+    /// `RttRemoteSeed` and needs no `Core`.
     async fn attach_to_rtt<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
@@ -538,11 +542,10 @@ impl SessionData {
             ChannelNames,
             ChannelNames,
         ) = {
-            let seed = self
-                .core_data[cd_idx]
+            let seed = self.core_data[cd_idx]
                 .rtt_remote_seed
                 .clone()
-                .expect("RTT remote seed is always set for RPC sessions");
+                .ok_or_else(|| anyhow!("RTT remote seed is not set for this core"))?;
             let rtt_key = if let Some(k) = self.core_data[cd_idx].rtt_remote_handle {
                 k
             } else {
@@ -738,10 +741,7 @@ impl SessionData {
             // window open, console/RTT output) that we replay on the DAP
             // adapter here.
             if let Some(_command) = semihosting_command {
-                let result = self
-                    .backend
-                    .handle_semihosting(core_index)
-                    .await?;
+                let result = self.backend.handle_semihosting(core_index).await?;
                 for event in result.events {
                     match event {
                         crate::cmd::dap_server::backend::SemihostingUiEvent::RttWindow {
@@ -867,10 +867,8 @@ impl SessionData {
                 else {
                     continue;
                 };
-                if self.core_data[cd_idx].rtt_connection.is_some() {
-                    if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
-                        core_rtt.clean_up_async().await?;
-                    }
+                if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut() {
+                    core_rtt.clean_up_async().await?;
                 }
             }
         }
@@ -942,7 +940,6 @@ fn build_core_data(
         target_name: format!("{}-{}", core_configuration.core_index, target_name),
         debug_info,
         static_variables: None,
-        core_peripherals: None,
         stack_frames: vec![],
         breakpoints: vec![],
         rtt_scan_ranges: ScanRegion::Ranges(vec![]),

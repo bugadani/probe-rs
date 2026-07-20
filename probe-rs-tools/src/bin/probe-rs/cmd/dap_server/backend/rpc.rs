@@ -6,7 +6,12 @@
 //! runtime, so async round trips can be `.await`ed directly — no
 //! `block_on`/`block_in_place` bridge is required.
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use probe_rs::{
     Architecture, CoreInformation, CoreRegisters, CoreStatus, CoreType, Error, RegisterId,
@@ -250,7 +255,10 @@ impl RpcBackend {
         client.core_halted().await.map_err(rpc_err)
     }
 
-    pub(crate) async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
+    pub(crate) async fn program_counter_id(
+        &mut self,
+        core_index: usize,
+    ) -> Result<RegisterId, Error> {
         self.core_metadata
             .get(core_index)
             .and_then(|m| m.registers.pc())
@@ -258,7 +266,11 @@ impl RpcBackend {
             .ok_or_else(|| Error::Other(format!("No PC register for core {core_index}")))
     }
 
-    pub(crate) async fn set_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
+    pub(crate) async fn set_hw_breakpoint(
+        &mut self,
+        core_index: usize,
+        address: u64,
+    ) -> Result<(), Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
         client.set_hw_breakpoint(address).await.map_err(rpc_err)
@@ -541,6 +553,17 @@ impl RpcBackend {
         }
 
         Ok(frames)
+    }
+
+    /// Upload the CMSIS-SVD file at `path` to the server and have it parse
+    /// the file and build the per-core peripheral variable cache server-side.
+    /// Non-fatal: callers should warn and continue on error.
+    pub(crate) async fn load_svd(&mut self, core_index: usize, path: PathBuf) -> Result<(), Error> {
+        self.session_interface()
+            .load_svd(core_index as u32, path)
+            .await
+            .map_err(rpc_err)?;
+        Ok(())
     }
 
     pub(crate) async fn scopes(

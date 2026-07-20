@@ -41,16 +41,16 @@ use crate::{
             CreateRttClientEndpoint, CreateTempFileEndpoint, DisassembleEndpoint, EraseEndpoint,
             EvaluateEndpoint, FlashEndpoint, GetRttChannelsEndpoint, HandleSemihostingEndpoint,
             ListChipFamiliesEndpoint, ListProbesEndpoint, ListTestsEndpoint,
-            LoadChipFamilyEndpoint, LoadDebugInfoEndpoint, MonitorEndpoint, PollRttUpEndpoint,
-            ProgressEventTopic,
-            ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint, ReadMemory32Endpoint,
-            ReadMemory64Endpoint, ResetCoreAndHaltEndpoint, ResetCoreEndpoint,
-            ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint, ScopesEndpoint,
-            SelectProbeEndpoint, SetVariableEndpoint, StackTraceStepEndpoint,
-            TakeRichStackTraceEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic,
-            TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint, TestKickoffEndpoint,
-            TokioSpawner, VariablesEndpoint, VerifyEndpoint, WriteMemory8Endpoint,
-            WriteMemory16Endpoint, WriteMemory32Endpoint, WriteMemory64Endpoint,
+            LoadChipFamilyEndpoint, LoadDebugInfoEndpoint, LoadSvdEndpoint, MonitorEndpoint,
+            PollRttUpEndpoint, ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint,
+            ReadMemory16Endpoint, ReadMemory32Endpoint, ReadMemory64Endpoint,
+            ResetCoreAndHaltEndpoint, ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult,
+            RttDownEndpoint, RunTestEndpoint, ScopesEndpoint, SelectProbeEndpoint,
+            SetVariableEndpoint, StackTraceStepEndpoint, TakeRichStackTraceEndpoint,
+            TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
+            TempFileDataEndpoint, TestKickoffEndpoint, TokioSpawner, VariablesEndpoint,
+            VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
+            WriteMemory64Endpoint,
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
@@ -61,9 +61,10 @@ use crate::{
                 WireVectorCatchCondition,
             },
             debug_vars::{
-                ClearCoreDebugStateRequest, EvaluateRequest, ScopesRequest, SetVariableRequest,
-                StepRequest, StepResponse, VariablesRequest, WireEvaluateResponse, WireScope,
-                WireSetVariableResponse, WireSteppingMode, WireVariable,
+                ClearCoreDebugStateRequest, EvaluateRequest, LoadSvdRequest, ScopesRequest,
+                SetVariableRequest, StepRequest, StepResponse, VariablesRequest,
+                WireEvaluateResponse, WireScope, WireSetVariableResponse, WireSteppingMode,
+                WireVariable,
             },
             disassemble::{DisassembleRequest, WireDisassembledInstruction},
             file::{AppendFileRequest, TempFile},
@@ -763,6 +764,22 @@ impl SessionInterface {
         self.client
             .send_resp::<LoadDebugInfoEndpoint, _>(&LoadDebugInfoRequest {
                 sessid: self.sessid,
+                path: path.display().to_string(),
+            })
+            .await
+    }
+
+    /// Upload the CMSIS-SVD file at `path` to the server and have it parse the
+    /// file and build the per-core `SvdVariableCache` server-side, so the
+    /// `scopes`/`variables` endpoints can surface peripheral registers and
+    /// fields. Mirrors [`Self::load_debug_info`].
+    pub async fn load_svd(&self, core: u32, path: PathBuf) -> anyhow::Result<()> {
+        let path = self.client.upload_file(&path).await?;
+
+        self.client
+            .send_resp::<LoadSvdEndpoint, _>(&LoadSvdRequest {
+                sessid: self.sessid,
+                core,
                 path: path.display().to_string(),
             })
             .await

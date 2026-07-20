@@ -2,7 +2,6 @@
 #![warn(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 pub(crate) mod backend;
 pub(crate) mod debug_adapter;
-mod peripherals;
 pub(crate) mod server;
 
 #[cfg(test)]
@@ -10,9 +9,7 @@ mod test;
 
 use anyhow::Result;
 use probe_rs::{
-    CoreDumpError, Error,
-    architecture::arm::ap::AccessPortError,
-    flashing::FileDownloadError,
+    CoreDumpError, Error, architecture::arm::ap::AccessPortError, flashing::FileDownloadError,
     probe::DebugProbeError,
 };
 use probe_rs_debug::DebugError;

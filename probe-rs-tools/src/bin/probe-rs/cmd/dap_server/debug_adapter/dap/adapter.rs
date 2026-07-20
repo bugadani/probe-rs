@@ -5,7 +5,6 @@ use super::{
     request_helpers::get_dap_source,
 };
 use crate::cmd::dap_server::backend::rpc::{RpcBackend, rpc_err};
-use crate::rpc::client::CoreInterface as RpcCoreClient;
 use crate::cmd::dap_server::{
     DebuggerError,
     debug_adapter::{
@@ -18,6 +17,7 @@ use crate::cmd::dap_server::{
         session_data::{ActiveBreakpoint, BreakpointType, SessionData, SourceLocationScope},
     },
 };
+use crate::rpc::client::CoreInterface as RpcCoreClient;
 use crate::util::rtt;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose as base64_engine};
@@ -1866,7 +1866,9 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
             .core_metadata
             .get(core_index)
             .map(|m| m.architecture)
-            .ok_or_else(|| probe_rs::Error::Other(format!("No core metadata for core {core_index}")))
+            .ok_or_else(|| {
+                probe_rs::Error::Other(format!("No core metadata for core {core_index}"))
+            })
             .map_err(DebuggerError::ProbeRs)?;
         if [Architecture::Riscv, Architecture::Xtensa].contains(&arch) {
             let addrs: Vec<u64> = core_data.breakpoints.iter().map(|bp| bp.address).collect();

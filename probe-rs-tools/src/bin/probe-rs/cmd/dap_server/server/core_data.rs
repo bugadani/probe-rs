@@ -12,7 +12,7 @@ use crate::util::rtt::client::RttClient;
 
 /// `(channel number, channel name)` pairs returned while attaching to RTT.
 pub(crate) type ChannelNames = Vec<(u32, String)>;
-use crate::cmd::dap_server::{peripherals::svd_variables::SvdCache, server::debug_rtt};
+use crate::cmd::dap_server::server::debug_rtt;
 use probe_rs::{CoreStatus, rtt::ScanRegion};
 use probe_rs_debug::{VariableCache, debug_info::DebugInfo};
 
@@ -42,7 +42,6 @@ pub struct CoreData {
     pub target_name: String,
     pub debug_info: Option<DebugInfo>,
     pub static_variables: Option<VariableCache>,
-    pub core_peripherals: Option<SvdCache>,
     pub stack_frames: Vec<probe_rs_debug::stack_frame::StackFrame>,
     pub breakpoints: Vec<session_data::ActiveBreakpoint>,
     pub rtt_scan_ranges: ScanRegion,
