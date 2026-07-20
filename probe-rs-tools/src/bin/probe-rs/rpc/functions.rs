@@ -49,9 +49,10 @@ use crate::{
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest, reset, reset_and_halt},
             resume::{ResumeAllCoresRequest, resume_all_cores},
             rtt_client::{
-                CreateRttClientRequest, CreateRttClientResponse, PollRttUpRequest,
-                PollRttUpResponse, RttChannelRequest, RttChannelsResponse, RttDownRequest,
-                clean_up_rtt, create_rtt_client, get_rtt_channels, poll_rtt_up, write_rtt_down,
+                ClearRttControlBlockRequest, ClearRttControlBlockResponse, CreateRttClientRequest,
+                CreateRttClientResponse, PollRttUpRequest, PollRttUpResponse, RttChannelRequest,
+                RttChannelsResponse, RttDownRequest, clean_up_rtt, clear_rtt_control_block,
+                create_rtt_client, get_rtt_channels, poll_rtt_up, write_rtt_down,
             },
             stack_trace::{
                 TakeRichStackTraceResponse, TakeStackTraceRequest, TakeStackTraceResponse,
@@ -544,6 +545,7 @@ endpoints! {
     | GetRttChannelsEndpoint    | RttChannelRequest       | RttChannelsResponse     | "rtt/channels"     |
     | PollRttUpEndpoint         | PollRttUpRequest        | PollRttUpResponse       | "rtt/poll_up"      |
     | CleanUpRttEndpoint        | RttChannelRequest       | NoResponse              | "rtt/clean_up"     |
+    | ClearRttControlBlockEndpoint | ClearRttControlBlockRequest | ClearRttControlBlockResponse | "rtt/clear_control_block" |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
     | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
     | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
@@ -662,6 +664,7 @@ postcard_rpc::define_dispatch! {
         | GetRttChannelsEndpoint    | async     | get_rtt_channels  |
         | PollRttUpEndpoint         | async     | poll_rtt_up       |
         | CleanUpRttEndpoint        | async     | clean_up_rtt      |
+        | ClearRttControlBlockEndpoint | async  | clear_rtt_control_block |
 
         | ListTestsEndpoint         | spawn     | list_tests        |
         | RunTestEndpoint           | spawn     | run_test          |

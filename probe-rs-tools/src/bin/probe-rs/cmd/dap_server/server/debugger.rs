@@ -768,7 +768,7 @@ impl Debugger {
             cd.rtt_connection = None;
         }
 
-        session_data.clear_rtt_blocks()?;
+        session_data.clear_rtt_blocks().await?;
 
         session_data.poll_cores(&self.config, debug_adapter).await?;
 
@@ -811,7 +811,7 @@ impl Debugger {
 
         // Clear stale RTT control blocks before reflashing so that the old
         // control block header does not leak into the first poll cycle.
-        session_data.clear_rtt_blocks()?;
+        session_data.clear_rtt_blocks().await?;
 
         let mut flash_progress_state = ProgressState::default();
         let describe_op = |operation| match operation {
@@ -1779,3 +1779,4 @@ mod test {
         execute_test(protocol_adapter, true).await.unwrap();
     }
 }
+

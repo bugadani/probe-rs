@@ -157,6 +157,37 @@ pub async fn get_rtt_channels(
 }
 
 #[derive(Serialize, Deserialize, Schema)]
+pub struct ClearRttControlBlockRequest {
+    pub sessid: Key<Session>,
+    pub core: u32,
+    pub scan_regions: ScanRegion,
+}
+
+pub type ClearRttControlBlockResponse = RpcResult<()>;
+
+/// Wipe any stale RTT control block from target memory for a core. Called
+/// while the core is halted, before a reset, so firmware startup reinitializes
+/// the block from `.data`. Lets an RPC-backed DAP client avoid driving target
+/// memory writes itself.
+pub async fn clear_rtt_control_block(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: ClearRttControlBlockRequest,
+) -> ClearRttControlBlockResponse {
+    let mut session = ctx.session(request.sessid).await;
+    let mut core = session.core(request.core as usize)?;
+    let scan = match request.scan_regions {
+        ScanRegion::Ram => rtt::ScanRegion::Ram,
+        ScanRegion::Ranges(ranges) => {
+            rtt::ScanRegion::Ranges(ranges.into_iter().map(|(start, end)| start..end).collect())
+        }
+        ScanRegion::Exact(addr) => rtt::ScanRegion::Exact(addr),
+    };
+    rtt::Rtt::clear_control_block(&mut core, &scan)?;
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Schema)]
 pub struct RttChannelRequest {
     pub sessid: Key<Session>,
     pub rtt_client: Key<RttClient>,

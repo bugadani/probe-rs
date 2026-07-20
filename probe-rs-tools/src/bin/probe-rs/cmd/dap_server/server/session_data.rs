@@ -32,7 +32,7 @@ use probe_rs::{
     BreakpointCause, CoreStatus, HaltReason, Session, VectorCatchCondition,
     config::{Registry, TargetSelector},
     probe::list::Lister,
-    rtt::{Rtt, ScanRegion, find_rtt_control_block_in_raw_file},
+    rtt::{ScanRegion, find_rtt_control_block_in_raw_file},
 };
 use probe_rs_debug::{SourceLocation, debug_info::DebugInfo};
 use std::{any::Any, collections::HashMap, env::set_current_dir, path::Path, time::Duration};
@@ -288,11 +288,12 @@ impl<B: DapBackend> SessionData<B> {
     /// This should be called while the core is halted, before a reset, to wipe
     /// stale RTT data from a previous debug session. After reset, the firmware
     /// startup code will reinitialize the block from `.data`.
-    pub(crate) fn clear_rtt_blocks(&mut self) -> Result<(), DebuggerError> {
+    pub(crate) async fn clear_rtt_blocks(&mut self) -> Result<(), DebuggerError> {
         for core_data in self.core_data.iter() {
-            let mut core = self.backend.core(core_data.core_index)?;
-            Rtt::clear_control_block(&mut core, &core_data.rtt_scan_ranges)
-                .map_err(|e| anyhow::anyhow!("Failed to clear RTT control block: {e}"))?;
+            self.backend
+                .clear_rtt_blocks(core_data.core_index, &core_data.rtt_scan_ranges)
+                .await
+                .map_err(DebuggerError::ProbeRs)?;
         }
         Ok(())
     }

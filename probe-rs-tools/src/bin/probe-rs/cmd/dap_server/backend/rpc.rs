@@ -741,6 +741,18 @@ impl DapBackend for RpcBackend {
             .map_err(rpc_err)
     }
 
+    async fn clear_rtt_blocks(
+        &mut self,
+        core_index: usize,
+        scan: &probe_rs::rtt::ScanRegion,
+    ) -> Result<(), Error> {
+        let wire = crate::cmd::dap_server::server::core_data::wire_scan_region(scan);
+        self.session_interface()
+            .clear_rtt_control_block(core_index as u32, wire)
+            .await
+            .map_err(rpc_err)
+    }
+
     async fn debug_step(
         &mut self,
         core_index: usize,

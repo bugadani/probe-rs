@@ -628,6 +628,20 @@ pub trait DapBackend {
         Ok(())
     }
 
+    /// Wipe a stale RTT control block from target memory for a core. Default
+    /// via [`DapBackend::core`]; the RPC backend overrides this to `.await`
+    /// the `rtt/clear_control_block` round trip.
+    async fn clear_rtt_blocks(
+        &mut self,
+        core_index: usize,
+        scan: &probe_rs::rtt::ScanRegion,
+    ) -> Result<(), Error> {
+        let mut core = self.core(core_index)?;
+        probe_rs::rtt::Rtt::clear_control_block(&mut core, scan)
+            .map_err(|e| Error::Other(format!("{e:?}")))?;
+        Ok(())
+    }
+
     /// Write a single core register. Default via [`DapBackend::core`]; the
     /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
     async fn write_core_reg(

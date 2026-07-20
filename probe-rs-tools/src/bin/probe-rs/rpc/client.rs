@@ -32,9 +32,9 @@ use crate::{
         Key,
         functions::{
             AttachEndpoint, BuildEndpoint, ChipInfoEndpoint, CleanUpRttEndpoint,
-            ClearCoreDebugStateEndpoint, CoreAvailableBpUnitsEndpoint, CoreClearHwBpEndpoint,
-            CoreClearHwBpsEndpoint, CoreDisableVcEndpoint, CoreDumpEndpoint,
-            CoreEnableVcEndpoint, CoreHaltEndpoint, CoreHaltedEndpoint,
+            ClearCoreDebugStateEndpoint, ClearRttControlBlockEndpoint, CoreAvailableBpUnitsEndpoint,
+            CoreClearHwBpEndpoint, CoreClearHwBpsEndpoint, CoreDisableVcEndpoint,
+            CoreDumpEndpoint, CoreEnableVcEndpoint, CoreHaltEndpoint, CoreHaltedEndpoint,
             CoreInstructionSetEndpoint, CoreReadRegEndpoint, CoreReadRegistersEndpoint,
             CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint, CoreStatusEndpoint,
             CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
@@ -81,8 +81,9 @@ use crate::{
             reset::{ResetCoreAndHaltRequest, ResetCoreRequest},
             resume::ResumeAllCoresRequest,
             rtt_client::{
-                CreateRttClientRequest, PollRttUpRequest, RttChannelRequest, RttChannels,
-                RttClientData, RttDownRequest, RttPollResult, ScanRegion,
+                ClearRttControlBlockRequest, CreateRttClientRequest, PollRttUpRequest,
+                RttChannelRequest, RttChannels, RttClientData, RttDownRequest, RttPollResult,
+                ScanRegion,
             },
             stack_trace::{RichStackTraces, StackTraces, TakeStackTraceRequest},
             test::{ListTestsRequest, RunTestRequest, Test, TestKickoffRequest, TestResult, Tests},
@@ -716,6 +717,22 @@ impl SessionInterface {
             .send_resp::<CleanUpRttEndpoint, _>(&RttChannelRequest {
                 sessid: self.sessid,
                 rtt_client,
+            })
+            .await
+    }
+
+    /// Wipe a stale RTT control block from target memory for a core, before a
+    /// reset. See [`clear_rtt_control_block`].
+    pub async fn clear_rtt_control_block(
+        &self,
+        core: u32,
+        scan_regions: ScanRegion,
+    ) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<ClearRttControlBlockEndpoint, _>(&ClearRttControlBlockRequest {
+                sessid: self.sessid,
+                core,
+                scan_regions,
             })
             .await
     }
