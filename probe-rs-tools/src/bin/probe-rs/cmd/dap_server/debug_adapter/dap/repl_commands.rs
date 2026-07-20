@@ -4,14 +4,14 @@ use crate::cmd::dap_server::{
     debug_adapter::{
         dap::{
             adapter::DebugAdapter,
-            dap_types::{EvaluateResponseBody, TerminatedEventBody},
+            dap_types::EvaluateResponseBody,
         },
         protocol::ProtocolAdapter,
     },
     server::core_data::CoreHandle,
 };
 use linkme::distributed_slice;
-use std::{fmt::Display, time::Duration};
+use std::fmt::Display;
 
 pub(crate) mod backtrace;
 pub(crate) mod breakpoint;
@@ -93,7 +93,7 @@ static QUIT: ReplCommand = ReplCommand {
     requires_target_halted: false,
     sub_commands: &[],
     args: &[],
-    handler: quit,
+    handler: unimplemented_repl,
 };
 
 fn print_help(
@@ -121,23 +121,6 @@ fn need_subcommand(
     _: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
 ) -> EvalResult {
     Err(DebuggerError::UserMessage("Please provide one of the required subcommands. See the `help` command for more information.".to_string()))
-}
-
-fn quit(
-    target_core: &mut CoreHandle<'_>,
-    _: &str,
-    _: &EvaluateArguments,
-    adapter: &mut DebugAdapter<dyn ProtocolAdapter + '_>,
-) -> EvalResult {
-    target_core.core.halt(Duration::from_millis(500))?;
-    adapter.dyn_send_event(
-        "terminated",
-        serde_json::to_value(TerminatedEventBody { restart: None }).ok(),
-    )?;
-
-    Ok(EvalResponse::Message(
-        "Debug Session Terminated".to_string(),
-    ))
 }
 
 pub enum EvalResponse {

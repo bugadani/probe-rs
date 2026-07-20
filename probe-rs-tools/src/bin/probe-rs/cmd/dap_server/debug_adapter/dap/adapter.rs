@@ -756,6 +756,17 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 tests.sort();
                 Ok(EvalResponse::Message(tests.join("\n")))
             }
+            "quit" => {
+                session_data
+                    .backend
+                    .halt(core_index, Duration::from_millis(500))
+                    .await?;
+                self.dyn_send_event(
+                    "terminated",
+                    serde_json::to_value(TerminatedEventBody { restart: None }).ok(),
+                )?;
+                Ok(EvalResponse::Message("Debug Session Terminated".to_string()))
+            }
             _ => {
                 let mut target_core = session_data
                     .attach_core(core_index)
