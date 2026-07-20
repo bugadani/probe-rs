@@ -25,17 +25,15 @@ use crate::{
         run::EmbeddedTestElfInfo,
     },
     rpc::client::RpcClient,
-    util::{cli::attach_probe as attach_probe_rpc, common_options::OperationError},
+    util::cli::attach_probe as attach_probe_rpc,
 };
 use anyhow::{Result, anyhow};
 use probe_rs::{
-    BreakpointCause, CoreStatus, HaltReason, Session, VectorCatchCondition,
-    config::{Registry, TargetSelector},
-    probe::list::Lister,
+    BreakpointCause, CoreStatus, HaltReason,
     rtt::{ScanRegion, find_rtt_control_block_in_raw_file},
 };
 use probe_rs_debug::{ColumnType, SourceLocation, VerifiedBreakpoint, debug_info::DebugInfo};
-use std::{any::Any, collections::HashMap, env::set_current_dir, path::Path, time::Duration};
+use std::{any::Any, collections::HashMap, env::set_current_dir, path::Path};
 use time::UtcOffset;
 
 use crate::util::rtt::{self, DataFormat};
@@ -71,9 +69,11 @@ pub struct ActiveBreakpoint {
 /// TODO: Adjust [SessionConfig] to allow multiple cores (and if appropriate, their binaries) to be specified.
 ///
 /// Generic over the [`DapBackend`] that provides access to the target. The
-/// default [`Session`] backend is the local-probe implementation; alternative
-/// backends (e.g. a probe-rs RPC client) plug in here.
-pub(crate) struct SessionData<B: DapBackend = Session> {
+/// The DAP server is generic over the [`DapBackend`] that provides access to
+/// the target. In production this is always [`RpcBackend`]: even local
+/// sessions drive the target through the in-process RPC server, so the
+/// debugger never touches a [`probe_rs::Session`] directly.
+pub(crate) struct SessionData<B: DapBackend = RpcBackend> {
     pub(crate) backend: B,
     /// [SessionData] will manage one [CoreData] per target core, that is also present in [SessionConfig::core_configs]
     pub(crate) core_data: Vec<CoreData>,
@@ -82,60 +82,6 @@ pub(crate) struct SessionData<B: DapBackend = Session> {
     ///
     /// Getting the offset can fail, so it's better to store it.
     timestamp_offset: UtcOffset,
-}
-
-impl SessionData<Session> {
-    pub(crate) fn new(
-        registry: &mut Registry,
-        lister: &Lister,
-        config: &mut configuration::SessionConfig,
-        timestamp_offset: UtcOffset,
-    ) -> Result<Self, DebuggerError> {
-        let target_selector = TargetSelector::from(config.chip.as_deref());
-
-        let options = config.probe_options().load(registry)?;
-        let target_probe = options.attach_probe(lister)?;
-        let mut target_session = options
-            .attach_session(target_probe, target_selector)
-            .map_err(|operation_error| {
-                match operation_error {
-                    OperationError::AttachingFailed {
-                        source,
-                        connect_under_reset,
-                    } => match source {
-                        probe_rs::Error::Timeout => {
-                            let shared_cause = "This can happen if the target is in a state where it can not be attached to. A hard reset during attach usually helps. For probes that support this option, please try using the `connect_under_reset` option.";
-                            if !connect_under_reset {
-                                DebuggerError::UserMessage(format!("{source} {shared_cause}"))
-                            } else {
-                                DebuggerError::UserMessage(format!("{source} {shared_cause} It is possible that your probe does not support this behaviour, or something else is preventing the attach. Please try again without `connect_under_reset`."))
-                            }
-                        }
-                        other_attach_error => other_attach_error.into(),
-                    },
-                    // Return the original error.
-                    other => other.into(),
-                }
-            })?;
-
-        apply_session_cwd(config)?;
-
-        let core_data_vec = initialize_core_data(&mut target_session, config)?;
-        for core_config in config.core_configs.iter() {
-            let mut core = target_session.core(core_config.core_index)?;
-            apply_vector_catch(&mut core, core_config)?;
-        }
-
-        let mut this = SessionData {
-            backend: target_session,
-            core_data: core_data_vec,
-            timestamp_offset,
-        };
-
-        this.load_rtt_location(config)?;
-
-        Ok(this)
-    }
 }
 
 impl SessionData<RpcBackend> {
@@ -217,6 +163,24 @@ impl SessionData<RpcBackend> {
             backend
                 .apply_vector_catch(core_config.core_index, core_config)
                 .await?;
+        }
+
+        // Eagerly populate the server-side `DebugInfo` from the program
+        // binary so server-side consumers (notably `disassemble`) can resolve
+        // source locations before the first halt — mirroring the local
+        // backend, which loads `DebugInfo` at session start. Use the first
+        // configured core's binary (the RPC server caches one `DebugInfo` per
+        // session, matching `take_rich_stack_trace`).
+        if let Some(Some(path)) = config
+            .core_configs
+            .first()
+            .map(|c| c.program_binary.as_deref())
+        {
+            backend
+                .session_interface()
+                .load_debug_info(path.to_path_buf())
+                .await
+                .map_err(|e| DebuggerError::Other(anyhow::anyhow!("Failed to load debug info: {e}")))?;
         }
 
         let mut this = SessionData {
@@ -1021,57 +985,6 @@ fn apply_session_cwd(config: &configuration::SessionConfig) -> Result<(), Debugg
         set_current_dir(new_cwd.as_path()).map_err(|err| {
             anyhow!("Failed to set current working directory to: {new_cwd:?}, {err:?}")
         })?;
-    }
-    Ok(())
-}
-
-/// Best-effort install of any vector-catch conditions the user requested
-/// on this core. Targets that don't implement vector catch are silently
-/// ignored (a common case for RISC-V / Xtensa); any other failure is
-/// logged but otherwise non-fatal to the debug session.
-fn apply_vector_catch(
-    core: &mut probe_rs::Core<'_>,
-    core_configuration: &CoreConfig,
-) -> Result<(), DebuggerError> {
-    let needs_vector_catch = core_configuration.catch_hardfault
-        || core_configuration.catch_reset
-        || core_configuration.catch_svc
-        || core_configuration.catch_hlt;
-
-    if !needs_vector_catch {
-        return Ok(());
-    }
-
-    let was_halted = core.core_halted()?;
-    if !was_halted {
-        core.halt(Duration::from_millis(100))?;
-    }
-
-    let requested: &[(bool, VectorCatchCondition)] = &[
-        (
-            core_configuration.catch_hardfault,
-            VectorCatchCondition::HardFault,
-        ),
-        (
-            core_configuration.catch_reset,
-            VectorCatchCondition::CoreReset,
-        ),
-        (core_configuration.catch_svc, VectorCatchCondition::Svc),
-        (core_configuration.catch_hlt, VectorCatchCondition::Hlt),
-    ];
-
-    for (enabled, condition) in requested {
-        if !*enabled {
-            continue;
-        }
-        match core.enable_vector_catch(*condition) {
-            Ok(_) | Err(probe_rs::Error::NotImplemented(_)) => {}
-            Err(e) => tracing::error!("Failed to enable_vector_catch: {:?}", e),
-        }
-    }
-
-    if was_halted {
-        core.run()?;
     }
     Ok(())
 }

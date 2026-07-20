@@ -3,7 +3,7 @@ use std::fmt::{self, Display, Write as _};
 use crate::rpc::{
     Key,
     functions::{
-        RpcContext, RpcResult,
+        NoResponse, RpcContext, RpcResult,
         core_ops::{WireRegisterId, WireRegisterValue},
     },
 };
@@ -120,6 +120,37 @@ pub struct TakeStackTraceRequest {
 }
 
 pub type TakeStackTraceResponse = RpcResult<StackTraces>;
+
+#[derive(Serialize, Deserialize, Schema)]
+pub struct LoadDebugInfoRequest {
+    pub sessid: Key<Session>,
+    pub path: String,
+}
+
+pub type LoadDebugInfoResponse = NoResponse;
+
+/// Eagerly load and cache the server-side [`DebugInfo`] for a session, keyed
+/// by `sessid`. This mirrors the local backend, which loads `DebugInfo` from
+/// the program binary at session start, so server-side consumers (notably
+/// `disassemble`) can resolve source locations before the first halt (which
+/// is when `take_rich_stack_trace` would otherwise populate it). Idempotent:
+/// if a [`ServerDebugState`] already exists for the session it is left
+/// untouched.
+pub async fn load_debug_info(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: LoadDebugInfoRequest,
+) -> LoadDebugInfoResponse {
+    let states = ctx.debug_states();
+    let mut guard = states.lock().await;
+    if guard.contains_key(&request.sessid) {
+        return Ok(());
+    }
+    let debug_info = DebugInfo::from_file(&request.path).map_err(|e| e.to_string())?;
+    let state = crate::rpc::debug_state::ServerDebugState::new(debug_info);
+    guard.insert(request.sessid, state);
+    Ok(())
+}
 
 /// Shared per-core unwind loop used by both [`take_stack_trace`] and
 /// [`take_rich_stack_trace`]. Returns `(core_index, frames)` pairs, where

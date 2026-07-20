@@ -1,4 +1,4 @@
-use std::{any::Any, ops::DerefMut};
+use std::{any::Any, ops::DerefMut, sync::Arc};
 use std::{convert::Infallible, future::Future};
 
 use crate::rpc::SessionState;
@@ -54,7 +54,8 @@ use crate::{
                 create_rtt_client, get_rtt_channels, poll_rtt_up, write_rtt_down,
             },
             stack_trace::{
-                TakeRichStackTraceResponse, TakeStackTraceRequest, TakeStackTraceResponse,
+                LoadDebugInfoRequest, LoadDebugInfoResponse, TakeRichStackTraceResponse,
+                TakeStackTraceRequest, TakeStackTraceResponse, load_debug_info,
                 take_rich_stack_trace, take_stack_trace,
             },
             test::{
@@ -365,7 +366,25 @@ pub struct RpcContext {
     /// State associated with a single connection.
     state: ConnectionState,
     sender: Option<PostcardSender<WireTxImpl>>,
-    probe_access: ProbeAccess,
+    /// Probe lister shared with the dispatch handlers. Stored as
+    /// `Arc<dyn ProbeLister + Send + Sync>` so [`RpcContext`] stays
+    /// `Send + Sync` (the server future is driven via `tokio::spawn`).
+    /// [`RpcContext::lister`] repackages it as an owned [`Lister`] per call.
+    lister: Arc<dyn ProbeLister + Send + Sync>,
+}
+
+/// Shim that lets a [`Lister`] own a reference to the shared
+/// `Arc<dyn ProbeLister + Send + Sync>` stored in [`RpcContext`].
+#[derive(Debug)]
+struct ArcLister(Arc<dyn ProbeLister + Send + Sync>);
+
+impl ProbeLister for ArcLister {
+    fn open(&self, selector: &DebugProbeSelector) -> Result<Probe, DebugProbeError> {
+        self.0.open(selector)
+    }
+    fn list(&self, selector: Option<&DebugProbeSelector>) -> Vec<DebugProbeInfo> {
+        self.0.list(selector)
+    }
 }
 
 impl SpawnContext for RpcContext {
@@ -381,11 +400,14 @@ impl SpawnContext for RpcContext {
 }
 
 impl RpcContext {
-    pub fn new(probe_access: ProbeAccess) -> Self {
+    /// Build a context with a custom probe lister, bypassing the
+    /// [`ProbeAccess`] filtering applied by [`LimitedLister`]. Used by tests
+    /// that drive the in-process RPC server with a `FakeProbe`.
+    pub fn with_lister(lister: Arc<dyn ProbeLister + Send + Sync>) -> Self {
         Self {
             state: ConnectionState::new(),
             sender: None,
-            probe_access,
+            lister,
         }
     }
 
@@ -440,7 +462,7 @@ impl RpcContext {
     }
 
     pub fn lister(&self) -> Lister {
-        Lister::with_lister(Box::new(LimitedLister::new(self.probe_access.clone())))
+        Lister::with_lister(Box::new(ArcLister(self.lister.clone())))
     }
 
     pub async fn registry(&self) -> impl DerefMut<Target = Registry> + Send + use<> {
@@ -546,6 +568,7 @@ endpoints! {
     | ClearRttControlBlockEndpoint | ClearRttControlBlockRequest | ClearRttControlBlockResponse | "rtt/clear_control_block" |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
     | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
+    | LoadDebugInfoEndpoint     | LoadDebugInfoRequest    | LoadDebugInfoResponse    | "debug_state/load_debug_info" |
     | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
     | VariablesEndpoint         | VariablesRequest        | VariablesResponse       | "stack_trace/variables" |
     | ClearCoreDebugStateEndpoint | ClearCoreDebugStateRequest | NoResponse           | "debug_state/clear_core" |
@@ -646,6 +669,7 @@ postcard_rpc::define_dispatch! {
         | CreateRttClientEndpoint   | async     | create_rtt_client |
         | TakeStackTraceEndpoint    | async     | take_stack_trace  |
         | TakeRichStackTraceEndpoint | async    | take_rich_stack_trace |
+        | LoadDebugInfoEndpoint     | async     | load_debug_info    |
         | ScopesEndpoint            | async     | debug_scopes      |
         | VariablesEndpoint         | async     | debug_variables   |
         | ClearCoreDebugStateEndpoint | async   | clear_core_debug_state |
@@ -735,13 +759,22 @@ impl RpcApp {
         depth: usize,
         probe_access: ProbeAccess,
     ) -> (ServerImpl, TxChannel, RxChannel) {
+        Self::create_server_with_lister(depth, Arc::new(LimitedLister::new(probe_access)))
+    }
+
+    /// Like [`RpcApp::create_server`] but with a custom probe lister. Used by
+    /// tests that drive the in-process RPC server with a `FakeProbe`.
+    pub fn create_server_with_lister(
+        depth: usize,
+        lister: Arc<dyn ProbeLister + Send + Sync>,
+    ) -> (ServerImpl, TxChannel, RxChannel) {
         let client_to_server = channel::<Result<Vec<u8>, WireRxErrorKind>>(depth);
         let server_to_client = channel::<Vec<u8>>(depth);
 
         let client_to_server_rx = WireRx::new(client_to_server.1);
         let server_to_client_tx = WireTx::new(server_to_client.0);
 
-        let mut dispatcher = RpcApp::new(RpcContext::new(probe_access), TokioSpawner);
+        let mut dispatcher = RpcApp::new(RpcContext::with_lister(lister), TokioSpawner);
         let vkk = dispatcher.min_key_len();
         dispatcher
             .context

@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use probe_rs::{
     Architecture, Core, CoreInformation, CoreInterface, CoreStatus, CoreType, Error,
-    MemoryInterface, RegisterId, RegisterValue, Session, Target, VectorCatchCondition,
-    flashing::FlashError,
+    MemoryInterface, RegisterId, RegisterValue, Target, VectorCatchCondition,
 };
 use probe_rs_debug::{
     DebugError, DebugInfo, DebugRegisters, StackFrame, SteppingMode, exception_handler_for_core,
@@ -220,19 +219,20 @@ fn handle_semihosting_local(
 
 /// Seed for driving the server-side RTT client over RPC. Only the RPC
 /// backend returns `Some` from [`DapBackend::rtt_remote_seed`]; the local
-/// [`Session`] backend returns `None` and uses a local `RttClient` instead.
+/// [`RpcBackend`] returns `Some` here; a backend that drives RTT
+/// in-process would return `None` and use a local `RttClient` instead.
 #[derive(Clone)]
 pub struct RttRemoteSeed {
     pub session: crate::rpc::client::SessionInterface,
 }
-use crate::util::flash::build_loader;
 
 /// Session-level operations used by the DAP server.
 ///
 /// Anything the DAP server needs to do against a "whole target" (as opposed to
 /// a single [`Core`]) goes through this trait. The DAP code is written against
-/// `SessionData<B: DapBackend>` so it can run against either a local
-/// [`Session`] or a remote RPC-backed session implementation.
+/// `SessionData<B: DapBackend>`; in production `B` is always [`RpcBackend`],
+/// driving the target through the RPC layer (including the in-process RPC
+/// server used for local sessions).
 #[async_trait(?Send)]
 pub trait DapBackend {
     fn list_cores(&self) -> Vec<(usize, CoreType)>;
@@ -673,25 +673,10 @@ pub trait DapBackend {
     }
 }
 
-#[async_trait(?Send)]
-impl DapBackend for Session {
-    fn list_cores(&self) -> Vec<(usize, CoreType)> {
-        Session::list_cores(self)
-    }
-
-    fn target(&self) -> &Target {
-        Session::target(self)
-    }
-
-    fn core(&mut self, core_index: usize) -> Result<Core<'_>, Error> {
-        Session::core(self, core_index)
-    }
-}
-
 /// Extension trait used by the DAP server to flash a binary during `launch`
 /// and `restart` handling. Progress events are surfaced as the wire-format
 /// [`WireProgressEvent`] so the DAP server renders progress uniformly across
-/// both backends.
+/// backends.
 pub trait FlashingBackend: DapBackend {
     /// Flash `path_to_elf` to the target, invoking `progress` for every
     /// progress event emitted along the way.
@@ -707,49 +692,4 @@ pub trait FlashingBackend: DapBackend {
         config: &FlashingConfig,
         progress: &mut dyn FnMut(WireProgressEvent),
     ) -> Result<(), DebuggerError>;
-}
-
-impl FlashingBackend for Session {
-    async fn flash_binary(
-        &mut self,
-        path_to_elf: &Path,
-        config: &FlashingConfig,
-        progress: &mut dyn FnMut(WireProgressEvent),
-    ) -> Result<(), DebuggerError> {
-        use probe_rs::flashing::{DownloadOptions, FileDownloadError, FlashProgress};
-
-        let loader = build_loader(self, path_to_elf, config.format_options.clone(), None)?;
-
-        let mut download_options = DownloadOptions::default();
-        download_options.keep_unwritten_bytes = config.restore_unwritten_bytes;
-        download_options.do_chip_erase = config.full_chip_erase;
-        download_options.verify = config.verify_after_flashing;
-        // `FlashProgress` carries a borrow (its lifetime parameter `'a`) so
-        // we can pass the caller-provided `&mut dyn FnMut` through without
-        // any unsafe.
-        download_options.progress = FlashProgress::new(|event| {
-            WireProgressEvent::from_library_event(event, &mut *progress);
-        });
-
-        let do_flashing = if config.verify_before_flashing {
-            match loader.verify(self, &mut download_options.progress) {
-                Ok(_) => false,
-                Err(FlashError::Verify) => true,
-                Err(other) => {
-                    return Err(DebuggerError::FileDownload(FileDownloadError::Flash(other)));
-                }
-            }
-        } else {
-            true
-        };
-
-        if do_flashing {
-            loader
-                .commit(self, download_options)
-                .map_err(FileDownloadError::Flash)
-                .map_err(DebuggerError::FileDownload)?;
-        }
-
-        Ok(())
-    }
 }

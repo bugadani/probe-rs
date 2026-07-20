@@ -13,7 +13,7 @@ use probe_rs::{
     CoreDumpError, Error,
     architecture::arm::ap::AccessPortError,
     flashing::FileDownloadError,
-    probe::{DebugProbeError, list::Lister},
+    probe::DebugProbeError,
 };
 use probe_rs_debug::DebugError;
 use server::startup::{debug_stdio, debug_tcp};
@@ -96,23 +96,14 @@ pub struct Cmd {
 pub async fn run(
     cmd: Cmd,
     client: RpcClient,
-    lister: &Lister,
     time_offset: UtcOffset,
     log_file: Option<&Path>,
 ) -> Result<()> {
     match cmd.port {
         Some(port) => {
             let addr = SocketAddr::new(cmd.ip, port);
-            debug_tcp(
-                client,
-                lister,
-                addr,
-                cmd.single_session,
-                log_file,
-                time_offset,
-            )
-            .await
+            debug_tcp(client, addr, cmd.single_session, log_file, time_offset).await
         }
-        None => debug_stdio(client, lister, log_file, time_offset).await,
+        None => debug_stdio(client, log_file, time_offset).await,
     }
 }

@@ -41,7 +41,8 @@ use crate::{
             CreateRttClientEndpoint, CreateTempFileEndpoint, DisassembleEndpoint, EraseEndpoint,
             EvaluateEndpoint, FlashEndpoint, GetRttChannelsEndpoint, HandleSemihostingEndpoint,
             ListChipFamiliesEndpoint, ListProbesEndpoint, ListTestsEndpoint,
-            LoadChipFamilyEndpoint, MonitorEndpoint, PollRttUpEndpoint, ProgressEventTopic,
+            LoadChipFamilyEndpoint, LoadDebugInfoEndpoint, MonitorEndpoint, PollRttUpEndpoint,
+            ProgressEventTopic,
             ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint, ReadMemory32Endpoint,
             ReadMemory64Endpoint, ResetCoreAndHaltEndpoint, ResetCoreEndpoint,
             ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint, ScopesEndpoint,
@@ -84,7 +85,9 @@ use crate::{
                 RttChannelRequest, RttChannels, RttClientData, RttDownRequest, RttPollResult,
                 ScanRegion,
             },
-            stack_trace::{RichStackTraces, StackTraces, TakeStackTraceRequest},
+            stack_trace::{
+                LoadDebugInfoRequest, RichStackTraces, StackTraces, TakeStackTraceRequest,
+            },
             test::{ListTestsRequest, RunTestRequest, Test, TestKickoffRequest, TestResult, Tests},
         },
         transport::memory::{PostcardReceiver, PostcardSender, WireRx, WireTx},
@@ -746,6 +749,21 @@ impl SessionInterface {
                 sessid: self.sessid,
                 path: path.display().to_string(),
                 stack_frame_limit,
+            })
+            .await
+    }
+
+    /// Eagerly load and cache the server-side `DebugInfo` for this session
+    /// from `path`, so server-side consumers (e.g. `disassemble`) can resolve
+    /// source locations before the first halt. Mirrors the local backend,
+    /// which loads `DebugInfo` at session start. Idempotent.
+    pub async fn load_debug_info(&self, path: PathBuf) -> anyhow::Result<()> {
+        let path = self.client.upload_file(&path).await?;
+
+        self.client
+            .send_resp::<LoadDebugInfoEndpoint, _>(&LoadDebugInfoRequest {
+                sessid: self.sessid,
+                path: path.display().to_string(),
             })
             .await
     }

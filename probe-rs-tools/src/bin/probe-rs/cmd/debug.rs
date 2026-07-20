@@ -3,11 +3,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use probe_rs::probe::list::Lister;
 use rustyline_async::SharedWriter;
 use rustyline_async::{Readline, ReadlineEvent};
 use time::UtcOffset;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedSender};
 
 use crate::cmd::dap_server::debug_adapter::dap::adapter::DebugAdapter;
@@ -317,41 +315,17 @@ impl Cmd {
 
         // Run the debugger concurrently with the CLI's read loop.
         //
-        // Local sessions: dedicated blocking thread for synchronous probe I/O,
-        // but reusing the ambient runtime handle (a fresh one would deadlock
-        // the [`RpcClient`], which is bound to the outer runtime).
-        //
-        // Remote (RPC) sessions: backend runs on the outer runtime's worker
-        // threads — synchronous probe I/O is bridged through
-        // `block_in_place` + `handle.block_on`, which requires a real
-        // multi-thread runtime worker. Session data also holds `!Send`
-        // state (gimli `Rc<[u8]>`, `Box<dyn Any>` test data, ...), so we
-        // drive the future inline via `select!` instead of `tokio::spawn`.
-        let is_local = client.is_local_session();
+        // The backend always runs over RPC (`RpcBackend`), even for local
+        // sessions where the [`RpcClient`] is backed by an in-process RPC
+        // server. The backend future holds `!Send` state (gimli `Rc<[u8]>`,
+        // `Box<dyn Any>` test data, ...), so we drive it inline via `select!`
+        // instead of `tokio::spawn`.
         let server = async move {
             let mut debugger = Debugger::new(utc_offset, None)?;
-            if is_local {
-                let handle = Handle::current();
-                tokio::task::spawn_blocking(move || {
-                    handle.block_on(async move {
-                        let registry = &mut *client.registry().await;
-
-                        let lister = Lister::new();
-                        debugger
-                            .debug_session(registry, debug_adapter, &lister)
-                            .await
-                            .map_err(anyhow::Error::from)
-                    })
-                })
+            debugger
+                .debug_session_rpc(&client, debug_adapter)
                 .await
                 .map_err(anyhow::Error::from)
-                .and_then(std::convert::identity)
-            } else {
-                debugger
-                    .debug_session_rpc(&client, debug_adapter)
-                    .await
-                    .map_err(anyhow::Error::from)
-            }
         };
         tokio::pin!(server);
 

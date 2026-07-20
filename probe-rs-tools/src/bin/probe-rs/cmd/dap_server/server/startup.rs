@@ -2,7 +2,6 @@ use super::debugger::Debugger;
 use crate::cmd::dap_server::debug_adapter::{dap::adapter::*, protocol::DapAdapter};
 use crate::rpc::client::RpcClient;
 use anyhow::{Context, Result};
-use probe_rs::{config::Registry, probe::list::Lister};
 use serde::Deserialize;
 use std::{
     fs,
@@ -36,7 +35,6 @@ impl std::str::FromStr for TargetSessionType {
 
 pub async fn debug_tcp(
     client: RpcClient,
-    lister: &Lister,
     addr: std::net::SocketAddr,
     single_session: bool,
     log_file: Option<&Path>,
@@ -87,24 +85,16 @@ pub async fn debug_tcp(
                 // Flush any pending log messages to the debug adapter Console Log.
                 debugger.debug_logger.flush_to_dap(&mut debug_adapter)?;
 
-                let mut registry = Registry::from_builtin_families();
-                let end_message = match run_debug_session(
-                    &mut debugger,
-                    &client,
-                    &mut registry,
-                    debug_adapter,
-                    lister,
-                )
-                .await
-                {
-                    // We no longer have a reference to the `debug_adapter`, so errors need
-                    // special handling to ensure they are displayed to the user.
-                    Err(error) => {
-                        eprintln!("Session ended with error: {error:?}");
-                        format!("Session ended: {error}")
-                    }
-                    Ok(()) => format!("Closing debug session from: {addr}"),
-                };
+                let end_message =
+                    match run_debug_session(&mut debugger, &client, debug_adapter).await {
+                        // We no longer have a reference to the `debug_adapter`, so errors need
+                        // special handling to ensure they are displayed to the user.
+                        Err(error) => {
+                            eprintln!("Session ended with error: {error:?}");
+                            format!("Session ended: {error}")
+                        }
+                        Ok(()) => format!("Closing debug session from: {addr}"),
+                    };
                 debugger.debug_logger.log_to_console(&end_message)?;
 
                 // Terminate after a single debug session. This is the behaviour expected by VSCode
@@ -186,7 +176,6 @@ impl Read for ChannelReader {
 
 pub async fn debug_stdio(
     client: RpcClient,
-    lister: &Lister,
     log_file: Option<&Path>,
     timestamp_offset: UtcOffset,
 ) -> Result<()> {
@@ -229,8 +218,7 @@ pub async fn debug_stdio(
 
     debugger.debug_logger.flush_to_dap(&mut debug_adapter)?;
 
-    let mut registry = Registry::from_builtin_families();
-    match run_debug_session(&mut debugger, &client, &mut registry, debug_adapter, lister).await {
+    match run_debug_session(&mut debugger, &client, debug_adapter).await {
         Err(error) => {
             eprintln!("Session ended with error: {error:?}");
             debugger
@@ -255,27 +243,18 @@ pub async fn debug_stdio(
 /// Pick the correct [`Debugger`] entry point based on whether the provided
 /// [`RpcClient`] is backed by an in-process RPC server (local session) or a
 /// real remote connection.
-///
-/// In local mode the debugger uses the `Session` backend for direct probe
-/// access. In remote mode every operation is proxied through the RPC layer
-/// via [`crate::cmd::dap_server::backend::rpc::RpcBackend`].
+/// Drive a single DAP debug session. Every operation is proxied through the
+/// RPC layer via [`crate::cmd::dap_server::backend::rpc::RpcBackend`], even
+/// when the [`RpcClient`] is backed by an in-process RPC server (local mode).
 async fn run_debug_session<P>(
     debugger: &mut Debugger,
     client: &RpcClient,
-    registry: &mut Registry,
     debug_adapter: DebugAdapter<P>,
-    lister: &Lister,
 ) -> Result<(), crate::cmd::dap_server::DebuggerError>
 where
     P: crate::cmd::dap_server::debug_adapter::protocol::ProtocolAdapter,
 {
-    if client.is_local_session() {
-        debugger
-            .debug_session(registry, debug_adapter, lister)
-            .await
-    } else {
-        debugger.debug_session_rpc(client, debug_adapter).await
-    }
+    debugger.debug_session_rpc(client, debug_adapter).await
 }
 
 /// Try to get the timestamp of a file.

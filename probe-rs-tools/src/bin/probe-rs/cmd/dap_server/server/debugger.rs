@@ -28,7 +28,7 @@ use crate::{
     },
 };
 use anyhow::{Context, anyhow};
-use probe_rs::{CoreStatus, Session, config::Registry, probe::list::Lister};
+use probe_rs::CoreStatus;
 use std::{
     collections::HashMap,
     fs,
@@ -378,33 +378,6 @@ impl Debugger {
         Ok(DebugSessionStatus::Continue(delay))
     }
 
-    /// Local/in-process entry point: the DAP session is driven against a
-    /// [`probe_rs::Session`] built from the local probe [`Lister`] and chip
-    /// registry.
-    pub(crate) async fn debug_session<P: ProtocolAdapter>(
-        &mut self,
-        registry: &mut Registry,
-        debug_adapter: DebugAdapter<P>,
-        lister: &Lister,
-    ) -> Result<(), DebuggerError> {
-        let timestamp_offset = self.timestamp_offset;
-        let result = self
-            .debug_session_impl::<P, Session, _>(
-                debug_adapter,
-                async move |config: &mut SessionConfig| {
-                    SessionData::<Session>::new(registry, lister, config, timestamp_offset)
-                },
-            )
-            .await;
-        // Drop the session-scoped temporary directory holding any client-uploaded files
-        // (program binary, SVD, chip description). Done at session end rather than at
-        // [`Debugger`] drop so that, in TCP multi-session mode, one client's uploaded
-        // firmware does not linger on disk after they disconnect (and is not visible to
-        // the next client that connects).
-        self.uploaded_files = None;
-        result
-    }
-
     /// RPC entry point for the DAP server. Drives the session against an
     /// [`RpcBackend`] wired up around the provided [`RpcClient`] (and its
     /// ambient tokio runtime). The local chip registry on `client` supplies
@@ -415,18 +388,26 @@ impl Debugger {
         debug_adapter: DebugAdapter<P>,
     ) -> Result<(), DebuggerError> {
         let timestamp_offset = self.timestamp_offset;
-        self.debug_session_impl::<P, RpcBackend, _>(
-            debug_adapter,
-            async move |config: &mut SessionConfig| {
-                SessionData::<RpcBackend>::new_remote(client, config, timestamp_offset).await
-            },
-        )
-        .await
+        let result = self
+            .debug_session_impl::<P, RpcBackend, _>(
+                debug_adapter,
+                async move |config: &mut SessionConfig| {
+                    SessionData::<RpcBackend>::new_remote(client, config, timestamp_offset).await
+                },
+            )
+            .await;
+        // Drop the session-scoped temporary directory holding any client-uploaded
+        // files (program binary, SVD, chip description). Done at session end rather
+        // than at [`Debugger`] drop so that, in TCP multi-session mode, one client's
+        // uploaded firmware does not linger on disk after they disconnect (and is
+        // not visible to the next client that connects).
+        self.uploaded_files = None;
+        result
     }
 
-    /// Generic driver for a DAP session. Both [`Self::debug_session`] and
-    /// [`Self::debug_session_rpc`] funnel through this method, supplying a
-    /// [`SessionData`] factory appropriate for their backend.
+    /// Generic driver for a DAP session. Both entry points funnel through this
+    /// method, supplying a [`SessionData`] factory appropriate for their
+    /// backend.
     async fn debug_session_impl<P, B, F>(
         &mut self,
         mut debug_adapter: DebugAdapter<P>,
@@ -1037,13 +1018,12 @@ mod test {
         server::configuration::{ConsoleLog, CoreConfig, FlashingConfig, SessionConfig},
         test::TestLister,
     };
+    use crate::rpc::client::RpcClient;
     use probe_rs::{
         architecture::arm::FullyQualifiedApAddress,
-        config::Registry,
         integration::{FakeProbe, Operation},
         probe::{
             DebugProbe, DebugProbeError, DebugProbeInfo, DebugProbeSelector, ProbeFactory,
-            list::Lister,
         },
     };
     use serde_json::json;
@@ -1445,19 +1425,32 @@ mod test {
         protocol_adapter: MockProtocolAdapter,
         with_probe: bool,
     ) -> Result<(), DebuggerError> {
+        use crate::rpc::functions::RpcApp;
+        use std::sync::Arc;
+
         let debug_adapter = DebugAdapter::new(protocol_adapter);
 
         let lister = TestLister::new();
         if with_probe {
-            lister.probes.borrow_mut().push(fake_probe());
+            lister.probes.lock().unwrap().push(fake_probe());
         }
-        let lister = Lister::with_lister(Box::new(lister));
+        let lister = Arc::new(lister) as Arc<dyn probe_rs::integration::ProbeLister + Send + Sync>;
 
-        let mut registry = Registry::from_builtin_families();
+        // Spawn an in-process RPC server backed by the test lister (so the
+        // `FakeProbe` is visible to `probe/attach`), and drive the DAP
+        // session through `RpcBackend` — the same path production uses.
+        let (mut local_server, tx, rx) =
+            RpcApp::create_server_with_lister(16, lister);
+        let handle = tokio::spawn(async move { local_server.run().await });
+
+        let client = RpcClient::new_local_from_wire(tx, rx);
         let mut debugger = Debugger::new(UtcOffset::UTC, None)?;
-        debugger
-            .debug_session(&mut registry, debug_adapter, &lister)
-            .await
+        let result = debugger.debug_session_rpc(&client, debug_adapter).await;
+
+        // Shut the server down (drop the client first so the server exits).
+        drop(client);
+        _ = handle.await;
+        result
     }
 
     #[tokio::test]
@@ -1475,9 +1468,14 @@ mod test {
         let expected_error = "No connected probes were found.";
         protocol_adapter.expect_output_event(&format!("{expected_error}\n"));
 
+        // RPC attach requires a chip name (to look up the target locally and
+        // drive `probe/attach`), so give it a valid session config. With no
+        // `FakeProbe` registered in the test lister, `select_probe` then
+        // reports "No connected probes were found." (before the program
+        // binary is ever touched).
         protocol_adapter
             .add_request("launch")
-            .with_arguments(SessionConfig::default())
+            .with_arguments(valid_session_config())
             .and_error_response()
             .with_body(error_response_body(expected_error));
 
