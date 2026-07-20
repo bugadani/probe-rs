@@ -1,12 +1,10 @@
 //! RPC-backed [`DapBackend`] implementation.
 //!
 //! [`RpcBackend`] proxies all session/core operations to a probe-rs RPC
-//! server through [`crate::rpc::client::RpcClient`]. The DAP server drives
-//! the target exclusively through async `DapBackend` round trips; it never
-//! hands out a synchronous [`probe_rs::Core`] for an RPC session, so no
-//! `block_on`/`block_in_place` bridge is required. The DAP session loop is
+//! server through [`crate::rpc::client::RpcClient`]. The DAP session loop is
 //! driven from a [`tokio::task::spawn_blocking`] task on a multi-threaded
-//! runtime so the async round trips can be `.await`ed directly.
+//! runtime, so async round trips can be `.await`ed directly — no
+//! `block_on`/`block_in_place` bridge is required.
 
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
@@ -46,11 +44,10 @@ use async_trait::async_trait;
 /// [`probe_rs::Error`] surface the DAP server expects.
 fn rpc_err(err: anyhow::Error) -> Error {
     // Typed `probe_rs::Error` values lose their variant when crossing the
-    // RPC boundary (they come back as an opaque `anyhow::Error` carrying
-    // only the `Display` text). Best-effort reconstruct the common
-    // variants that call sites care about, so features such as vector
-    // catch silently fall back on targets that don't support them
-    // instead of spamming ERROR logs.
+    // RPC boundary (they come back as an opaque `anyhow::Error` carrying only
+    // the `Display` text). Best-effort reconstruct the common variants call
+    // sites care about, so features such as vector catch silently fall back
+    // on targets that don't support them instead of spamming ERROR logs.
     let text = format!("{err:#}");
     if text.contains("has not yet been implemented") {
         return Error::NotImplemented("remote operation");
@@ -59,11 +56,10 @@ fn rpc_err(err: anyhow::Error) -> Error {
 }
 
 /// Rebuild a [`DebugRegisters`] from a wire register dump, using the same
-/// static [`CoreRegisters`] file the server used so that the resulting
-/// `DebugRegister` ordering and DWARF ids match a freshly-built
-/// `DebugRegisters::from_core` (which is what the server's `unwind` starts
-/// from). This keeps client-side `get_stackframe_info` calls consistent with
-/// the server's.
+/// static [`CoreRegisters`] file the server used so the resulting
+/// `DebugRegister` ordering and DWARF ids match what the server's `unwind`
+/// started from. This keeps client-side `get_stackframe_info` calls
+/// consistent with the server's.
 fn rebuild_debug_registers(
     regs: &'static CoreRegisters,
     wire: &[WireDebugRegister],
@@ -96,14 +92,14 @@ pub struct RpcBackend {
     client: RpcClient,
     sessid: Key<Session>,
     cores: Vec<(usize, CoreType)>,
-    /// A real `Target` obtained from the local registry by name. The object
-    /// is never used for actual probe I/O on the client side; it only needs
-    /// to supply `core_index_by_address`, memory-map metadata and similar
-    /// introspection that the DAP server performs locally.
+    /// A real `Target` obtained from the local registry by name. Never used
+    /// for probe I/O client-side; it only supplies `core_index_by_address`,
+    /// memory-map metadata and similar introspection the DAP server performs
+    /// locally.
     target: Arc<Target>,
-    /// Per-core metadata cached at attach-time so that [`DapBackend`] methods
-    /// that need static core properties (register file, is_64_bit, ...) can
-    /// be served without a round trip.
+    /// Per-core metadata cached at attach-time so static-property
+    /// [`DapBackend`] methods (register file, is_64_bit, ...) need no round
+    /// trip.
     core_metadata: Vec<CoreMetadata>,
 }
 
@@ -203,11 +199,10 @@ impl DapBackend for RpcBackend {
     }
 
     fn core(&mut self, _core_index: usize) -> Result<Core<'_>, Error> {
-        // The RPC backend drives every target operation through dedicated
-        // async `DapBackend` round trips; it never hands out a synchronous
-        // `Core`. All remaining `attach_core`/`backend.core()` callers are
-        // local-backend-only code paths that are unreachable for an RPC
-        // session, so this should never be invoked.
+        // RPC drives the target via async `DapBackend` round trips and never
+        // hands out a synchronous `Core`. All remaining `backend.core()`
+        // callers are local-backend-only paths unreachable for an RPC
+        // session.
         unreachable!(
             "RpcBackend::core is not used; RPC drives the target via async DapBackend methods"
         )
@@ -219,11 +214,10 @@ impl DapBackend for RpcBackend {
         })
     }
 
-    /// `.await` the `core/status` round trip directly. The wire conversion
-    /// surfaces `GetCommandLine` as a placeholder `SemihostingCommand`;
-    /// the server-side `core/handle_semihosting` endpoint re-derives the
-    /// real command from the live core, so the client never needs target
-    /// memory access here.
+    /// The wire conversion surfaces `GetCommandLine` as a placeholder
+    /// `SemihostingCommand`; the server-side `core/handle_semihosting`
+    /// endpoint re-derives the real command from the live core, so the
+    /// client never needs target memory access here.
     async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
         let client =
             RpcCoreClient::new_for_backend(self.client.clone(), self.sessid, core_index as u32);
@@ -560,10 +554,8 @@ impl DapBackend for RpcBackend {
     /// `local_variables`/`static_variables` caches (keyed by `sessid`+core),
     /// returning per-frame metadata plus the server-assigned frame id. We
     /// rebuild lightweight [`StackFrame`]s with `local_variables: None` —
-    /// subsequent `scopes`/`variables` requests resolve server-side — so the
-    /// per-memory-read round trips of the old client-side `get_stackframe_info`
-    /// rebuild are gone. Source locations are taken from the wire (the server
-    /// already resolved them).
+    /// subsequent `scopes`/`variables` requests resolve server-side. Source
+    /// locations are taken from the wire (the server already resolved them).
     async fn unwind_stack(
         &mut self,
         core_index: usize,

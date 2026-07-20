@@ -128,9 +128,7 @@ pub struct ReadBytesRequest {
 
 /// Lossy bulk byte read: reads as many bytes as possible starting at
 /// `address`, stopping at the first unreadable region. Mirrors the
-/// `CoreHandle::read_memory_lossy` chunked-read strategy so a DAP
-/// `readMemory` request costs a single round trip instead of one per
-/// chunk.
+/// `CoreHandle::read_memory_lossy` chunked-read strategy.
 pub async fn read_bytes(
     ctx: &mut RpcContext,
     _header: VarHeader,

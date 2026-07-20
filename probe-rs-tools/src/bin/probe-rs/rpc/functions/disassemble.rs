@@ -39,12 +39,12 @@ pub struct WireDisassembledInstruction {
 
 pub type DisassembleResponse = RpcResult<Vec<WireDisassembledInstruction>>;
 
-/// Disassemble target memory server-side: runs the capstone disassembly
+/// Disassemble target memory server-side, running the capstone disassembly
 /// (shared with the local path via `disassemble_target_memory`) against the
-/// live `Core` and the cached server-side `DebugInfo`, returning the
-/// instructions in one round trip. The client only relays the request and
-/// reconstructs the DAP `DisassembledInstruction` (with the always-`None`
-/// fields `end_column`/`end_line`/`symbol`/`presentation_hint` defaulted).
+/// live `Core` and the cached server-side `DebugInfo`. The client only
+/// relays the request and reconstructs the DAP `DisassembledInstruction`
+/// (with the always-`None` fields `end_column`/`end_line`/`symbol`/
+/// `presentation_hint` defaulted).
 pub async fn disassemble(
     ctx: &mut RpcContext,
     _header: VarHeader,

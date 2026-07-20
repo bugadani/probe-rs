@@ -259,9 +259,7 @@ mod tls {
     }
 }
 
-/// Represents a connection to a remote server.
-///
-/// Internally implemented as a websocket connection.
+/// Websocket-backed connection to a remote probe-rs server.
 #[derive(Clone)]
 pub struct RpcClient {
     client: HostClient<String>,
@@ -753,9 +751,9 @@ impl SessionInterface {
     }
 
     /// Fetch a rich stack trace (per-frame register state + frame metadata,
-    /// no local variables) for every core, in a single round trip. The
-    /// DAP-side caller rebuilds `local_variables` from its own local
-    /// [`DebugInfo`] using [`DebugInfo::get_stackframe_info`].
+    /// no local variables) for every core. The DAP-side caller rebuilds
+    /// `local_variables` from its own local [`DebugInfo`] using
+    /// [`DebugInfo::get_stackframe_info`].
     pub async fn take_rich_stack_trace(
         &self,
         path: PathBuf,
@@ -772,8 +770,8 @@ impl SessionInterface {
             .await
     }
 
-    /// Resolve DAP scopes for a frame on the server (single round trip
-    /// against the server-owned `VariableCache`).
+    /// Resolve DAP scopes for a frame on the server against the server-owned
+    /// `VariableCache`.
     pub async fn scopes(&self, core: u32, frame_id: u32) -> anyhow::Result<Vec<WireScope>> {
         self.client
             .send_resp::<ScopesEndpoint, _>(&ScopesRequest {
@@ -784,8 +782,8 @@ impl SessionInterface {
             .await
     }
 
-    /// Resolve DAP variables for a `variables_reference` on the server
-    /// (single round trip, with lazy expansion server-side).
+    /// Resolve DAP variables for a `variables_reference` on the server,
+    /// expanding lazily server-side.
     pub async fn variables(
         &self,
         core: u32,
@@ -815,8 +813,7 @@ impl SessionInterface {
     }
 
     /// Evaluate a watch/hover expression server-side against the cached
-    /// `VariableCache` for the given frame (single round trip, with lazy
-    /// expansion server-side).
+    /// `VariableCache` for the given frame, expanding lazily server-side.
     pub async fn evaluate(
         &self,
         core: u32,
@@ -920,8 +917,8 @@ pub struct CoreInterface {
 impl CoreInterface {
     /// Create a client for a specific core on an attached session.
     ///
-    /// This constructor is used by the RPC-backed DAP backend, which needs
-    /// to synthesize a core client on every access.
+    /// Used by the RPC-backed DAP backend, which needs to synthesize a core
+    /// client on every access.
     pub(crate) fn new_for_backend(client: RpcClient, sessid: Key<Session>, core: u32) -> Self {
         Self {
             sessid,
@@ -1204,7 +1201,7 @@ impl CoreInterface {
             .await
     }
 
-    /// Read the given set of registers in a single round-trip.
+    /// Bulk-read a set of registers.
     ///
     /// Per-register failures are reported in place as `None`, in the same
     /// order as `ids`. Callers that need strict "all-or-nothing" semantics

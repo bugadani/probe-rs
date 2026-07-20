@@ -56,8 +56,7 @@ pub enum DebuggerError {
     #[error("An error with a CoreDump occurred")]
     CoreDump(#[from] CoreDumpError),
     #[error("{0}")]
-    /// A message that is intended to be displayed to the user, and does not unwind nested errors.
-    /// It is intended to communicate helpful "correct and try again" information to users.
+    /// A user-facing message that does not unwind nested errors.
     UserMessage(String),
     #[error("Serialization error")]
     SerdeError(#[from] serde_json::Error),

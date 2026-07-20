@@ -301,9 +301,8 @@ pub type TestKickoffResponse = RpcResult<()>;
 
 /// Kick off a single embedded-test case from the DAP REPL: run the core until
 /// it halts on the `GetCommandLine` semihosting call, write the test address
-/// as the command line, then resume. The subsequent test run is driven by the
-/// DAP poll loop (which handles further semihosting/breakpoints). This runs
-/// entirely server-side so the client never needs a live `Core`.
+/// as the command line, then resume. The subsequent test run is driven by
+/// the DAP poll loop.
 pub async fn test_kickoff(
     ctx: &mut RpcContext,
     _header: VarHeader,

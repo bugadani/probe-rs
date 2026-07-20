@@ -76,8 +76,6 @@ pub struct SemihostingFile {
 }
 
 /// [CoreHandle] provides handles to various data structures required to debug a single instance of a core. The actual state is stored in [session_data::SessionData].
-///
-/// Usage: To get access to this structure please use the [session_data::SessionData::attach_core] method. Please keep access/locks to this to a minimum duration.
 pub struct CoreHandle<'p> {
     pub(crate) core: Core<'p>,
     pub(crate) core_data: &'p mut CoreData,

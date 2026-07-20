@@ -256,9 +256,9 @@ pub async fn debug_stdio(
 /// [`RpcClient`] is backed by an in-process RPC server (local session) or a
 /// real remote connection.
 ///
-/// In local mode the debugger keeps using the historical `Session` backend so
-/// that direct probe access stays available. In remote mode every operation
-/// is proxied through the RPC layer via [`crate::cmd::dap_server::backend::rpc::RpcBackend`].
+/// In local mode the debugger uses the `Session` backend for direct probe
+/// access. In remote mode every operation is proxied through the RPC layer
+/// via [`crate::cmd::dap_server::backend::rpc::RpcBackend`].
 async fn run_debug_session<P>(
     debugger: &mut Debugger,
     client: &RpcClient,

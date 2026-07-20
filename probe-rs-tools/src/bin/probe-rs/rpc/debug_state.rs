@@ -6,14 +6,13 @@ use probe_rs_debug::{DebugInfo, StackFrame, VariableCache};
 
 /// Per-session server-owned debug state. The RPC server builds and owns the
 /// `VariableCache` trees (locals + statics) and the cached [`DebugInfo`], so
-/// that variable expansion and value reads happen next to the target instead
-/// of one round trip per memory read.
+/// that variable expansion and value reads happen next to the target.
 pub struct ServerDebugState {
     pub debug_info: Arc<DebugInfo>,
     pub per_core: HashMap<usize, CoreDebugState>,
     /// Per-core semihosting file state, owned server-side so that semihosting
-    /// file I/O (open/read/write) happens next to the target. Decoupled from
-    /// [`Self::per_core`] so it survives stack-frame refreshes on each halt.
+    /// file I/O happens next to the target. Decoupled from [`Self::per_core`]
+    /// so it survives stack-frame refreshes on each halt.
     pub semihosting: HashMap<usize, CoreSemihostingState>,
 }
 
@@ -24,8 +23,7 @@ pub struct CoreDebugState {
 }
 
 /// Server-side per-core semihosting state, mirroring the client's
-/// `CoreData::semihosting_handles`/`next_semihosting_handle` so semihosting
-/// file I/O can run next to the target.
+/// `CoreData::semihosting_handles`/`next_semihosting_handle`.
 pub struct CoreSemihostingState {
     pub handles: HashMap<u32, SemihostingFile>,
     pub next_handle: u32,
@@ -66,8 +64,8 @@ impl ServerDebugState {
         self.per_core.remove(&core_index);
     }
 
-    /// Get the per-core semihosting state, creating it (with handles starting
-    /// at 1024 to avoid collision with RTT channel numbers) on first access.
+    /// Get the per-core semihosting state, creating it on first access.
+    /// Handles start at 1024 to avoid collision with RTT channel numbers.
     pub fn semihosting_state(&mut self, core_index: usize) -> &mut CoreSemihostingState {
         self.semihosting
             .entry(core_index)

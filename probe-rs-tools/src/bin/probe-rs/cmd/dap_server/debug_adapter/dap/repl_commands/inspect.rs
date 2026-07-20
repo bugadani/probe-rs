@@ -217,11 +217,8 @@ async fn dump_core<'a>(
     );
 
     let ranges = if args.is_empty() {
-        // No specific memory ranges were requested. Auto-detect uses the
-        // client-side variable cache, which only the local backend
-        // populates; for RPC the variable cache is server-side, so
-        // auto-detect is unavailable client-side (fall through with empty
-        // ranges → registers-only dump).
+        // Auto-detect relies on the client-side variable cache, which only
+        // the local backend populates; RPC falls through to a registers-only dump.
         let has_client_cache = core_data
             .stack_frames
             .iter()

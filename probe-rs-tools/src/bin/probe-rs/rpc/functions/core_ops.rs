@@ -1,9 +1,4 @@
 //! RPC endpoints for [`probe_rs::Core`] operations.
-//!
-//! The existing memory/reset endpoints only cover a small subset of what a DAP
-//! backend needs. This module adds the remaining core-control and introspection
-//! endpoints so that a remote DAP server can drive a target through the same
-//! [`probe_rs::Core`] API as a local one.
 
 use std::num::NonZeroU32;
 use std::ops::Range;
@@ -26,7 +21,7 @@ use crate::rpc::{
     functions::{NoResponse, RpcContext, RpcResult},
 };
 
-/// Common core addressing.
+/// Common request fields for addressing a single core.
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct CoreAccessRequest {
     pub sessid: Key<Session>,
@@ -185,39 +180,37 @@ pub enum WireHaltReason {
 }
 
 /// Reduced breakpoint cause that does not embed the full
-/// [`SemihostingCommand`] payload. Semihosting commands are still handled by
-/// the server via the monitor/event channels; the DAP backend only needs to
-/// know that a semihosting halt occurred.
+/// [`SemihostingCommand`] payload. The DAP backend only needs to know that a
+/// semihosting halt occurred; the server handles the command via the
+/// monitor/event channels.
 #[derive(Debug, Serialize, Deserialize, Schema, Copy, Clone, PartialEq, Eq)]
 pub enum WireBreakpointCause {
     Hardware,
     Software,
     Unknown,
-    /// The target requested the host to perform a semihosting operation. The
-    /// operation kind is serialized as an opcode; parameters stay on the
-    /// server side and are surfaced through the existing semihosting event
-    /// channels when needed.
+    /// The target requested a semihosting operation. The operation kind is
+    /// serialized as an opcode; parameters stay on the server side and are
+    /// surfaced through the existing semihosting event channels when needed.
     Semihosting(WireSemihostingCommand),
 }
 
 /// Classification of a semihosting command carried over the wire.
 ///
 /// The full [`SemihostingCommand`] payload carries pointers into target
-/// memory and so cannot be meaningfully transported over RPC on its own.
-/// We specialise the variants the DAP backend actually needs to drive on
-/// the client side:
+/// memory and cannot be transported over RPC on its own. We specialise the
+/// variants the DAP backend actually needs on the client side:
 ///
-/// * [`Self::ExitSuccess`] / [`Self::ExitError`] reproduce the
-///   user-visible "Application has exited with …" message.
-/// * [`Self::GetCommandLine`] carries the target address of the
-///   command-line block so the client can reconstruct a real
+/// * [`Self::ExitSuccess`] / [`Self::ExitError`] reproduce the user-visible
+///   "Application has exited with …" message.
+/// * [`Self::GetCommandLine`] carries the target address of the command-line
+///   block so the client can reconstruct a real
 ///   [`probe_rs::semihosting::GetCommandLineRequest`] (via
 ///   [`Buffer::from_block_at`](probe_rs::semihosting::Buffer::from_block_at))
-///   and drive the `write_command_line_to_target` handshake entirely
-///   through the regular [`probe_rs::CoreInterface`] / memory RPCs.
+///   and drive the `write_command_line_to_target` handshake through the
+///   regular [`probe_rs::CoreInterface`] / memory RPCs.
 ///
-/// Everything else is surfaced as [`Self::Other`]; the server still
-/// handles its target-memory interactions locally.
+/// Everything else is surfaced as [`Self::Other`]; the server still handles
+/// its target-memory interactions locally.
 #[derive(Debug, Serialize, Deserialize, Schema, Copy, Clone, PartialEq, Eq)]
 pub enum WireSemihostingCommand {
     ExitSuccess,
@@ -304,16 +297,16 @@ impl From<HaltReason> for WireHaltReason {
     }
 }
 
-// `WireHaltReason` cannot be round-tripped perfectly because the general
-// semihosting payload carries target-memory pointers. We do preserve the
-// exit / exit-error classification (and the exit status / reason codes)
-// though, so the DAP server can emit the same "Application has exited
-// with …" message on both the local and remote paths.
+// `WireHaltReason` cannot round-trip perfectly because the general semihosting
+// payload carries target-memory pointers. The exit / exit-error classification
+// (and exit status / reason codes) is preserved so the DAP server can emit the
+// same "Application has exited with …" message on both the local and remote
+// paths.
 //
-// The `GetCommandLine` variant is surfaced as a placeholder
-// `SemihostingCommand::Unknown` here; the server-side
-// `core/handle_semihosting` endpoint re-derives the real command from the
-// live core, so the client never needs target memory access for it.
+// `GetCommandLine` is surfaced as a placeholder `SemihostingCommand::Unknown`;
+// the server-side `core/handle_semihosting` endpoint re-derives the real
+// command from the live core, so the client never needs target memory access
+// for it.
 impl From<WireBreakpointCause> for probe_rs::BreakpointCause {
     fn from(value: WireBreakpointCause) -> Self {
         match value {
@@ -328,9 +321,7 @@ impl From<WireBreakpointCause> for probe_rs::BreakpointCause {
                     }
                     // Placeholder: the server-side `core/handle_semihosting`
                     // endpoint re-derives the real `GetCommandLineRequest`
-                    // from the live core, so the DAP server recognizes the
-                    // halt as semihosting-induced without reconstituting the
-                    // full request on the client.
+                    // from the live core.
                     WireSemihostingCommand::GetCommandLine { .. } => {
                         SemihostingCommand::Unknown(UnknownCommandDetails {
                             operation: 0,
@@ -338,9 +329,8 @@ impl From<WireBreakpointCause> for probe_rs::BreakpointCause {
                         })
                     }
                     // The server handles the real command payload; surface a
-                    // placeholder here so the DAP server recognizes the halt as
-                    // semihosting-induced without reconstituting the full
-                    // operation/parameter pair.
+                    // placeholder so the DAP server recognizes the halt as
+                    // semihosting-induced.
                     WireSemihostingCommand::Other => {
                         SemihostingCommand::Unknown(UnknownCommandDetails {
                             operation: 0,
@@ -735,16 +725,9 @@ pub async fn core_instruction_set(
 
 /// Bulk-read a set of registers in one request.
 ///
-/// The primary caller is the RPC-backed DAP backend: on every halt the
-/// DAP server performs a register dump (one read per register, from
-/// PC/SP/FP/LR through every general-purpose and FP register), which
-/// otherwise costs one round-trip per register. Batching them behind a
-/// single RPC makes the halt-refresh O(1) round trips instead of
-/// O(N_registers).
-///
-/// Per-register errors are reported as `None` in the matching slot so
-/// that an unreadable register (e.g. an FP register on a core that has
-/// the FPU disabled) does not abort the whole batch.
+/// Per-register errors are reported as `None` in the matching slot so that
+/// an unreadable register (e.g. an FP register on a core with the FPU
+/// disabled) does not abort the whole batch.
 pub async fn core_read_registers(
     ctx: &mut RpcContext,
     _header: VarHeader,
@@ -787,7 +770,7 @@ pub struct CoreDumpRequest {
 }
 
 /// Wire form of [`probe_rs::CoreDump`]. The client reconstructs a `CoreDump`
-/// from these fields and stores it locally.
+/// from these fields.
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct WireCoreDump {
     pub registers: Vec<(WireRegisterId, WireRegisterValue)>,
@@ -875,8 +858,7 @@ pub async fn core_dump(
 // -- semihosting -------------------------------------------------------------
 
 /// UI event produced by server-side semihosting handling, to be replayed on
-/// the client so the DAP UI (RTT windows, console) behaves as if the
-/// semihosting call ran locally.
+/// the client so the DAP UI behaves as if the call ran locally.
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub enum WireSemihostingUiEvent {
     /// Open an RTT window for a newly-allocated semihosting file handle.

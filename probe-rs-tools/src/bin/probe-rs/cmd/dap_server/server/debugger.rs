@@ -38,9 +38,8 @@ use std::{
 use time::UtcOffset;
 
 #[derive(Debug)]
-/// The `DebuggerStatus` is used to control how the Debugger::debug_session() decides if it should respond to
-/// DAP Client requests such as `Terminate`, `Disconnect`, and `Reset`, as well as how to respond to unrecoverable errors
-/// during a debug session interacting with a target session.
+/// Controls how `debug_session` responds to client `Terminate`/`Disconnect`/`Reset`
+/// requests and to unrecoverable errors during a target session.
 pub(crate) enum DebugSessionStatus {
     /// Continue handling requests after a specified delay.
     Continue(Duration),
@@ -48,13 +47,8 @@ pub(crate) enum DebugSessionStatus {
     Restart(Request),
 }
 
-/// #Debugger Overview
-/// The DAP Server may either be managed automatically by the development tool (typically an IDE or
-/// editor the "DAP client") e.g. VSCode, or...
-/// The DAP Server can optionally be run from the command line as a "server" process, and the
-/// development tool can be configured to connect to it via a TCP connection.
-/// - In this case, the management (start and stop) of the server process is the responsibility of the user. e.g.
-///   - `probe-rs dap-server --port <IP port number> <other options>` : Uses TCP Sockets to the defined IP port number to service DAP requests.
+/// Top-level DAP server driver. May be managed by an IDE/editor (e.g. VSCode)
+/// or run standalone over TCP via `probe-rs dap-server --port <port>`.
 pub struct Debugger {
     config: configuration::SessionConfig,
 
@@ -384,11 +378,6 @@ impl Debugger {
         Ok(DebugSessionStatus::Continue(delay))
     }
 
-    /// `debug_session` is where the primary _debug processing_ for the DAP (Debug Adapter Protocol) adapter happens.
-    /// All requests are interpreted, actions taken, and responses formulated here.
-    /// This function is self contained and returns only status data to control what happens after the session completes.
-    /// The [`DebugAdapter`] takes care of _implementing the DAP Base Protocol_ and _communicating with the DAP client_ and _probe_.
-    ///
     /// Local/in-process entry point: the DAP session is driven against a
     /// [`probe_rs::Session`] built from the local probe [`Lister`] and chip
     /// registry.
@@ -448,10 +437,8 @@ impl Debugger {
         B: FlashingBackend,
         F: AsyncFnOnce(&mut SessionConfig) -> Result<SessionData<B>, DebuggerError>,
     {
-        // The DapClient startup process has a specific sequence.
-        // Handle it here before starting a probe-rs session and looping through user generated requests.
-        // Handling the initialize, and Attach/Launch requests here in this method,
-        // before entering the iterative loop that processes requests through the process_request method.
+        // Handle the initialize + attach/launch sequence before entering the
+        // request loop.
 
         // Initialize request
         if self.handle_initialize(&mut debug_adapter).is_err() {
@@ -477,7 +464,8 @@ impl Debugger {
             return Err(error);
         }
 
-        // Loop through remaining (user generated) requests and send to the [process_request] method until either the client or some unexpected behaviour terminates the process.
+        // Loop through user-generated requests until the client or an error
+        // terminates the session.
         let error = loop {
             let debug_session_status = match self
                 .process_next_request(&mut session_data, &mut debug_adapter)
@@ -667,7 +655,6 @@ impl Debugger {
             .map_err(DebuggerError::from)?;
 
         // Before we complete, load the (optional) CMSIS-SVD file and its variable cache.
-        // Configure the [CorePeripherals].
         if let Some(svd_file) = &target_core_config.svd_file {
             let cd_idx = session_data
                 .core_data

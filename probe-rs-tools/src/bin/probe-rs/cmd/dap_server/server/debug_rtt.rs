@@ -39,8 +39,7 @@ impl RemoteRttClient {
         }
     }
 
-    /// Async write to a down channel over the RPC session — no local `Core`
-    /// (and no `block_on` bridge) required.
+    /// Async write to a down channel over the RPC session.
     pub(crate) async fn write_down_remote(
         &self,
         channel: u32,
@@ -54,9 +53,9 @@ impl RemoteRttClient {
 
 impl RttClientHandle {
     /// Poll multiple up channels in one go. The local path copies each
-    /// channel's bytes (its `poll_channel` buffer can't span channels); the
-    /// remote path `.await`s a single `rtt/poll_up` round trip. Per-channel
-    /// errors are reported inline; a top-level `Err` means the batch failed.
+    /// channel's bytes (its `poll_channel` buffer can't span channels);
+    /// per-channel errors are reported inline, a top-level `Err` means the
+    /// batch failed.
     async fn poll_channels(
         &mut self,
         core: &mut Core<'_>,
@@ -93,9 +92,9 @@ impl RttClientHandle {
         }
     }
 
-    /// Remote-only poll: a single `rtt/poll_up` round trip with no local
-    /// `Core` (and no `block_on` bridge). Panics for the `Local` variant —
-    /// callers must branch on [`RttConnection::is_remote`].
+    /// Remote-only poll: `.await`s `rtt/poll_up` without a local `Core`.
+    /// Returns an error for the `Local` variant — callers must branch on
+    /// [`RttConnection::is_remote`].
     async fn poll_channels_remote(
         &mut self,
         channels: &[u32],
@@ -125,8 +124,7 @@ impl RttClientHandle {
     }
 
     /// Restore the original mode of every up channel. The `Local` variant
-    /// needs a live `Core`; the `Remote` variant `.await`s the
-    /// `rtt/clean_up` round trip directly (no `block_on` bridge).
+    /// needs a live `Core`; the `Remote` variant defers to the server.
     async fn clean_up_async(&mut self, core: Option<&mut Core<'_>>) -> Result<(), RttError> {
         match self {
             RttClientHandle::Local(client) => {
@@ -212,8 +210,7 @@ impl RttConnection {
         self.emit_rtt_results(debug_adapter, results).await
     }
 
-    /// Remote-only [`Self::process_rtt_data`]: a single `rtt/poll_up` round trip
-    /// with no local `Core` (and no `block_on` bridge).
+    /// Remote-only [`Self::process_rtt_data`]: no local `Core` required.
     pub async fn process_rtt_data_remote<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
@@ -273,8 +270,8 @@ impl RttConnection {
     }
 
     /// Clean up the RTT connection, restoring the state changes that we made.
-    /// The `Local` variant needs a live `Core`; the `Remote` variant cleans up
-    /// server-side (no `block_on` bridge).
+    /// The `Local` variant needs a live `Core`; the `Remote` variant cleans
+    /// up server-side.
     pub async fn clean_up_async(
         &mut self,
         target_core: Option<&mut Core<'_>>,

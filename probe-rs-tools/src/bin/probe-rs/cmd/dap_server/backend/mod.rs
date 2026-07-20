@@ -1,16 +1,8 @@
-//! Backend abstraction for the DAP server.
+//! Backend abstraction for the DAP server; see [`DapBackend`].
 //!
-//! The DAP server historically operated directly against a local
-//! [`probe_rs::Session`]. To allow the same debugger implementation to drive a
-//! target via the probe-rs RPC layer (over a network connection), the
-//! session-level operations the debugger actually needs are captured here in
-//! the [`DapBackend`] trait.
-//!
-//! Two implementations are provided:
-//!
-//! * [`probe_rs::Session`] (local, blanket impl below).
-//! * [`rpc::RpcBackend`], which forwards every operation to a probe-rs RPC
-//!   server through a [`crate::rpc::client::RpcClient`].
+//! Two implementations: a blanket impl for local [`probe_rs::Session`], and
+//! [`rpc::RpcBackend`] which forwards every operation to a probe-rs RPC server
+//! via [`crate::rpc::client::RpcClient`].
 
 pub mod rpc;
 
@@ -62,9 +54,7 @@ pub struct SemihostingHandleResult {
 }
 
 /// Lossy chunked byte read against a [`probe_rs::Core`]: reads as much as
-/// possible, stopping at the first unreadable region. Mirrors the historical
-/// `CoreHandle::read_memory_lossy` so the local `Session` backend path
-/// preserves partial-read behavior.
+/// possible, stopping at the first unreadable region.
 fn read_memory_lossy(
     core: &mut Core<'_>,
     mut address: u64,
@@ -102,8 +92,7 @@ fn read_memory_lossy(
 
 /// Local semihosting handler: performs the file I/O against the live `core`
 /// and mutates the client-owned `state`, pushing UI `events` for the caller
-/// to replay on the DAP adapter. Mirrors the historical
-/// `CoreHandle::handle_semihosting` body.
+/// to replay on the DAP adapter.
 fn handle_semihosting_local(
     core: &mut Core<'_>,
     state: &mut crate::cmd::dap_server::server::core_data::ClientSemihostingState,
@@ -246,27 +235,19 @@ use crate::util::flash::build_loader;
 /// [`Session`] or a remote RPC-backed session implementation.
 #[async_trait(?Send)]
 pub trait DapBackend {
-    /// Return the available cores on this target.
     fn list_cores(&self) -> Vec<(usize, CoreType)>;
 
-    /// Return the target description.
     fn target(&self) -> &Target;
 
-    /// Return a handle to the requested core.
     fn core(&mut self, core_index: usize) -> Result<Core<'_>, Error>;
 
-    /// Read the current [`CoreStatus`] of `core_index`. `async` so the RPC
-    /// backend can `.await` the round trip directly.
     async fn status(&mut self, core_index: usize) -> Result<CoreStatus, Error> {
         let mut core = self.core(core_index)?;
         core.status()
     }
 
-    /// Set hardware breakpoints at all `addresses` in one round trip. Returns
-    /// per-address success so callers can preserve per-breakpoint DAP
-    /// verification feedback. Default impl loops via [`DapBackend::core`];
-    /// the RPC backend overrides this to issue a single `core/set_hw_bps`
-    /// round trip.
+    /// Returns per-address success so callers can preserve per-breakpoint DAP
+    /// verification feedback.
     async fn set_hw_breakpoints(
         &mut self,
         core_index: usize,
@@ -280,7 +261,6 @@ pub trait DapBackend {
         Ok(out)
     }
 
-    /// Clear hardware breakpoints at all `addresses` in one round trip.
     async fn clear_hw_breakpoints(
         &mut self,
         core_index: usize,
@@ -298,9 +278,7 @@ pub trait DapBackend {
     }
 
     /// Lossy bulk byte read: returns as many bytes as are readable starting
-    /// at `address`, stopping at the first unreadable region. Default impl
-    /// loops via [`DapBackend::core`]; the RPC backend overrides this to
-    /// issue a single `memory/read_bytes` round trip.
+    /// at `address`, stopping at the first unreadable region.
     async fn read_memory(
         &mut self,
         core_index: usize,
@@ -311,9 +289,6 @@ pub trait DapBackend {
         read_memory_lossy(&mut core, address, count)
     }
 
-    /// Write `data` to `address`. Default impl uses [`DapBackend::core`];
-    /// the RPC backend overrides this to issue a single `memory/write8`
-    /// round trip.
     async fn write_memory(
         &mut self,
         core_index: usize,
@@ -338,9 +313,6 @@ pub trait DapBackend {
         core.run()
     }
 
-    /// Reset and halt the core, returning [`CoreInformation`]. Default via
-    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
-    /// `reset_and_halt` round trip (which returns the wire `CoreInformation`).
     async fn reset_and_halt(
         &mut self,
         core_index: usize,
@@ -350,43 +322,32 @@ pub trait DapBackend {
         core.reset_and_halt(timeout)
     }
 
-    /// Whether the core is halted. Default via [`DapBackend::core`]; the RPC
-    /// backend overrides this to `.await` the `core/halted` round trip.
     async fn core_halted(&mut self, core_index: usize) -> Result<bool, Error> {
         let mut core = self.core(core_index)?;
         core.core_halted()
     }
 
-    /// Static core architecture. The default impl queries the live `Core`;
-    /// the RPC backend overrides this to read its cached per-core metadata
-    /// (no round trip), so callers can branch on architecture without a
-    /// `Core` (e.g. `reapply_breakpoints` after reset).
+    /// Served by the RPC backend from cached per-core metadata with no round
+    /// trip, so callers can branch on architecture without a `Core` (e.g.
+    /// `reapply_breakpoints` after reset).
     async fn core_architecture(&mut self, core_index: usize) -> Result<Architecture, Error> {
         let core = self.core(core_index)?;
         Ok(core.architecture())
     }
 
-    /// Static `RegisterId` of the program counter. Default via
-    /// [`DapBackend::core`]; the RPC backend overrides this to read the
-    /// cached per-core register set (no round trip), so callers can read the
-    /// PC via [`DapBackend::read_core_reg`] without a `Core`.
+    /// Served by the RPC backend from the cached per-core register set with
+    /// no round trip, so callers can read the PC via
+    /// [`DapBackend::read_core_reg`] without a `Core`.
     async fn program_counter_id(&mut self, core_index: usize) -> Result<RegisterId, Error> {
         let core = self.core(core_index)?;
         Ok(core.program_counter().id)
     }
 
-    /// Set a single hardware breakpoint. Default via [`DapBackend::core`];
-    /// the RPC backend overrides this to `.await` the `core/set_hw_bp` round
-    /// trip. (Batched set is [`DapBackend::set_hw_breakpoints`].)
     async fn set_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
         let mut core = self.core(core_index)?;
         core.set_hw_breakpoint(address)
     }
 
-    /// Clear a single hardware breakpoint. Returns whether a cached
-    /// breakpoint entry was removed. Default via [`DapBackend::core`]; the
-    /// RPC backend overrides this to `.await` the `core/clear_hw_bp` round
-    /// trip. (Batched clear is [`DapBackend::clear_hw_breakpoints`].)
     async fn clear_hw_breakpoint(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
         let mut core = self.core(core_index)?;
         match core.clear_hw_breakpoint(address) {
@@ -396,12 +357,10 @@ pub trait DapBackend {
         }
     }
 
-    /// Set a local/static variable's value. Default impl is a no-op error:
-    /// the local `Session` path resolves variables against the
-    /// client-side `VariableCache` (in `CoreData`) directly in the
-    /// `set_variable` handler, so this method is only reached by the RPC
-    /// backend, whose override `.await`s the `stack_trace/set_variable`
-    /// round trip (the `VariableCache` lives server-side).
+    /// Default impl is a no-op error: the local `Session` path resolves
+    /// variables against the client-side `VariableCache` (in `CoreData`)
+    /// directly in the `set_variable` handler, so this method is only
+    /// reached by the RPC backend (whose `VariableCache` lives server-side).
     async fn set_variable(
         &mut self,
         _core_index: usize,
@@ -414,11 +373,8 @@ pub trait DapBackend {
         ))
     }
 
-    /// Disassemble target memory. Default impl runs the shared
-    /// `disassemble_target_memory` against a local `Core` + the supplied
-    /// `DebugInfo`; the RPC backend overrides this to `.await` the
-    /// `core/disassemble` round trip (the server owns the `DebugInfo` and
-    /// does the capstone work, so the `debug_info` arg is ignored).
+    /// The RPC backend ignores `debug_info`: the server owns the `DebugInfo`
+    /// and does the capstone work itself.
     async fn disassemble(
         &mut self,
         core_index: usize,
@@ -452,8 +408,6 @@ pub trait DapBackend {
         .map_err(|e| Error::Other(e.to_string()))
     }
 
-    /// Read a single core register. Default via [`DapBackend::core`]; the RPC
-    /// backend overrides this to `.await` the `core/read_reg` round trip.
     async fn read_core_reg(
         &mut self,
         core_index: usize,
@@ -463,8 +417,7 @@ pub trait DapBackend {
         core.read_core_reg(register_id)
     }
 
-    /// Read a batch of core registers in one round trip (RPC) or a tight loop
-    /// (local). Per-register failures are reported as `None` in-place.
+    /// Per-register failures are reported as `None` in-place.
     async fn read_core_registers(
         &mut self,
         core_index: usize,
@@ -478,7 +431,6 @@ pub trait DapBackend {
         Ok(out)
     }
 
-    /// The static register file for this core (names, roles, sizes, ids).
     /// Both backends can produce this without a round trip: the local backend
     /// reads it from the live `Core`, the RPC backend from cached per-core
     /// metadata.
@@ -490,7 +442,6 @@ pub trait DapBackend {
         Ok(core.registers())
     }
 
-    /// Read `count` bytes of target memory at `address` into a fresh buffer.
     async fn read_memory_8(
         &mut self,
         core_index: usize,
@@ -503,10 +454,8 @@ pub trait DapBackend {
         Ok(buf)
     }
 
-    /// Dump the core (all registers + the supplied memory ranges) to a
-    /// [`probe_rs::CoreDump`]. Default via [`DapBackend::core`]; the RPC
-    /// backend overrides this to `.await` a `core/dump` round trip and
-    /// reconstruct the `CoreDump` client-side.
+    /// The RPC backend reconstructs the [`probe_rs::CoreDump`] client-side
+    /// from a `core/dump` round trip.
     async fn dump_core(
         &mut self,
         core_index: usize,
@@ -518,11 +467,8 @@ pub trait DapBackend {
 
     /// Handle a semihosting halt: perform the file I/O (open/read/write) and
     /// return the resulting [`CoreStatus`] plus the UI events the caller must
-    /// replay on the DAP adapter. The default (local) impl drives the live
-    /// [`probe_rs::Core`] via [`DapBackend::core`] and mutates the supplied
-    /// [`ClientSemihostingState`]; the RPC backend overrides this to `.await`
-    /// the `core/handle_semihosting` round trip (the state is server-owned
-    /// and the `state` argument is unused).
+    /// replay on the DAP adapter. The RPC backend ignores `state` (it is
+    /// server-owned there).
     async fn handle_semihosting(
         &mut self,
         core_index: usize,
@@ -552,8 +498,7 @@ pub trait DapBackend {
 
     /// Kick off a single embedded-test case (DAP REPL `test run`): run until
     /// the `GetCommandLine` semihosting call, write `run_addr {address}` as
-    /// the command line, then resume. Default via [`DapBackend::core`]; the
-    /// RPC backend overrides this to `.await` the `tests/kickoff` round trip.
+    /// the command line, then resume.
     async fn kickoff_test(&mut self, core_index: usize, address: u64) -> Result<(), Error> {
         use probe_rs::semihosting::SemihostingCommand;
         use probe_rs::{BreakpointCause, CoreStatus, HaltReason};
@@ -574,9 +519,6 @@ pub trait DapBackend {
         Ok(())
     }
 
-    /// Enable a single vector-catch condition. Default via
-    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
-    /// `core/enable_vc` round trip.
     async fn enable_vector_catch(
         &mut self,
         core_index: usize,
@@ -589,11 +531,8 @@ pub trait DapBackend {
         }
     }
 
-    /// Apply the per-core vector-catch configuration: halt if running, enable
-    /// each requested condition, then resume if it was halted. Default via
-    /// [`DapBackend::core`]; the RPC backend overrides this to drive the
-    /// `core/halt`/`core/enable_vc`/`core/run` round trips (no `block_on`
-    /// bridge).
+    /// Halt if running, enable each requested condition, then resume if it
+    /// was halted.
     async fn apply_vector_catch(
         &mut self,
         core_index: usize,
@@ -625,9 +564,6 @@ pub trait DapBackend {
         Ok(())
     }
 
-    /// Wipe a stale RTT control block from target memory for a core. Default
-    /// via [`DapBackend::core`]; the RPC backend overrides this to `.await`
-    /// the `rtt/clear_control_block` round trip.
     async fn clear_rtt_blocks(
         &mut self,
         core_index: usize,
@@ -639,8 +575,6 @@ pub trait DapBackend {
         Ok(())
     }
 
-    /// Write a single core register. Default via [`DapBackend::core`]; the
-    /// RPC backend overrides this to `.await` the `core/write_reg` round trip.
     async fn write_core_reg(
         &mut self,
         core_index: usize,
@@ -651,12 +585,9 @@ pub trait DapBackend {
         core.write_core_reg(register_id, value)
     }
 
-    /// Full `SteppingMode::step` (over/into/out/instruction) run against the
-    /// live `Core` with the supplied `DebugInfo`. Returns the new
-    /// [`CoreStatus`], program counter, and any `WarnAndContinue` message.
-    /// Default impl runs `SteppingMode::step` locally via
-    /// [`DapBackend::core`]; the RPC backend overrides this to `.await` the
-    /// `stack_trace/step` round trip (the server owns the cached `DebugInfo`).
+    /// Returns the new [`CoreStatus`], program counter, and any
+    /// `WarnAndContinue` message. The RPC backend ignores `debug_info` (the
+    /// server owns the cached `DebugInfo`).
     async fn debug_step(
         &mut self,
         core_index: usize,
@@ -686,10 +617,6 @@ pub trait DapBackend {
         None
     }
 
-    /// Build the stack frames for `core_index` while it is halted. The
-    /// default unwinds locally via [`DapBackend::core`]; the RPC backend
-    /// overrides this to issue a single `stack_trace/rich` round trip and
-    /// rebuild locals from the supplied `debug_info`.
     async fn unwind_stack(
         &mut self,
         core_index: usize,
@@ -710,10 +637,9 @@ pub trait DapBackend {
         )
     }
 
-    /// Resolve DAP `scopes` for `frame_id` server-side. The RPC backend
-    /// overrides this to issue a single `stack_trace/scopes` round trip
-    /// against its cached `VariableCache`; the local `Session` backend
-    /// returns `Ok(None)` so the existing client-side `scopes` logic runs.
+    /// The local `Session` backend returns `Ok(None)` so the existing
+    /// client-side `scopes` logic runs; the RPC backend resolves server-side
+    /// against its cached `VariableCache`.
     async fn scopes(
         &mut self,
         _core_index: usize,
@@ -722,10 +648,9 @@ pub trait DapBackend {
         Ok(None)
     }
 
-    /// Resolve DAP `variables` for `variables_reference` server-side. The
-    /// RPC backend overrides this to issue a single `stack_trace/variables`
-    /// round trip (with lazy expansion) against its cached `VariableCache`;
-    /// the local `Session` backend returns `Ok(None)`.
+    /// The local `Session` backend returns `Ok(None)`; the RPC backend
+    /// resolves server-side with lazy expansion against its cached
+    /// `VariableCache`.
     async fn variables(
         &mut self,
         _core_index: usize,
@@ -735,12 +660,10 @@ pub trait DapBackend {
         Ok(None)
     }
 
-    /// Evaluate a watch/hover expression server-side. The RPC backend
-    /// overrides this to issue a single `stack_trace/evaluate` round trip
-    /// against its cached `VariableCache`; the local `Session` backend
-    /// returns `Ok(None)` so the existing client-side `evaluate` logic runs.
-    /// Only the `watch`/`hover` contexts are handled server-side; `repl` and
-    /// `clipboard` always fall back to the local path.
+    /// The local `Session` backend returns `Ok(None)` so the existing
+    /// client-side `evaluate` logic runs. Only the `watch`/`hover` contexts
+    /// are handled server-side; `repl` and `clipboard` always fall back to
+    /// the local path.
     async fn evaluate(
         &mut self,
         _core_index: usize,
@@ -766,12 +689,9 @@ impl DapBackend for Session {
 }
 
 /// Extension trait used by the DAP server to flash a binary during `launch`
-/// and `restart` handling.
-///
-/// A dedicated trait allows the [`Session`] path to run the historical
-/// synchronous flash while the RPC path issues the build/verify/flash
-/// operations over the wire. Progress events are surfaced as the wire-format
-/// [`WireProgressEvent`] so the DAP server renders progress uniformly.
+/// and `restart` handling. Progress events are surfaced as the wire-format
+/// [`WireProgressEvent`] so the DAP server renders progress uniformly across
+/// both backends.
 pub trait FlashingBackend: DapBackend {
     /// Flash `path_to_elf` to the target, invoking `progress` for every
     /// progress event emitted along the way.

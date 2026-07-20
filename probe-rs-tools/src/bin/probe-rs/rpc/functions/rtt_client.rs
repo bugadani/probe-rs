@@ -119,9 +119,7 @@ pub struct RttChannels {
 pub type RttChannelsResponse = RpcResult<RttChannels>;
 
 /// Attach the server-side [`RttClient`] to the target's RTT control block
-/// (if not already attached) and return the up/down channel metadata so an
-/// RPC-backed DAP client can open output windows without driving any
-/// target memory reads itself.
+/// (if not already attached) and return the up/down channel metadata.
 pub async fn get_rtt_channels(
     ctx: &mut RpcContext,
     _header: VarHeader,
@@ -166,9 +164,8 @@ pub struct ClearRttControlBlockRequest {
 pub type ClearRttControlBlockResponse = RpcResult<()>;
 
 /// Wipe any stale RTT control block from target memory for a core. Called
-/// while the core is halted, before a reset, so firmware startup reinitializes
-/// the block from `.data`. Lets an RPC-backed DAP client avoid driving target
-/// memory writes itself.
+/// while the core is halted, before a reset, so firmware startup
+/// reinitializes the block from `.data`.
 pub async fn clear_rtt_control_block(
     ctx: &mut RpcContext,
     _header: VarHeader,
@@ -209,9 +206,7 @@ pub struct RttPollResult {
 }
 
 /// Poll multiple up channels on the server-side [`RttClient`] in a single
-/// request, returning the newly-available bytes for each. This collapses the
-/// per-memory-read round-trip storm of a client-side `RttClient` into one
-/// request per poll (instead of one per channel per poll).
+/// request, returning the newly-available bytes for each.
 pub async fn poll_rtt_up(
     ctx: &mut RpcContext,
     _header: VarHeader,
@@ -247,7 +242,7 @@ pub struct PollRttUpRequest {
 }
 
 /// Restore the original mode of every up channel on the server-side
-/// [`RttClient`], mirroring [`RttClient::clean_up`].
+/// [`RttClient`].
 pub async fn clean_up_rtt(
     ctx: &mut RpcContext,
     _header: VarHeader,

@@ -123,10 +123,7 @@ pub type TakeStackTraceResponse = RpcResult<StackTraces>;
 
 /// Shared per-core unwind loop used by both [`take_stack_trace`] and
 /// [`take_rich_stack_trace`]. Returns `(core_index, frames)` pairs, where
-/// each `StackFrame` is converted to `F` via `F::from`. The two endpoints
-/// differ only in the frame type and the outer wrapper, so the unwind
-/// machinery (debug-info load, `halted_access`, per-core `unwind`) lives
-/// here exactly once.
+/// each `StackFrame` is converted to `F` via `F::from`.
 async fn unwind_all_cores<F: From<StackFrame>>(
     ctx: &mut RpcContext,
     request: &TakeStackTraceRequest,
@@ -202,8 +199,7 @@ impl From<&DebugRegister> for WireDebugRegister {
 /// metadata. The server owns the `local_variables`/`static_variables`
 /// `VariableCache` trees (keyed by `sessid` + core); the client relays the
 /// server-assigned `id`/`locals_reference`/`statics_reference` handles
-/// verbatim so that subsequent `scopes`/`variables` requests resolve
-/// server-side without per-memory-read round trips.
+/// verbatim so subsequent `scopes`/`variables` requests resolve server-side.
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct RichStackTraceFrame {
     pub function_name: String,
@@ -266,8 +262,7 @@ pub type TakeRichStackTraceResponse = RpcResult<RichStackTraces>;
 /// [`crate::rpc::debug_state::ServerDebugState`], keyed by `sessid`). It
 /// returns per-frame register state + metadata plus the server-assigned
 /// `id`/`locals_reference`/`statics_reference` handles, so an RPC-backed
-/// DAP client can resolve `scopes`/`variables` server-side without one
-/// round trip per memory read during variable expansion.
+/// DAP client can resolve `scopes`/`variables` server-side.
 pub async fn take_rich_stack_trace(
     ctx: &mut RpcContext,
     _header: VarHeader,
@@ -293,8 +288,7 @@ pub async fn take_rich_stack_trace(
     let mut session = ctx.session(request.sessid).await;
 
     // Per core: unwind, build locals via `get_stackframe_info`, build the
-    // static scope cache. Returns the full `Vec<StackFrame>` (with locals),
-    // the static cache, and the wire frames.
+    // static scope cache.
     let cores: Vec<(
         u32,
         Vec<StackFrame>,
@@ -323,9 +317,9 @@ pub async fn take_rich_stack_trace(
             let static_variables = debug_info.create_static_scope_cache();
             let statics_ref = static_variables.root_variable().variable_key();
 
-            // Group consecutive frames sharing a register dump (an
-            // inlined chain from one `get_stackframe_info` call) and
-            // populate `local_variables` for each frame in the group.
+            // Group consecutive frames sharing a register dump (an inlined
+            // chain from one `get_stackframe_info` call) and populate
+            // `local_variables` for each frame in the group.
             let mut i = 0;
             while i < stack_frames.len() {
                 let group_start = i;

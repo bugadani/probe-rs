@@ -317,20 +317,16 @@ impl Cmd {
 
         // Run the debugger concurrently with the CLI's read loop.
         //
-        // For local sessions we keep the debugger on a dedicated blocking
-        // thread (the DAP server drives synchronous probe I/O), but we
-        // reuse the ambient tokio runtime handle instead of spinning up a
-        // brand-new one — otherwise the [`RpcClient`] (which is bound to
-        // the outer runtime) would deadlock on any of its async
-        // primitives.
+        // Local sessions: dedicated blocking thread for synchronous probe I/O,
+        // but reusing the ambient runtime handle (a fresh one would deadlock
+        // the [`RpcClient`], which is bound to the outer runtime).
         //
-        // For remote (RPC) sessions the backend has to run on the outer
-        // runtime's worker threads, because its synchronous probe I/O is
-        // bridged through `block_in_place` + `handle.block_on` which
-        // requires being polled by a real multi-thread runtime worker.
-        // The session data also contains `!Send` state (gimli's `Rc<[u8]>`,
-        // `Box<dyn Any>` test data, ...), so we can't `tokio::spawn` it —
-        // we drive the future inline via `select!` instead.
+        // Remote (RPC) sessions: backend runs on the outer runtime's worker
+        // threads — synchronous probe I/O is bridged through
+        // `block_in_place` + `handle.block_on`, which requires a real
+        // multi-thread runtime worker. Session data also holds `!Send`
+        // state (gimli `Rc<[u8]>`, `Box<dyn Any>` test data, ...), so we
+        // drive the future inline via `select!` instead of `tokio::spawn`.
         let is_local = client.is_local_session();
         let server = async move {
             let mut debugger = Debugger::new(utc_offset, None)?;

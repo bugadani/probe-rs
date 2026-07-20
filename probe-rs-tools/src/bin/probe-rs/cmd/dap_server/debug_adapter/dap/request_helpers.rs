@@ -405,15 +405,13 @@ fn get_capstone_le(
 
 /// A helper function to create a [`Source`] struct from a [`SourceLocation`].
 ///
-/// The path stored in the [`SourceLocation`] is the path recorded by the compiler in DWARF debug
-/// information at build time, and so refers to a file on the *client's* filesystem (where the
-/// firmware was built). The DAP server emits it verbatim to the client; resolution to an actual
-/// editor buffer is the client's responsibility, since the client is the side that has access to
-/// the source tree. This is correct in both local and remote (`remote_server_mode`) deployments.
-///
-/// Path rewrites that depend on knowledge of the user's local toolchain (e.g. mapping the
-/// synthetic `/rustc/<hash>/...` prefix on precompiled rustlib paths to the active sysroot) are
-/// performed by the VSCode extension on the client side, not here.
+/// The path is the build-time path recorded by the compiler in DWARF debug info
+/// and refers to a file on the *client's* filesystem. The server emits it
+/// verbatim; resolution to an editor buffer is the client's responsibility
+/// (correct in both local and `remote_server_mode` deployments). Path rewrites
+/// that need knowledge of the user's local toolchain (e.g. mapping the
+/// synthetic `/rustc/<hash>/...` prefix on precompiled rustlib paths to the
+/// active sysroot) are performed by the VSCode extension, not here.
 pub(crate) fn get_dap_source(source_location: &SourceLocation) -> Option<Source> {
     let file_path = source_location.path.to_path();
     let file_name = source_location.file_name();

@@ -307,7 +307,6 @@ pub struct LimitedLister {
 }
 
 impl LimitedLister {
-    /// Create a new lister with the default lister implementation.
     pub fn new(probe_access: ProbeAccess) -> Self {
         Self {
             all_probes: AllProbesLister::new(),

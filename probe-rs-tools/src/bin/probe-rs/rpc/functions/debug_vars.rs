@@ -83,7 +83,7 @@ pub struct WireVariable {
 
 pub type VariablesResponse = crate::rpc::functions::RpcResult<Vec<WireVariable>>;
 
-/// Replicates `request_helpers::get_variable_reference` for the server-side path.
+/// Mirrors `request_helpers::get_variable_reference` for the server-side path.
 fn variable_reference(parent: &Variable, cache: &VariableCache) -> (ObjectRef, i64, i64) {
     if !parent.is_valid() {
         return (ObjectRef::Invalid, 0, 0);
@@ -351,12 +351,10 @@ pub struct WireSetVariableResponse {
 
 pub type SetVariableResult = RpcResult<WireSetVariableResponse>;
 
-/// Set a local/static variable's value server-side. The `VariableCache`
-/// lives server-side (Task 4/5); the client only relays the parent key,
-/// name, and new value. Mirrors the client `set_variable` local/static
-/// branch: search per-frame locals then statics by name+parent, run
-/// `Variable::update_value` against the live `Core`, and return the
-/// response fields.
+/// Set a local/static variable's value server-side. The client only relays
+/// the parent key, name, and new value. Searches per-frame locals then
+/// statics by name+parent, runs `Variable::update_value` against the live
+/// `Core`, and returns the response fields for the DAP `setVariable` body.
 pub async fn set_variable(
     ctx: &mut RpcContext,
     _header: VarHeader,
@@ -611,9 +609,9 @@ pub struct StepResponse {
 pub type StepResult = RpcResult<StepResponse>;
 
 /// Full `SteppingMode::step` (over/into/out/instruction) run server-side
-/// against the cached `DebugInfo` and the live `Core`. Mirrors the client
-/// `step_impl` error handling: `WarnAndContinue` re-reads status/pc and
-/// surfaces the warning; other errors halt the core and propagate.
+/// against the cached `DebugInfo` and the live `Core`. On
+/// `WarnAndContinue`, re-reads status/pc and surfaces the warning; other
+/// errors halt the core and propagate.
 pub async fn step(ctx: &mut RpcContext, _header: VarHeader, request: StepRequest) -> StepResult {
     let states = ctx.debug_states();
     let guard = states.lock().await;

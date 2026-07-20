@@ -263,8 +263,8 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         )
     }
 
-    /// Lifted `scopes` handler: resolve scopes server-side when the backend
-    /// supports it (RPC), else fall back to the local `CoreHandle` path.
+    /// `scopes` handler: tries the backend (RPC) first, else falls back to
+    /// the local `CoreHandle` path.
     pub(crate) async fn scopes<B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
@@ -287,9 +287,8 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.scopes_local(&mut target_core, request)
     }
 
-    /// Lifted `variables` handler: resolve variables server-side when the
-    /// backend supports it (RPC), else fall back to the local `CoreHandle`
-    /// path.
+    /// `variables` handler: tries the backend (RPC) first, else falls back
+    /// to the local `CoreHandle` path.
     pub(crate) async fn variables<B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
@@ -312,9 +311,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.variables_local(&mut target_core, request)
     }
 
-    /// Lifted `evaluate` handler: resolve watch/hover expressions server-side
-    /// when the backend supports it (RPC), else fall back to the local
-    /// `CoreHandle` path (which also handles `repl`/`clipboard`).
+    /// `evaluate` handler: tries the backend (RPC) first for watch/hover
+    /// expressions, else falls back to the local `CoreHandle` path (which
+    /// also handles `repl`/`clipboard`).
     pub(crate) async fn evaluate<B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,
@@ -677,11 +676,8 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         .await
     }
 
-    /// Async REPL dispatch. Resolves the selected core's [`CoreData`] and the
-    /// session [`DapBackend`], then hands control to the command's own
-    /// localized `handler` (a boxed-future `fn` pointer stored on the
-    /// [`ReplCommand`] in its module). Each handler `.await`s the backend
-    /// directly, so the RPC backend needs no `block_on` bridge.
+    /// Async REPL dispatch: resolves the core's [`CoreData`] and hands off to
+    /// the [`ReplCommand`] handler, which `.await`s the backend directly.
     async fn dispatch_repl_command<B: DapBackend>(
         &mut self,
         leaf: ReplCommand,
@@ -951,10 +947,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             response_body.variables_reference = Some(0);
         } else {
             // Variable path: local backends resolve against the client-side
-            // `VariableCache` (in `CoreData`) via `backend.core()`; the RPC
-            // backend has no client-side cache (it lives server-side), so it
-            // falls through to `backend.set_variable` which `.await`s the
-            // `stack_trace/set_variable` round trip.
+            // `VariableCache` (in `CoreData`); the RPC backend has no
+            // client-side cache (it lives server-side), so it falls through
+            // to `backend.set_variable`.
             let variable_name = VariableName::Named(arguments.name.clone());
 
             let mut found_local: Option<(probe_rs_debug::Variable, usize)> = None;
@@ -983,7 +978,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
 
             if let Some((cache_variable, frame_index)) = found_local {
                 let mut core = session_data.backend.core(core_index)?;
-                #[allow(clippy::expect_used, reason = "We just searched for local_variables and found it to be Some")]
+                #[allow(
+                    clippy::expect_used,
+                    reason = "We just searched for local_variables and found it to be Some"
+                )]
                 let cache = session_data.core_data[cd_idx].stack_frames[frame_index]
                     .local_variables
                     .as_mut()
@@ -1009,7 +1007,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 }
             } else if let Some(cache_variable) = found_static {
                 let mut core = session_data.backend.core(core_index)?;
-                #[allow(clippy::expect_used, reason = "We just searched for static_variables and found it to be Some")]
+                #[allow(
+                    clippy::expect_used,
+                    reason = "We just searched for static_variables and found it to be Some"
+                )]
                 let cache = session_data.core_data[cd_idx]
                     .static_variables
                     .as_mut()
@@ -2175,15 +2176,11 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         Ok(())
     }
 
-    /// Session-level `reset_and_halt` for the lifted `restart` path. Uses
-    /// `backend.reset_and_halt` + `backend.core_architecture` (cached, no
-    /// round trip) to re-apply breakpoints on Riscv/Xtensa, then resets
-    /// `core_data.last_known_status`. The per-core `reset_and_halt_core`
+    /// Session-level `restart`: reset-and-halt (reapplying breakpoints on
+    /// Riscv/Xtensa via `backend.core_architecture`, which is cached), then
+    /// optionally resume via `continue_impl_async`, emitting the
+    /// `stopped`/`continued` DAP events. The per-core `reset_and_halt_core`
     /// remains for the REPL path until cluster 6.8.
-    /// Session-level `restart` for the lifted path. Mirrors the per-core
-    /// `restart`: reset-and-halt (+ reapply breakpoints), then optionally
-    /// resume via `continue_impl_async`, emitting the `stopped`/`continued`
-    /// DAP events. Called from `Debugger::restart`.
     pub(crate) async fn restart_async<B: DapBackend>(
         &mut self,
         session_data: &mut SessionData<B>,

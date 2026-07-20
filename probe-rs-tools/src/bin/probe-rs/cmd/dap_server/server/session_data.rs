@@ -70,8 +70,8 @@ pub struct ActiveBreakpoint {
 /// To get access to the [CoreHandle] for a specific [probe_rs::Core], the
 /// TODO: Adjust [SessionConfig] to allow multiple cores (and if appropriate, their binaries) to be specified.
 ///
-/// Generic over the [`DapBackend`] that provides access to the target. The default
-/// [`Session`] backend is the historical local-probe implementation; alternative
+/// Generic over the [`DapBackend`] that provides access to the target. The
+/// default [`Session`] backend is the local-probe implementation; alternative
 /// backends (e.g. a probe-rs RPC client) plug in here.
 pub(crate) struct SessionData<B: DapBackend = Session> {
     pub(crate) backend: B,
@@ -298,9 +298,7 @@ impl<B: DapBackend> SessionData<B> {
     /// Recompute source breakpoint addresses after a restart that flashed a
     /// new binary: re-verify each cached source breakpoint against the
     /// (reloaded) debug info and re-set the hardware breakpoints, since the
-    /// address of a source location may have shifted. Driven through
-    /// [`DapBackend`] round trips so the RPC backend needs no `block_on`
-    /// bridge.
+    /// address of a source location may have shifted.
     pub(crate) async fn recompute_breakpoints(
         &mut self,
         core_index: usize,
@@ -432,10 +430,9 @@ impl<B: DapBackend> SessionData<B> {
         }
     }
 
-    /// Emit the `stopped` event for a halted core. Lifted from
-    /// `CoreHandle::notify_halted` so it does not need a live `Core`: the PC
-    /// is read via `backend.program_counter_id` + `backend.read_core_reg`
-    /// (one RPC round trip for the register read; the PC id is cached).
+    /// Emit the `stopped` event for a halted core without a live `Core`: the
+    /// PC is read via `backend.program_counter_id` + `backend.read_core_reg`
+    /// (one round trip for the register read; the PC id is cached).
     async fn notify_halted<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
@@ -468,10 +465,9 @@ impl<B: DapBackend> SessionData<B> {
     }
 
     /// Update `last_known_status` and emit the appropriate DAP event for a
-    /// status transition. Lifted from `CoreHandle::process_core_status` so it
-    /// does not need a live `Core`; semihosting halts are skipped here (the
-    /// poll loop handles them separately) and the PC for the `stopped` event
-    /// is read via [`Self::notify_halted`].
+    /// status transition, without a live `Core`. Semihosting halts are
+    /// skipped here (the poll loop handles them separately) and the PC for
+    /// the `stopped` event is read via [`Self::notify_halted`].
     async fn process_core_status<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
@@ -512,9 +508,8 @@ impl<B: DapBackend> SessionData<B> {
         Ok(status)
     }
 
-    /// Attach to the target's RTT interface. Lifted from
-    /// `CoreHandle::attach_to_rtt` so it does not need a `CoreHandle`: the
-    /// local path acquires a `Core` via `self.backend.core()` (disjoint from
+    /// Attach to the target's RTT interface without a `CoreHandle`: the local
+    /// path acquires a `Core` via `self.backend.core()` (disjoint from
     /// `self.core_data`); the remote path drives the server-side `RttClient`
     /// via the cached `RttRemoteSeed` and needs no `Core`.
     async fn attach_to_rtt<P: ProtocolAdapter>(
@@ -742,10 +737,9 @@ impl<B: DapBackend> SessionData<B> {
         let mut needs_unwind: Vec<usize> = Vec::new();
 
         for core_config in session_config.core_configs.iter() {
-            // Fetch status via the backend (RPC backend `.await`s the
-            // `core/status` round trip directly). Done before `attach_core`
-            // so the `&mut self.backend` borrow is released before
-            // `attach_core` reborrows it.
+            // Fetch status via the backend before `attach_core` so the
+            // `&mut self.backend` borrow is released before `attach_core`
+            // reborrows it.
             let current_core_status = if debug_adapter.configuration_is_done() {
                 match self.backend.status(core_config.core_index).await {
                     Ok(status) => status,
@@ -797,13 +791,12 @@ impl<B: DapBackend> SessionData<B> {
             // unwind / next iteration.
             let rtt_enabled = core_config.rtt_config.enabled;
 
-            // RTT polling: the local path reads target memory via a `Core`,
-            // the remote path drives the server-side `RttClient`. The poll
-            // itself uses disjoint borrows of `self.backend` (for the `Core`)
-            // and `self.core_data` (for the `RttConnection`), so no
-            // long-lived `CoreHandle` is needed. `attach_to_rtt` still needs a
-            // `CoreHandle` (it reads target metadata), so it runs in a scoped
-            // block.
+            // RTT polling: local path reads target memory via a `Core`,
+            // remote path drives the server-side `RttClient`. The poll uses
+            // disjoint borrows of `self.backend` and `self.core_data`, so no
+            // long-lived `CoreHandle` is needed. `attach_to_rtt` still needs
+            // a `CoreHandle` (it reads target metadata), so it runs in a
+            // scoped block.
             if rtt_enabled {
                 if self.core_data[cd_idx].rtt_connection.is_some() {
                     let is_remote = self.core_data[cd_idx]
@@ -845,10 +838,10 @@ impl<B: DapBackend> SessionData<B> {
             }
 
             // Semihosting handling runs via `DapBackend::handle_semihosting`
-            // (local: drives the live `Core` + client-owned state; RPC: a
-            // `core/handle_semihosting` round trip with server-owned state).
-            // The backend returns UI events (RTT window open, console/RTT
-            // output) that we replay on the DAP adapter here.
+            // (local: drives the live `Core` + client-owned state; RPC:
+            // server-owned state). The backend returns UI events (RTT
+            // window open, console/RTT output) that we replay on the DAP
+            // adapter here.
             if let Some(_command) = semihosting_command {
                 let result = self
                     .backend
@@ -887,8 +880,8 @@ impl<B: DapBackend> SessionData<B> {
                 self.core_data[cd_idx].last_known_status = current_core_status;
             }
 
-            // Non-semihosting status change: log the new status (with the PC
-            // read via the backend, no live `Core`).
+            // Non-semihosting status change: log the new status (PC read via
+            // the backend).
             if current_core_status != previous_core_status && semihosting_command.is_none() {
                 let pc = if current_core_status.is_halted() {
                     match self.backend.program_counter_id(core_index).await {

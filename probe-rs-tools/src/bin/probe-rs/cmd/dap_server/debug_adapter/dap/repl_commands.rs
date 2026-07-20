@@ -26,24 +26,10 @@ pub(crate) mod inspect;
 pub(crate) mod registers;
 pub(crate) mod rtt;
 
-/// The handler is a function that takes the target's [`DapBackend`] (async,
-/// driven over RPC for remote sessions), the [`CoreData`] for the selected
-/// core, the raw command arguments, the DAP `evaluate` arguments, and the
-/// debug adapter.
-///
-/// It returns a boxed future so each command's logic can `.await` backend
-/// round trips without a `block_on` bridge, while still being stored as a
-/// plain `fn` pointer in the static [`REPL_COMMANDS`] table (which is shared
-/// across all backends — hence the `&mut dyn DapBackend` rather than a
-/// generic `B: DapBackend`).
-///
-/// The handler returns a [`Result`]`<`[`EvalResponse`]`<`[`DebuggerError`]`>`,
-/// so that we can have a consistent interface for processing the result as follows:
-/// - The `command`, `success`, and `message` fields are the most commonly used fields for all the REPL commands.
-/// - The `body` field is used if we need to pass back other DAP body types, e.g. [`BreakpointEventBody`].
-/// - The remainder of the fields are unused/ignored.
-///
-/// The majority of the REPL command results will be populated into the response body.
+/// Returns a boxed future so handlers can `.await` backend round trips without
+/// a `block_on` bridge, while still being stored as a plain `fn` pointer in
+/// the static [`REPL_COMMANDS`] table — which is shared across all backends,
+/// hence `&mut dyn DapBackend` rather than a generic `B: DapBackend`.
 //
 // TODO: Make this less confusing by having a different struct for this.
 pub(crate) type ReplHandler = for<'a> fn(
@@ -54,13 +40,8 @@ pub(crate) type ReplHandler = for<'a> fn(
     adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
 ) -> Pin<Box<dyn Future<Output = EvalResult> + 'a>>;
 
-/// Wrap an `async fn` REPL handler so it can be stored as a plain `fn`
-/// pointer in the static [`REPL_COMMANDS`] table.
-///
-/// The handler must match the [`ReplHandler`] argument list (without the
-/// `Pin<Box<...>>` return wrapping). The macro expands to a non-async
-/// `wrapper` that boxes the future returned by the handler, matching the
-/// `ReplHandler` signature.
+/// Wrap an `async fn` with the [`ReplHandler`] argument list so it can be
+/// stored as a `fn` pointer in [`REPL_COMMANDS`].
 macro_rules! async_fn {
     ($handler:ident) => {{
         fn wrapper<'a>(
@@ -203,10 +184,8 @@ pub enum EvalResponse {
 
 pub type EvalResult = Result<EvalResponse, DebuggerError>;
 
-/// Placeholder handler for REPL commands that have not been implemented yet
-/// (e.g. `info frame`, `info var`). The `handler` field is required by
-/// [`ReplCommand`] for the help/completion table; this stub surfaces a
-/// clean `Unimplemented` error when the command is actually invoked.
+/// Placeholder handler for unimplemented commands; required so the command
+/// appears in the help/completion table.
 pub(crate) async fn unimplemented_repl<'a>(
     _backend: &'a mut dyn DapBackend,
     _core_data: &'a mut CoreData,
