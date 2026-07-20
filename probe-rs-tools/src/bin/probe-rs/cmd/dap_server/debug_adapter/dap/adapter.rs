@@ -669,17 +669,23 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     /// Works in tandem with the `evaluate` request, to provide possible completions in the Debug Console REPL window.
-    pub(crate) fn completions(
+    pub(crate) async fn completions<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        // TODO: When variables appear in the `watch` context, they will not resolve correctly after a 'step' function. Consider doing the lazy load for 'either/or' of Variables vs. Evaluate
-
         let arguments: CompletionsArguments = get_arguments(self, request)?;
 
+        let repl_commands = session_data
+            .core_data
+            .iter()
+            .find(|cd| cd.core_index == core_index)
+            .map(|cd| &cd.repl_commands);
         let response_body = CompletionsResponseBody {
-            targets: command_completions(&target_core.core_data.repl_commands, arguments),
+            targets: repl_commands
+                .map(|rc| command_completions(rc, arguments))
+                .unwrap_or_default(),
         };
 
         self.send_response(request, Ok(Some(response_body)))
