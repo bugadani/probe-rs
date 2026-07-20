@@ -499,29 +499,29 @@ impl<B: DapBackend> SessionData<B> {
             // unwind / next iteration.
             let rtt_enabled = core_config.rtt_config.enabled;
 
-            // RTT polling needs a live `Core` (local path reads target
-            // memory; remote path drives the server-side `RttClient`). Scoped
-            // so the `&mut self.backend` borrow is released before the
-            // deferred unwind / next iteration.
+            // RTT polling: the local path reads target memory via a `Core`,
+            // the remote path drives the server-side `RttClient`. The poll
+            // itself uses disjoint borrows of `self.backend` (for the `Core`)
+            // and `self.core_data` (for the `RttConnection`), so no
+            // long-lived `CoreHandle` is needed. `attach_to_rtt` still needs a
+            // `CoreHandle` (it reads target metadata), so it runs in a scoped
+            // block.
             if rtt_enabled {
-                let Ok(mut target_core) = self.attach_core(core_index) else {
-                    tracing::debug!(
-                        "Failed to attach to target core #{}. Cannot poll for RTT data.",
-                        core_index
-                    );
-                    continue;
-                };
-
-                if let Some(core_rtt) = &mut target_core.core_data.rtt_connection {
-                    // We should poll the target for rtt data, and if any RTT data was processed, we clear the flag.
-                    if core_rtt
-                        .process_rtt_data(debug_adapter, &mut target_core.core)
-                        .await
+                if self.core_data[cd_idx].rtt_connection.is_some() {
+                    let mut core = self.backend.core(core_index)?;
+                    if let Some(core_rtt) = self.core_data[cd_idx].rtt_connection.as_mut()
+                        && core_rtt.process_rtt_data(debug_adapter, &mut core).await
                     {
                         suggest_delay_required = false;
                     }
                 } else if debug_adapter.configuration_is_done() {
-                    // Make sure we only attempt attaching when we're ready.
+                    let Ok(mut target_core) = self.attach_core(core_index) else {
+                        tracing::debug!(
+                            "Failed to attach to target core #{}. Cannot attach to RTT.",
+                            core_index
+                        );
+                        continue;
+                    };
                     if let Err(error) = target_core
                         .attach_to_rtt(
                             debug_adapter,
