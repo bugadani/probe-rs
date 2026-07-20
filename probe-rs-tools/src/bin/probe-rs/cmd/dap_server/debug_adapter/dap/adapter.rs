@@ -1002,12 +1002,13 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
     }
 
     #[tracing::instrument(level = "debug", skip_all, name = "Handle configuration done")]
-    pub(crate) fn configuration_done(
+    pub(crate) async fn configuration_done<B: DapBackend>(
         &mut self,
-        target_core: &mut CoreHandle<'_>,
+        session_data: &mut SessionData<B>,
+        core_index: usize,
         request: &Request,
     ) -> Result<()> {
-        let current_core_status = target_core.core.status()?;
+        let current_core_status = session_data.backend.status(core_index).await?;
 
         if current_core_status.is_halted() {
             if self.halt_after_reset
@@ -1016,17 +1017,26 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     CoreStatus::Halted(HaltReason::Breakpoint(_))
                 )
             {
-                let program_counter = target_core
-                    .core
-                    .read_core_reg(target_core.core.program_counter())
-                    .ok();
+                let program_counter = match session_data
+                    .backend
+                    .program_counter_id(core_index)
+                    .await
+                {
+                    Ok(id) => session_data
+                        .backend
+                        .read_core_reg(core_index, id)
+                        .await
+                        .ok()
+                        .and_then(|v| v.try_into().ok()),
+                    Err(_) => None,
+                };
                 let event_body = Some(StoppedEventBody {
                     reason: current_core_status
                         .short_long_status(program_counter)
                         .0
                         .to_owned(),
                     description: Some(current_core_status.short_long_status(program_counter).1),
-                    thread_id: Some(target_core.id() as i64),
+                    thread_id: Some(core_index as i64),
                     preserve_focus_hint: None,
                     text: None,
                     all_threads_stopped: Some(self.all_cores_halted),
@@ -1037,7 +1047,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 tracing::debug!(
                     "Core is halted, but not due to a breakpoint and halt_after_reset is not set. Continuing."
                 );
-                self.continue_impl(target_core)?;
+                self.continue_impl_async(session_data, core_index).await?;
             }
         }
 
