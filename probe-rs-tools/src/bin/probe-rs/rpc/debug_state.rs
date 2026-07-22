@@ -50,6 +50,17 @@ impl ServerDebugState {
         }
     }
 
+    /// Replace the session's DWARF and invalidate every cache derived from it.
+    ///
+    /// SVD variables and semihosting handles are independent of the program
+    /// binary, so they intentionally survive a debug-info reload.
+    pub fn replace_debug_info(&mut self, debug_info: DebugInfo) {
+        self.debug_info = Arc::new(debug_info);
+        for core_state in self.per_core.values_mut() {
+            core_state.clear_dwarf_derived_state();
+        }
+    }
+
     pub fn store_core(
         &mut self,
         core_index: usize,
@@ -74,7 +85,18 @@ impl ServerDebugState {
     }
 
     pub fn clear_core(&mut self, core_index: usize) {
-        self.per_core.remove(&core_index);
+        if let Some(core_state) = self.per_core.get_mut(&core_index) {
+            core_state.clear_dwarf_derived_state();
+        }
+    }
+
+    /// Replace or clear a core's SVD-derived peripheral cache.
+    pub fn replace_svd(
+        &mut self,
+        core_index: usize,
+        svd_variables: Option<crate::rpc::svd::SvdVariableCache>,
+    ) {
+        self.per_core.entry(core_index).or_default().svd_variables = svd_variables;
     }
 
     /// Get the per-core semihosting state, creating it on first access.
@@ -86,5 +108,93 @@ impl ServerDebugState {
                 handles: HashMap::new(),
                 next_handle: 1024,
             })
+    }
+}
+
+impl CoreDebugState {
+    fn clear_dwarf_derived_state(&mut self) {
+        self.stack_frames.clear();
+        self.static_variables = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use probe_rs::RegisterValue;
+    use probe_rs_debug::{ObjectRef, registers::DebugRegisters};
+    use std::path::PathBuf;
+
+    fn test_debug_info() -> DebugInfo {
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../probe-rs-debug/tests/debug-unwind-tests/nRF52833_xxAA_full_unwind.elf");
+        DebugInfo::from_file(binary).unwrap()
+    }
+
+    fn stack_frame() -> StackFrame {
+        StackFrame {
+            id: ObjectRef::from(1),
+            function_name: "old frame".to_string(),
+            source_location: None,
+            registers: DebugRegisters::default(),
+            pc: RegisterValue::U32(0),
+            frame_base: None,
+            is_inlined: false,
+            local_variables: None,
+            canonical_frame_address: None,
+        }
+    }
+
+    #[test]
+    fn replacing_debug_info_invalidates_only_dwarf_derived_state() {
+        let mut state = ServerDebugState::new(test_debug_info());
+        let old_debug_info = state.debug_info.clone();
+        state.per_core.insert(
+            0,
+            CoreDebugState {
+                stack_frames: vec![stack_frame()],
+                static_variables: Some(VariableCache::new_static_cache()),
+                ..Default::default()
+            },
+        );
+        state.semihosting_state(0);
+
+        state.replace_debug_info(test_debug_info());
+
+        assert!(!Arc::ptr_eq(&old_debug_info, &state.debug_info));
+        let core_state = state.per_core.get(&0).unwrap();
+        assert!(core_state.stack_frames.is_empty());
+        assert!(core_state.static_variables.is_none());
+        assert!(state.semihosting.contains_key(&0));
+    }
+
+    #[test]
+    fn clearing_a_core_invalidates_dwarf_derived_state() {
+        let mut state = ServerDebugState::new(test_debug_info());
+        state.per_core.insert(
+            0,
+            CoreDebugState {
+                stack_frames: vec![stack_frame()],
+                static_variables: Some(VariableCache::new_static_cache()),
+                ..Default::default()
+            },
+        );
+
+        state.clear_core(0);
+
+        let core_state = state.per_core.get(&0).unwrap();
+        assert!(core_state.stack_frames.is_empty());
+        assert!(core_state.static_variables.is_none());
+    }
+
+    #[test]
+    fn replacing_or_removing_svd_drops_stale_peripheral_state() {
+        let mut state = ServerDebugState::new(test_debug_info());
+
+        state.replace_svd(0, Some(crate::rpc::svd::SvdVariableCache::new_svd_cache()));
+        assert!(state.per_core.get(&0).unwrap().svd_variables.is_some());
+
+        state.replace_svd(0, None);
+        assert!(state.per_core.get(&0).unwrap().svd_variables.is_none());
     }
 }

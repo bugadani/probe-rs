@@ -14,7 +14,6 @@ use crate::util::rtt::client::RttClient;
 pub(crate) type ChannelNames = Vec<(u32, String)>;
 use crate::cmd::dap_server::server::debug_rtt;
 use probe_rs::{CoreStatus, rtt::ScanRegion};
-use probe_rs_debug::{VariableCache, debug_info::DebugInfo};
 
 /// Convert [`ScanRegion`] (probe-rs) into the wire [`WireScanRegion`].
 pub(crate) fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
@@ -30,30 +29,45 @@ pub(crate) fn wire_scan_region(scan: &ScanRegion) -> WireScanRegion {
 /// [CoreData] is used to cache data needed by the debugger, on a per-core basis.
 pub struct CoreData {
     pub core_index: usize,
-    /// Track the last_known_status of the core.
-    /// The debug client needs to be notified when the core changes state, and this can happen in one of two ways:
-    /// 1. By polling the core status periodically (in [`crate::cmd::dap_server::server::debugger::Debugger::process_next_request()`]).
-    ///    For instance, when the client sets the core running, and the core halts because of a breakpoint, we need to notify the client.
-    /// 2. Some requests, like [`DebugAdapter::next()`], has an implicit action of setting the core running, before it waits for it to halt at the next statement.
-    ///    To ensure the [`CoreHandle::poll_core()`] behaves correctly, it will set the `last_known_status` to [`CoreStatus::Running`],
-    ///    and execute the request normally, with the expectation that the core will be halted, and that 1. above will detect this new status.
-    ///    These 'implicit' updates of `last_known_status` will not(and should not) result in a notification to the client.
+    /// Track the last status observed through the RPC backend.
+    ///
+    /// Periodic RPC status queries detect asynchronous transitions such as a
+    /// breakpoint halt and notify the DAP client. Requests that resume or step
+    /// the target update this field as part of their adapter bookkeeping so
+    /// the next query can identify the subsequent transition without emitting
+    /// a duplicate event for the request's own state change.
     pub last_known_status: CoreStatus,
     pub target_name: String,
-    pub debug_info: Option<DebugInfo>,
-    pub static_variables: Option<VariableCache>,
+    /// Metadata-only display cache of the server-owned stack state.
+    ///
+    /// This must be invalidated before any operation that can change the
+    /// target's registers or execution state, and replaced only after a
+    /// complete server unwind succeeds.
     pub stack_frames: Vec<probe_rs_debug::stack_frame::StackFrame>,
     pub breakpoints: Vec<session_data::ActiveBreakpoint>,
     pub rtt_scan_ranges: ScanRegion,
     pub rtt_connection: Option<debug_rtt::RttConnection>,
-    /// When `Some`, RTT is driven through the server-side `RttClient` over
-    /// RPC (RPC backend). When `None`, a local `RttClient` is used.
+    /// Seed used to create and drive the server-side `RttClient` over RPC.
+    /// This is `None` until RPC-backed core initialization provides the seed.
     pub rtt_remote_seed: Option<RttRemoteSeed>,
     /// Cache of the server-side RTT client handle between attach attempts,
     /// so we only call `create_rtt` once per core (RPC backend).
     pub rtt_remote_handle: Option<Key<RttClient>>,
     pub repl_commands: Vec<ReplCommand>,
     pub test_data: Box<dyn Any>,
+}
+
+impl CoreData {
+    pub(crate) fn invalidate_stack_frame_cache(&mut self) {
+        self.stack_frames.clear();
+    }
+
+    pub(crate) fn replace_stack_frame_cache(
+        &mut self,
+        frames: Vec<probe_rs_debug::stack_frame::StackFrame>,
+    ) {
+        self.stack_frames = frames;
+    }
 }
 
 /// Return a Vec of memory ranges that consolidate the adjacent memory ranges of the input ranges.
@@ -171,4 +185,45 @@ fn test_reversed_intersecting_ranges() {
     let expected = vec![Range { start: 5, end: 20 }];
     let result = consolidate_memory_ranges(input, 0);
     assert_eq!(result, expected);
+}
+
+#[test]
+fn stack_frame_display_cache_is_invalidated_before_replacement() {
+    use probe_rs::RegisterValue;
+    use probe_rs_debug::{ObjectRef, registers::DebugRegisters, stack_frame::StackFrame};
+
+    fn frame(id: i64) -> StackFrame {
+        StackFrame {
+            id: ObjectRef::from(id),
+            function_name: format!("frame-{id}"),
+            source_location: None,
+            registers: DebugRegisters::default(),
+            pc: RegisterValue::U32(0),
+            frame_base: None,
+            is_inlined: false,
+            local_variables: None,
+            canonical_frame_address: None,
+        }
+    }
+
+    let mut core_data = CoreData {
+        core_index: 0,
+        last_known_status: CoreStatus::Unknown,
+        target_name: String::new(),
+        stack_frames: vec![frame(1)],
+        breakpoints: vec![],
+        rtt_scan_ranges: ScanRegion::Ranges(vec![]),
+        rtt_connection: None,
+        rtt_remote_seed: None,
+        rtt_remote_handle: None,
+        repl_commands: vec![],
+        test_data: Box::new(()),
+    };
+
+    core_data.invalidate_stack_frame_cache();
+    assert!(core_data.stack_frames.is_empty());
+
+    core_data.replace_stack_frame_cache(vec![frame(2)]);
+    assert_eq!(core_data.stack_frames.len(), 1);
+    assert_eq!(core_data.stack_frames[0].id, ObjectRef::from(2));
 }

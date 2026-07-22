@@ -26,7 +26,7 @@ use crate::{
         },
         run::EmbeddedTestElfInfo,
     },
-    rpc::client::RpcClient,
+    rpc::{client::RpcClient, functions::breakpoints::SourceBreakpointLocation},
     util::cli::attach_probe as attach_probe_rpc,
 };
 use anyhow::{Result, anyhow};
@@ -34,7 +34,7 @@ use probe_rs::{
     BreakpointCause, CoreStatus, HaltReason,
     rtt::{ScanRegion, find_rtt_control_block_in_raw_file},
 };
-use probe_rs_debug::{ColumnType, SourceLocation, VerifiedBreakpoint, debug_info::DebugInfo};
+use probe_rs_debug::SourceLocation;
 use std::{any::Any, env::set_current_dir, path::Path};
 use time::UtcOffset;
 
@@ -66,8 +66,11 @@ pub struct ActiveBreakpoint {
     pub(crate) address: u64,
 }
 
-/// SessionData is designed to be similar to [probe_rs::Session], in as much that it provides handles to the [CoreHandle] instances for each of the available [probe_rs::Core] involved in the debug session.
-/// To get access to the [CoreHandle] for a specific [probe_rs::Core], the
+/// DAP-session state and per-core display metadata.
+///
+/// Target access is owned by the RPC server. [`SessionData`] routes core
+/// operations through [`RpcBackend`] and keeps one [`CoreData`] record for
+/// each configured core; it does not retain a client-side core handle.
 /// TODO: Adjust [SessionConfig] to allow multiple cores (and if appropriate, their binaries) to be specified.
 ///
 /// The DAP server drives the target through an [`RpcBackend`]: even local
@@ -95,7 +98,7 @@ impl SessionData {
     /// the matching [`probe_rs::Target`] description locally so that the
     /// DAP server can answer memory-map / RTT / SVD queries without extra
     /// round trips.
-    pub(crate) async fn new_remote(
+    pub(crate) async fn new_rpc_backed(
         client: &RpcClient,
         config: &mut configuration::SessionConfig,
         timestamp_offset: UtcOffset,
@@ -135,19 +138,15 @@ impl SessionData {
             .map(|(idx, core)| (idx, core.core_type))
             .collect();
 
-        // Derive per-core defaults from the core type. Endianness is
-        // assumed little-endian (true for all currently supported cores);
-        // FPU support is assumed absent until the user needs it — the
-        // correct way to populate these fields is with an explicit RPC
-        // query once the core is halted, which we do not yet issue here.
-        let per_core: Vec<CorePerAttachInfo> = cores
-            .iter()
-            .map(|(_, core_type)| CorePerAttachInfo {
-                architecture: core_type.architecture(),
-                fpu_support: false,
-                fp_register_count: None,
-            })
-            .collect();
+        // `probe/attach` leaves the target halted, so query the live core
+        // properties needed to select the correct static register file.
+        let mut per_core = Vec::with_capacity(cores.len());
+        for (core_index, core_type) in &cores {
+            per_core.push(
+                CorePerAttachInfo::query(client, sessid, *core_index, core_type.architecture())
+                    .await?,
+            );
+        }
 
         let mut backend = RpcBackend::new(
             tokio::runtime::Handle::current(),
@@ -165,12 +164,10 @@ impl SessionData {
                 .await?;
         }
 
-        // Eagerly populate the server-side `DebugInfo` from the program
-        // binary so server-side consumers (notably `disassemble`) can resolve
-        // source locations before the first halt — mirroring the local
-        // backend, which loads `DebugInfo` at session start. Use the first
-        // configured core's binary (the RPC server caches one `DebugInfo` per
-        // session, matching `take_rich_stack_trace`).
+        // Eagerly populate the authoritative server-side `DebugInfo` so
+        // consumers can resolve source locations before the first halt. Use
+        // the first configured core's binary: the accepted single-core model
+        // still caches one `DebugInfo` per session (multi-core is deferred).
         if let Some(Some(path)) = config
             .core_configs
             .first()
@@ -195,9 +192,7 @@ impl SessionData {
 
         Ok(this)
     }
-}
 
-impl SessionData {
     pub(crate) fn load_rtt_location(
         &mut self,
         config: &configuration::SessionConfig,
@@ -274,19 +269,13 @@ impl SessionData {
         &mut self,
         core_index: usize,
     ) -> Result<(), DebuggerError> {
-        let (old_addrs, to_set) = {
-            let Some(core_data) = self
-                .core_data
-                .iter_mut()
-                .find(|cd| cd.core_index == core_index)
+        let (old_addrs, pending) = {
+            let Some(core_data) = self.core_data.iter().find(|cd| cd.core_index == core_index)
             else {
                 return Ok(());
             };
-            let Some(debug_info) = core_data.debug_info.as_ref() else {
-                return Ok(());
-            };
             let mut old_addrs: Vec<u64> = Vec::new();
-            let mut to_set: Vec<(u64, Box<Source>, SourceLocation)> = Vec::new();
+            let mut pending: Vec<(Box<Source>, SourceLocation)> = Vec::new();
             for bp in &core_data.breakpoints {
                 let BreakpointType::SourceBreakpoint {
                     source,
@@ -296,30 +285,39 @@ impl SessionData {
                     continue;
                 };
                 old_addrs.push(bp.address);
-                let column = loc.column.map(|col| match col {
-                    ColumnType::LeftEdge => 0_u64,
-                    ColumnType::Column(c) => c,
-                });
-                match debug_info.get_breakpoint_location(
-                    loc.path.to_path(),
-                    loc.line.unwrap_or(0),
-                    column,
-                ) {
-                    Ok(VerifiedBreakpoint {
-                        address,
-                        source_location,
-                    }) => to_set.push((address, source.clone(), source_location)),
-                    Err(e) => {
-                        return Err(DebuggerError::Other(anyhow!(
-                            "Failed to recompute breakpoint at {loc:?} in {source:?}. Error: {e:?}"
-                        )));
-                    }
-                }
+                pending.push((source.clone(), loc.clone()));
             }
-            (old_addrs, to_set)
+            (old_addrs, pending)
         };
         if old_addrs.is_empty() {
             return Ok(());
+        }
+        let requests = pending
+            .iter()
+            .map(|(_, location)| SourceBreakpointLocation {
+                path: location.path.to_path().display().to_string(),
+                line: location.line.unwrap_or(0),
+                column: location.column.map(|column| match column {
+                    probe_rs_debug::ColumnType::LeftEdge => 0,
+                    probe_rs_debug::ColumnType::Column(column) => column,
+                }),
+            })
+            .collect();
+        let resolved = self
+            .backend
+            .resolve_source_breakpoints(requests)
+            .await
+            .map_err(DebuggerError::ProbeRs)?;
+        let mut to_set = Vec::with_capacity(resolved.len());
+        for ((source, location), result) in pending.into_iter().zip(resolved) {
+            match result {
+                Ok(verified) => to_set.push((verified.address, source, verified.source_location)),
+                Err(error) => {
+                    return Err(DebuggerError::Other(anyhow!(
+                        "Failed to recompute breakpoint at {location:?} in {source:?}. Error: {error}"
+                    )));
+                }
+            }
         }
         self.backend
             .clear_hw_breakpoints(core_index, old_addrs)
@@ -360,23 +358,37 @@ impl SessionData {
         Ok(())
     }
 
-    /// Reload the a specific core's debug info from the binary file.
-    pub(crate) fn load_debug_info_for_core(
+    /// Replace the server-owned debug info after flashing a new binary.
+    pub(crate) async fn reload_debug_info_for_core(
         &mut self,
         core_configuration: &CoreConfig,
     ) -> Result<(), DebuggerError> {
-        if let Some(core_data) = self
+        let Some(core_data_index) = self
             .core_data
-            .iter_mut()
-            .find(|core_data| core_data.core_index == core_configuration.core_index)
-        {
-            core_data.debug_info = debug_info_from_binary(core_configuration)?;
-            Ok(())
-        } else {
-            Err(DebuggerError::UnableToOpenProbe(Some(
+            .iter()
+            .position(|core_data| core_data.core_index == core_configuration.core_index)
+        else {
+            return Err(DebuggerError::UnableToOpenProbe(Some(
                 "No core at the specified index.",
-            )))
-        }
+            )));
+        };
+        let Some(binary_path) = core_configuration.program_binary.as_ref() else {
+            return Err(DebuggerError::Other(anyhow!(
+                "Cannot reload debug info without a program binary."
+            )));
+        };
+
+        self.backend
+            .session_interface()
+            .load_debug_info(binary_path.clone())
+            .await
+            .map_err(|error| {
+                DebuggerError::Other(anyhow!("Failed to reload server debug info: {error}"))
+            })?;
+
+        let core_data = &mut self.core_data[core_data_index];
+        core_data.invalidate_stack_frame_cache();
+        Ok(())
     }
 
     /// Emit the `stopped` event for a halted core without a live `Core`: the
@@ -457,9 +469,8 @@ impl SessionData {
         Ok(status)
     }
 
-    /// Attach to the target's RTT interface without a `CoreHandle`: the
-    /// remote path drives the server-side `RttClient` via the cached
-    /// `RttRemoteSeed` and needs no `Core`.
+    /// Attach to the target's server-owned RTT interface over RPC using the
+    /// cached [`RttRemoteSeed`].
     async fn attach_to_rtt<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,
@@ -609,7 +620,8 @@ impl SessionData {
         Ok(())
     }
 
-    /// The target has no way of notifying the debug adapter when things changes, so we have to constantly poll it to determine:
+    /// The target has no way of notifying the debug adapter when things change,
+    /// so the DAP server periodically queries core status through RPC to determine:
     /// - Whether the target cores are running, and what their actual status is.
     /// - Whether the target cores have data in their RTT buffers that we need to read and pass to the client.
     ///
@@ -643,9 +655,8 @@ impl SessionData {
         debug_adapter.all_cores_halted = true;
 
         // Cores that transitioned to halted during this poll and need their
-        // stack frames rebuilt. We defer the actual unwind to *after* the
-        // per-core loop so that `&mut self.backend` is free (the loop body
-        // holds a `CoreHandle` borrowing the backend for status polling).
+        // stack display cache rebuilt. Collect them here and perform the
+        // server-owned unwinds after status, RTT, and semihosting processing.
         let mut needs_unwind: Vec<usize> = Vec::new();
 
         for core_config in session_config.core_configs.iter() {
@@ -664,6 +675,7 @@ impl SessionData {
                             .find(|c| c.core_index == core_config.core_index)
                         {
                             cd.last_known_status = CoreStatus::Unknown;
+                            cd.invalidate_stack_frame_cache();
                         }
                         return Err(err);
                     }
@@ -697,18 +709,11 @@ impl SessionData {
                 _ => None,
             };
 
-            // RTT polling and semihosting handling need a live `Core`. Acquire
-            // a short-lived `CoreHandle` in a scoped block so the
-            // `&mut self.backend` borrow is released before the deferred
-            // unwind / next iteration.
             let rtt_enabled = core_config.rtt_config.enabled;
 
-            // RTT polling: local path reads target memory via a `Core`,
-            // remote path drives the server-side `RttClient`. The poll uses
-            // disjoint borrows of `self.backend` and `self.core_data`, so no
-            // long-lived `CoreHandle` is needed. `attach_to_rtt` still needs
-            // a `CoreHandle` (it reads target metadata), so it runs in a
-            // scoped block.
+            // RTT attach and polling drive the server-owned `RttClient`
+            // through RPC. The DAP side retains only the RPC handle and
+            // channel/display metadata.
             if rtt_enabled {
                 if self.core_data[cd_idx].rtt_connection.is_some() {
                     let had_data = match self.core_data[cd_idx].rtt_connection.as_mut() {
@@ -735,11 +740,10 @@ impl SessionData {
                 }
             }
 
-            // Semihosting handling runs via `RpcBackend::handle_semihosting`
-            // (local: drives the live `Core` + client-owned state; RPC:
-            // server-owned state). The backend returns UI events (RTT
-            // window open, console/RTT output) that we replay on the DAP
-            // adapter here.
+            // Semihosting handling runs via `RpcBackend::handle_semihosting`;
+            // the RPC server owns the live core and semihosting state. The
+            // backend returns UI events (RTT window open, console/RTT output)
+            // that we replay on the DAP adapter here.
             if let Some(_command) = semihosting_command {
                 let result = self.backend.handle_semihosting(core_index).await?;
                 for event in result.events {
@@ -765,7 +769,8 @@ impl SessionData {
                 current_core_status = result.status;
 
                 if current_core_status.is_halted() {
-                    // poll_core did not notify about the halt, so we need to do it manually.
+                    // The earlier status query did not observe the
+                    // post-semihosting halt, so notify the client now.
                     self.notify_halted(debug_adapter, cd_idx, current_core_status)
                         .await?;
                 } else {
@@ -797,49 +802,48 @@ impl SessionData {
             // If the core is running, we set the flag to indicate that at least one core is not halted.
             // By setting it here, we ensure that RTT will be checked at least once after the core has halted.
             if !current_core_status.is_halted() {
+                // Stack metadata is only a display cache for a halted target.
+                // Once execution resumes (or status is uncertain), retaining
+                // it could expose frame ids that no longer exist server-side.
+                self.core_data[cd_idx].invalidate_stack_frame_cache();
                 debug_adapter.all_cores_halted = false;
-            } else if !cores_halted_previously
-                && let Some(debug_info) = self.core_data[cd_idx].debug_info.as_ref()
-            {
+            } else if !cores_halted_previously {
                 // If currently halted, and was previously running
                 // update the stack frames
                 let _stackframe_span = tracing::debug_span!("Update Stack Frames").entered();
                 tracing::debug!("Updating the stack frame data for core #{}", core_index);
 
-                if self.core_data[cd_idx].static_variables.is_none() {
-                    self.core_data[cd_idx].static_variables =
-                        Some(debug_info.create_static_scope_cache());
-                }
+                // Keep the display cache empty until the complete RPC unwind
+                // succeeds. An unwind error must never leave the previous
+                // halt's frames visible.
+                self.core_data[cd_idx].invalidate_stack_frame_cache();
 
-                // Defer the unwind: `RpcBackend::unwind_stack` borrows
-                // `&mut self.backend`, which is free now (the scoped
-                // `CoreHandle` is dropped).
-                needs_unwind.push(core_index);
+                // RPC stack state and DebugInfo are owned by the server.
+                if session_config
+                    .core_configs
+                    .iter()
+                    .any(|c| c.core_index == core_index && c.program_binary.is_some())
+                {
+                    needs_unwind.push(core_index);
+                }
             }
         }
 
-        // Deferred unwinds (per-core `CoreHandle`s are now dropped). Resolve
-        // each fully before touching `self.core_data` so no borrow is held
-        // across the `.await`.
+        // Ask the RPC server to unwind each newly halted core, then replace
+        // the client metadata-only display cache with the returned frames.
         for &core_index in &needs_unwind {
-            let program_binary = session_config
+            let Some(program_binary) = session_config
                 .core_configs
                 .iter()
                 .find(|c| c.core_index == core_index)
-                .and_then(|c| c.program_binary.as_deref());
-
-            let Some(debug_info) = self
-                .core_data
-                .iter()
-                .find(|cd| cd.core_index == core_index)
-                .and_then(|cd| cd.debug_info.as_ref())
+                .and_then(|c| c.program_binary.as_deref())
             else {
                 continue;
             };
 
             let frames = self
                 .backend
-                .unwind_stack(core_index, program_binary, debug_info, 500)
+                .unwind_stack(core_index, program_binary, 500)
                 .await
                 .map_err(DebuggerError::ProbeRs)?;
 
@@ -848,7 +852,7 @@ impl SessionData {
                 .iter_mut()
                 .find(|cd| cd.core_index == core_index)
             {
-                core_data.stack_frames = frames;
+                core_data.replace_stack_frame_cache(frames);
             }
         }
         Ok(suggest_delay_required)
@@ -877,16 +881,6 @@ impl SessionData {
     }
 }
 
-fn debug_info_from_binary(core_configuration: &CoreConfig) -> anyhow::Result<Option<DebugInfo>> {
-    let Some(ref binary_path) = core_configuration.program_binary else {
-        return Ok(None);
-    };
-
-    DebugInfo::from_file(binary_path)
-        .map_err(|error| anyhow!(error))
-        .map(Some)
-}
-
 /// Apply the session config's requested working directory if one was
 /// supplied. Shared between the local and RPC attach paths.
 ///
@@ -913,9 +907,6 @@ fn build_core_data(
     core_configuration: &CoreConfig,
     target_name: &str,
 ) -> Result<CoreData, DebuggerError> {
-    // Load debug info first, which also validates the accessibility of the elf.
-    let debug_info = debug_info_from_binary(core_configuration)?;
-
     let mut repl_commands = REPL_COMMANDS.to_vec();
     let mut test_data: Box<dyn Any> = Box::new(());
     if let Some(path_to_elf) = core_configuration.program_binary.as_deref()
@@ -938,8 +929,6 @@ fn build_core_data(
         core_index: core_configuration.core_index,
         last_known_status: CoreStatus::Unknown,
         target_name: format!("{}-{}", core_configuration.core_index, target_name),
-        debug_info,
-        static_variables: None,
         stack_frames: vec![],
         breakpoints: vec![],
         rtt_scan_ranges: ScanRegion::Ranges(vec![]),

@@ -183,15 +183,3 @@ pub enum EvalResponse {
 }
 
 pub type EvalResult = Result<EvalResponse, DebuggerError>;
-
-/// Placeholder handler for unimplemented commands; required so the command
-/// appears in the help/completion table.
-pub(crate) async fn unimplemented_repl<'a>(
-    _backend: &'a mut RpcBackend,
-    _core_data: &'a mut CoreData,
-    _: &'a str,
-    _: &'a EvaluateArguments,
-    _: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
-) -> EvalResult {
-    Err(DebuggerError::Unimplemented)
-}

@@ -50,7 +50,7 @@ impl RemoteRttClient {
 }
 
 impl RttClientHandle {
-    /// Remote-only poll: `.await`s `rtt/poll_up` without a local `Core`.
+    /// Poll the server-owned RTT client through `rtt/poll_up`.
     async fn poll_channels_remote(
         &mut self,
         channels: &[u32],
@@ -106,9 +106,8 @@ pub struct RttConnection {
 }
 
 impl RttConnection {
-    /// Remote-only poll: polls all the available channels for data and
-    /// transmits data to the client. Returns `true` if at least one channel
-    /// had data.
+    /// Poll all available channels through RPC and transmit data to the DAP
+    /// client. Returns `true` if at least one channel had data.
     pub async fn process_rtt_data_remote<P: ProtocolAdapter>(
         &mut self,
         debug_adapter: &mut DebugAdapter<P>,

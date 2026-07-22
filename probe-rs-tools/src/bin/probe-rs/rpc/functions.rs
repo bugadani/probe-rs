@@ -9,6 +9,10 @@ use crate::{
     rpc::{
         ConnectionState, Key,
         functions::{
+            breakpoints::{
+                ResolveSourceBreakpointsRequest, ResolveSourceLocationsRequest,
+                resolve_source_breakpoints, resolve_source_locations,
+            },
             chip::{
                 ChipInfoRequest, ChipInfoResponse, ListFamiliesResponse, LoadChipFamilyRequest,
                 chip_info, list_families, load_chip_family,
@@ -17,12 +21,13 @@ use crate::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
                 CoreHaltRequest, CoreReadRegRequest, CoreReadRegistersRequest,
                 CoreVectorCatchRequest, CoreWaitHaltedRequest, CoreWriteRegRequest,
-                HandleSemihostingRequest, WireCoreDump, WireCoreInformation, WireCoreStatus,
-                WireInstructionSet, WireRegisterReadResult, WireRegisterValue,
+                HandleSemihostingRequest, WireCoreDump, WireCoreInformation, WireCoreMetadata,
+                WireCoreStatus, WireInstructionSet, WireRegisterReadResult, WireRegisterValue,
                 core_available_bp_units, core_clear_hw_bp, core_clear_hw_bps, core_disable_vc,
                 core_dump, core_enable_vc, core_halt, core_halted, core_handle_semihosting,
-                core_instruction_set, core_read_reg, core_read_registers, core_run, core_set_hw_bp,
-                core_set_hw_bps, core_status, core_step, core_wait_halted, core_write_reg,
+                core_instruction_set, core_metadata, core_read_reg, core_read_registers, core_run,
+                core_set_hw_bp, core_set_hw_bps, core_status, core_step, core_wait_halted,
+                core_write_reg,
             },
             debug_vars::{
                 ClearCoreDebugStateRequest, EvaluateRequest, LoadSvdRequest, ScopesRequest,
@@ -56,8 +61,8 @@ use crate::{
             },
             stack_trace::{
                 LoadDebugInfoRequest, LoadDebugInfoResponse, TakeRichStackTraceResponse,
-                TakeStackTraceRequest, TakeStackTraceResponse, load_debug_info,
-                take_rich_stack_trace, take_stack_trace,
+                TakeStackTraceRequest, TakeStackTraceResponse, ValidateDebugInfoResponse,
+                load_debug_info, take_rich_stack_trace, take_stack_trace, validate_debug_info,
             },
             test::{
                 ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse,
@@ -87,6 +92,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio_util::sync::CancellationToken;
 
+pub mod breakpoints;
 pub mod chip;
 pub mod core_ops;
 pub mod debug_vars;
@@ -534,6 +540,8 @@ type StepResponse = RpcResult<debug_vars::StepResponse>;
 type SetVariableResponse = RpcResult<debug_vars::WireSetVariableResponse>;
 type LoadSvdResponse = RpcResult<()>;
 type DisassembleResponse = RpcResult<Vec<disassemble::WireDisassembledInstruction>>;
+type ResolveSourceBreakpointsResponse = breakpoints::ResolveSourceBreakpointsResponse;
+type ResolveSourceLocationsResponse = breakpoints::ResolveSourceLocationsResponse;
 
 type WriteMemory8Request = WriteMemoryRequest<u8>;
 type WriteMemory16Request = WriteMemoryRequest<u16>;
@@ -547,6 +555,7 @@ type ResetAndHaltResponse = RpcResult<WireCoreInformation>;
 type CoreRegValueResponse = RpcResult<WireRegisterValue>;
 type CoreU32Response = RpcResult<u32>;
 type CoreInstructionSetResponse = RpcResult<WireInstructionSet>;
+type CoreMetadataResponse = RpcResult<WireCoreMetadata>;
 type CoreReadRegistersResponse = RpcResult<Vec<WireRegisterReadResult>>;
 type CoreDumpResponse = RpcResult<WireCoreDump>;
 type HandleSemihostingResponse =
@@ -571,6 +580,9 @@ endpoints! {
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
     | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
     | LoadDebugInfoEndpoint     | LoadDebugInfoRequest    | LoadDebugInfoResponse    | "debug_state/load_debug_info" |
+    | ValidateDebugInfoEndpoint | LoadDebugInfoRequest    | ValidateDebugInfoResponse | "debug_state/validate_debug_info" |
+    | ResolveSourceBreakpointsEndpoint | ResolveSourceBreakpointsRequest | ResolveSourceBreakpointsResponse | "debug_state/resolve_source_breakpoints" |
+    | ResolveSourceLocationsEndpoint | ResolveSourceLocationsRequest | ResolveSourceLocationsResponse | "debug_state/resolve_source_locations" |
     | ScopesEndpoint            | ScopesRequest           | ScopesResponse          | "stack_trace/scopes" |
     | VariablesEndpoint         | VariablesRequest        | VariablesResponse       | "stack_trace/variables" |
     | ClearCoreDebugStateEndpoint | ClearCoreDebugStateRequest | NoResponse           | "debug_state/clear_core" |
@@ -617,6 +629,7 @@ endpoints! {
     | CoreEnableVcEndpoint      | CoreVectorCatchRequest  | NoResponse                    | "core/enable_vc"          |
     | CoreDisableVcEndpoint     | CoreVectorCatchRequest  | NoResponse                    | "core/disable_vc"         |
     | CoreInstructionSetEndpoint | CoreAccessRequest      | CoreInstructionSetResponse    | "core/instruction_set"    |
+    | CoreMetadataEndpoint      | CoreAccessRequest       | CoreMetadataResponse          | "core/metadata"           |
     | CoreReadRegistersEndpoint | CoreReadRegistersRequest | CoreReadRegistersResponse    | "core/read_registers"     |
     | CoreDumpEndpoint          | CoreDumpRequest         | CoreDumpResponse             | "core/dump"                |
     | HandleSemihostingEndpoint | HandleSemihostingRequest | HandleSemihostingResponse    | "core/handle_semihosting"  |
@@ -673,6 +686,9 @@ postcard_rpc::define_dispatch! {
         | TakeStackTraceEndpoint    | async     | take_stack_trace  |
         | TakeRichStackTraceEndpoint | async    | take_rich_stack_trace |
         | LoadDebugInfoEndpoint     | async     | load_debug_info    |
+        | ValidateDebugInfoEndpoint | async     | validate_debug_info |
+        | ResolveSourceBreakpointsEndpoint | async | resolve_source_breakpoints |
+        | ResolveSourceLocationsEndpoint | async | resolve_source_locations |
         | ScopesEndpoint            | async     | debug_scopes      |
         | VariablesEndpoint         | async     | debug_variables   |
         | ClearCoreDebugStateEndpoint | async   | clear_core_debug_state |
@@ -724,6 +740,7 @@ postcard_rpc::define_dispatch! {
         | CoreEnableVcEndpoint         | async | core_enable_vc         |
         | CoreDisableVcEndpoint        | async | core_disable_vc        |
         | CoreInstructionSetEndpoint   | async | core_instruction_set   |
+        | CoreMetadataEndpoint         | async | core_metadata          |
         | CoreReadRegistersEndpoint    | async | core_read_registers    |
         | CoreDumpEndpoint             | async | core_dump             |
         | HandleSemihostingEndpoint    | async | core_handle_semihosting |

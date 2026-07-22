@@ -23,6 +23,7 @@ use crate::cmd::dap_server::{
     server::session_data::{ActiveBreakpoint, BreakpointType, SourceLocationScope},
 };
 use crate::rpc::client::CoreInterface as RpcCoreClient;
+use crate::rpc::functions::breakpoints::SourceBreakpointLocation;
 
 #[distributed_slice(REPL_COMMANDS)]
 static BREAK: ReplCommand = ReplCommand {
@@ -145,9 +146,12 @@ async fn create_breakpoint<'a>(
                 Ok(()) => {
                     breakpoint_response.verified = true;
                     breakpoint_response.instruction_reference = Some(format!("{address:#010x}"));
-                    if let Some(di) = &core_data.debug_info
-                        && let Some(source_location) = di.get_source_location(address)
-                    {
+                    let source_location = backend
+                        .resolve_source_locations(vec![address])
+                        .await
+                        .ok()
+                        .and_then(|mut locations| locations.pop().flatten());
+                    if let Some(source_location) = source_location {
                         breakpoint_response.id = Some(address as i64);
                         breakpoint_response.source = get_dap_source(&source_location);
                         breakpoint_response.line = source_location.line.map(|l| l as i64);
@@ -195,17 +199,23 @@ async fn create_breakpoint<'a>(
 
         BreakpointLocation::FileLine { path, line, column } => {
             let source = source_from_path(path);
-            let Some(debug_info) = &core_data.debug_info else {
-                return Err(DebuggerError::UserMessage(
-                    "Cannot set source breakpoint without debug information.".to_string(),
-                ));
-            };
             let VerifiedBreakpoint {
                 address,
                 source_location,
-            } = debug_info
-                .get_breakpoint_location(TypedPath::derive(path), line, column)
-                .map_err(|e| DebuggerError::UserMessage(e.to_string()))?;
+            } = backend
+                .resolve_source_breakpoints(vec![SourceBreakpointLocation {
+                    path: path.to_string(),
+                    line,
+                    column,
+                }])
+                .await?
+                .pop()
+                .ok_or_else(|| {
+                    DebuggerError::UserMessage(
+                        "Server returned no source breakpoint resolution.".to_string(),
+                    )
+                })?
+                .map_err(DebuggerError::UserMessage)?;
             backend.set_hw_breakpoint(core_index, address).await?;
             core_data.breakpoints.push(ActiveBreakpoint {
                 breakpoint_type: BreakpointType::SourceBreakpoint {
@@ -260,15 +270,21 @@ async fn clear_breakpoint<'a>(
     let address = match parse_breakpoint_location(token)? {
         BreakpointLocation::Address(addr) => addr,
         BreakpointLocation::FileLine { path, line, column } => {
-            let Some(debug_info) = &core_data.debug_info else {
-                return Err(DebuggerError::UserMessage(
-                    "Cannot resolve file:line without debug information.".to_string(),
-                ));
-            };
-            debug_info
-                .get_breakpoint_location(TypedPath::derive(path), line, column)
-                .map_err(|e| {
-                    DebuggerError::UserMessage(format!("Cannot resolve {path}:{line}: {e}"))
+            backend
+                .resolve_source_breakpoints(vec![SourceBreakpointLocation {
+                    path: path.to_string(),
+                    line,
+                    column,
+                }])
+                .await?
+                .pop()
+                .ok_or_else(|| {
+                    DebuggerError::UserMessage(
+                        "Server returned no source breakpoint resolution.".to_string(),
+                    )
+                })?
+                .map_err(|error| {
+                    DebuggerError::UserMessage(format!("Cannot resolve {path}:{line}: {error}"))
                 })?
                 .address
         }
@@ -308,4 +324,35 @@ async fn clear_breakpoint<'a>(
     adapter.dyn_send_event("breakpoint", body)?;
 
     Ok(EvalResponse::Message("Breakpoint cleared".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_windows_source_breakpoint_from_the_right() {
+        let BreakpointLocation::FileLine { path, line, column } =
+            parse_breakpoint_location(r"C:\src\main.rs:42:7").unwrap()
+        else {
+            panic!("expected source breakpoint");
+        };
+
+        assert_eq!(path, r"C:\src\main.rs");
+        assert_eq!(line, 42);
+        assert_eq!(column, Some(7));
+    }
+
+    #[test]
+    fn parses_source_breakpoint_without_column() {
+        let BreakpointLocation::FileLine { path, line, column } =
+            parse_breakpoint_location("/src/main.rs:42").unwrap()
+        else {
+            panic!("expected source breakpoint");
+        };
+
+        assert_eq!(path, "/src/main.rs");
+        assert_eq!(line, 42);
+        assert_eq!(column, None);
+    }
 }

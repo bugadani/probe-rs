@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use linkme::distributed_slice;
 use probe_rs::{CoreRegister, RegisterId};
-use probe_rs_debug::VariableName;
+use probe_rs_debug::{ColumnType, ObjectRef, StackFrame, VariableName};
 
 use crate::cmd::dap_server::{
     DebuggerError,
@@ -13,9 +13,8 @@ use crate::cmd::dap_server::{
             dap_types::EvaluateArguments,
             repl_commands::{
                 EvalResponse, EvalResult, REPL_COMMANDS, ReplCommand, async_fn, need_subcommand,
-                unimplemented_repl,
             },
-            repl_commands_helpers::get_local_variable,
+            repl_commands_helpers::{format_repl_variables, get_local_variable},
             repl_types::{GdbFormat, GdbNuf, ReplCommandArgs},
         },
         protocol::ProtocolAdapter,
@@ -35,8 +34,7 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: true,
             sub_commands: &[],
             args: &[ReplCommandArgs::Optional("address")],
-            // TODO: This is easy to implement ... just requires deciding how to format the output.
-            handler: async_fn!(unimplemented_repl),
+            handler: async_fn!(info_frame),
         },
         ReplCommand {
             command: "locals",
@@ -60,8 +58,7 @@ static INFO: ReplCommand = ReplCommand {
             requires_target_halted: true,
             sub_commands: &[],
             args: &[],
-            // TODO: This is easy to implement ... just requires deciding how to format the output.
-            handler: async_fn!(unimplemented_repl),
+            handler: async_fn!(info_static_variables),
         },
         ReplCommand {
             command: "break",
@@ -75,6 +72,139 @@ static INFO: ReplCommand = ReplCommand {
     args: &[],
     handler: async_fn!(need_subcommand),
 };
+
+async fn info_frame<'a>(
+    _backend: &'a mut RpcBackend,
+    core_data: &'a mut CoreData,
+    command_arguments: &'a str,
+    evaluate_arguments: &'a EvaluateArguments,
+    _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> EvalResult {
+    let frame_index = select_frame(
+        &core_data.stack_frames,
+        evaluate_arguments.frame_id,
+        command_arguments,
+    )?;
+    Ok(EvalResponse::Message(format_frame(
+        frame_index,
+        &core_data.stack_frames[frame_index],
+    )))
+}
+
+async fn info_static_variables<'a>(
+    backend: &'a mut RpcBackend,
+    core_data: &'a mut CoreData,
+    _command_arguments: &'a str,
+    evaluate_arguments: &'a EvaluateArguments,
+    _adapter: &'a mut DebugAdapter<dyn ProtocolAdapter + 'a>,
+) -> EvalResult {
+    let frame_index = select_frame(&core_data.stack_frames, evaluate_arguments.frame_id, "")?;
+    let frame_id: u32 = i64::from(core_data.stack_frames[frame_index].id)
+        .try_into()
+        .map_err(|_| DebuggerError::UserMessage("Invalid selected frame id.".to_string()))?;
+    let scopes = backend
+        .scopes(core_data.core_index, frame_id)
+        .await?
+        .unwrap_or_default();
+    let Some(statics) = scopes
+        .into_iter()
+        .find(|scope| scope.presentation_hint.as_deref() == Some("statics"))
+    else {
+        return Ok(EvalResponse::Message(
+            "No static variables available.".to_string(),
+        ));
+    };
+    let variables_reference = u32::try_from(statics.variables_reference).map_err(|_| {
+        DebuggerError::UserMessage(
+            "Invalid static-variable reference returned by server.".to_string(),
+        )
+    })?;
+    let variables = backend
+        .variables(core_data.core_index, variables_reference, None)
+        .await?
+        .unwrap_or_default();
+    if variables.is_empty() {
+        return Ok(EvalResponse::Message("No static variables.".to_string()));
+    }
+
+    Ok(EvalResponse::Body(format_repl_variables(
+        &variables,
+        &GdbNuf {
+            format_specifier: GdbFormat::Native,
+            ..Default::default()
+        },
+    )))
+}
+
+fn select_frame(
+    frames: &[StackFrame],
+    requested_frame_id: Option<i64>,
+    address: &str,
+) -> Result<usize, DebuggerError> {
+    let address = address.trim();
+    if !address.is_empty() {
+        let address = parse_int::parse::<u64>(address)
+            .map_err(|error| DebuggerError::UserMessage(error.to_string()))?;
+        return frames
+            .iter()
+            .position(|frame| TryInto::<u64>::try_into(frame.pc).ok() == Some(address))
+            .ok_or_else(|| {
+                DebuggerError::UserMessage(format!(
+                    "No cached stack frame found at address {address:#x}."
+                ))
+            });
+    }
+
+    match requested_frame_id {
+        Some(frame_id) => frames
+            .iter()
+            .position(|frame| frame.id == ObjectRef::from(frame_id))
+            .ok_or_else(|| {
+                DebuggerError::UserMessage(format!("No stack frame found for id {frame_id}."))
+            }),
+        None => (!frames.is_empty())
+            .then_some(0)
+            .ok_or_else(|| DebuggerError::UserMessage("No frame selected.".to_string())),
+    }
+}
+
+fn format_frame(index: usize, frame: &StackFrame) -> String {
+    let mut response = format!(
+        "Frame {}: {} @ {}",
+        index + 1,
+        frame.function_name,
+        frame.pc
+    );
+    if frame.is_inlined {
+        response.push_str(" (inline)");
+    }
+    if let Some(location) = &frame.source_location {
+        #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+        write!(
+            &mut response,
+            "\nSource: {}",
+            location.path.to_path().display()
+        )
+        .unwrap();
+        if let Some(line) = location.line {
+            #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+            write!(&mut response, ":{line}").unwrap();
+            if let Some(ColumnType::Column(column)) = location.column {
+                #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+                write!(&mut response, ":{column}").unwrap();
+            }
+        }
+    }
+    if let Some(frame_base) = frame.frame_base {
+        #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+        write!(&mut response, "\nFrame base: {frame_base:#x}").unwrap();
+    }
+    if let Some(cfa) = frame.canonical_frame_address {
+        #[expect(clippy::unwrap_used, reason = "Writing to a string is infallible")]
+        write!(&mut response, "\nCanonical frame address: {cfa:#x}").unwrap();
+    }
+    response
+}
 
 async fn print_registers<'a>(
     backend: &'a mut RpcBackend,
@@ -156,7 +286,7 @@ async fn print_breakpoints<'a>(
 }
 
 async fn info_locals<'a>(
-    _backend: &'a mut RpcBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     _command_arguments: &'a str,
     evaluate_arguments: &'a EvaluateArguments,
@@ -167,7 +297,14 @@ async fn info_locals<'a>(
         ..Default::default()
     };
     let variable_name = VariableName::LocalScopeRoot;
-    get_local_variable(evaluate_arguments, core_data, variable_name, gdb_nuf)
+    get_local_variable(
+        backend,
+        evaluate_arguments,
+        core_data,
+        variable_name,
+        gdb_nuf,
+    )
+    .await
 }
 
 fn reg_table(results: &[(String, String)], max_line_length: usize) -> String {
@@ -215,6 +352,42 @@ fn reg_table(results: &[(String, String)], max_line_length: usize) -> String {
 
 #[cfg(test)]
 mod test {
+    use probe_rs::RegisterValue;
+    use probe_rs_debug::{DebugRegisters, ObjectRef, StackFrame};
+
+    fn frame(id: i64, pc: u32, name: &str) -> StackFrame {
+        StackFrame {
+            id: ObjectRef::from(id),
+            function_name: name.to_string(),
+            source_location: None,
+            registers: DebugRegisters::default(),
+            pc: RegisterValue::U32(pc),
+            frame_base: Some(0x2000),
+            is_inlined: false,
+            local_variables: None,
+            canonical_frame_address: Some(0x2010),
+        }
+    }
+
+    #[test]
+    fn selects_info_frame_by_dap_id_or_address() {
+        let frames = vec![frame(11, 0x1000, "top"), frame(12, 0x1010, "caller")];
+
+        assert_eq!(super::select_frame(&frames, Some(12), "").unwrap(), 1);
+        assert_eq!(super::select_frame(&frames, None, "0x1000").unwrap(), 0);
+        assert!(super::select_frame(&frames, None, "0x9999").is_err());
+    }
+
+    #[test]
+    fn formats_info_frame_metadata() {
+        let frame = frame(11, 0x1000, "main");
+
+        pretty_assertions::assert_eq!(
+            super::format_frame(0, &frame),
+            "Frame 1: main @ 0x00001000\nFrame base: 0x2000\nCanonical frame address: 0x2010"
+        );
+    }
+
     #[test]
     fn reg_table_output() {
         let results = vec![

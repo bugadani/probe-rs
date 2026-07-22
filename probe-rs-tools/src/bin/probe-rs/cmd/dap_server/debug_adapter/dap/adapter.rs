@@ -18,6 +18,7 @@ use crate::cmd::dap_server::{
     },
 };
 use crate::rpc::client::CoreInterface as RpcCoreClient;
+use crate::rpc::functions::breakpoints::SourceBreakpointLocation;
 use crate::util::rtt;
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose as base64_engine};
@@ -35,10 +36,36 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use typed_path::NativePathBuf;
 
-use std::{fmt::Display, str, time::Duration};
+use std::{fmt::Display, path::Path, str, time::Duration};
 
 /// Progress ID used for progress reporting when the debug adapter protocol is used.
 type ProgressId = i64;
+
+#[derive(Debug, PartialEq, Eq)]
+enum EvaluateDispatch {
+    Server,
+    ReplCommand,
+    Unsupported,
+}
+
+fn evaluate_dispatch(
+    context: Option<&str>,
+    expression: &str,
+    repl_commands: &[ReplCommand],
+) -> EvaluateDispatch {
+    match context {
+        Some("watch" | "hover") => EvaluateDispatch::Server,
+        Some("repl") => {
+            let (_, _, matches) = build_expanded_commands(repl_commands, expression.trim());
+            if matches.is_empty() {
+                EvaluateDispatch::Server
+            } else {
+                EvaluateDispatch::ReplCommand
+            }
+        }
+        _ => EvaluateDispatch::Unsupported,
+    }
+}
 
 /// A Debug Adapter Protocol "Debug Adapter",
 /// see <https://microsoft.github.io/debug-adapter-protocol/overview>
@@ -271,8 +298,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         )
     }
 
-    /// `scopes` handler: tries the backend (RPC) first, else falls back to
-    /// the local `CoreHandle` path.
+    /// Resolve scopes through RPC from the server-owned debug state.
     pub(crate) async fn scopes(
         &mut self,
         session_data: &mut SessionData,
@@ -290,8 +316,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(ScopesResponseBody { scopes })))
     }
 
-    /// `variables` handler: tries the backend (RPC) first, else falls back
-    /// to the local `CoreHandle` path.
+    /// Resolve variables through RPC from the server-owned caches.
     pub(crate) async fn variables(
         &mut self,
         session_data: &mut SessionData,
@@ -309,9 +334,9 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         self.send_response(request, Ok(Some(VariablesResponseBody { variables })))
     }
 
-    /// `evaluate` handler: tries the backend (RPC) first for watch/hover
-    /// expressions, else falls back to the local `CoreHandle` path (which
-    /// also handles `repl`/`clipboard`).
+    /// Route watch/hover and non-command REPL expressions to the server-owned
+    /// evaluator. Registered REPL commands remain adapter-side dispatch, but
+    /// their target operations use the RPC backend.
     pub(crate) async fn evaluate(
         &mut self,
         session_data: &mut SessionData,
@@ -319,50 +344,53 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         request: &Request,
     ) -> Result<()> {
         let arguments: EvaluateArguments = get_arguments(self, request)?;
-        if let Some(response_body) = session_data
-            .backend
-            .evaluate(core_index, &arguments)
-            .await
-            .map_err(DebuggerError::ProbeRs)?
-        {
-            return self.send_response(request, Ok(Some(response_body)));
-        }
+        let repl_commands = session_data
+            .core_data
+            .iter()
+            .find(|core_data| core_data.core_index == core_index)
+            .map(|core_data| core_data.repl_commands.as_slice())
+            .unwrap_or_default();
 
-        if arguments.context.as_deref() == Some("repl") {
-            let mut response_body = EvaluateResponseBody {
-                indexed_variables: None,
-                memory_reference: None,
-                named_variables: None,
-                presentation_hint: None,
-                result: format!("<invalid expression {:?}>", arguments.expression),
-                type_: None,
-                variables_reference: 0,
-                value_location_reference: None,
-            };
-            match self.handle_repl(session_data, core_index, &arguments).await {
-                Ok(EvalResponse::Body(body)) => response_body = body,
-                Ok(EvalResponse::Message(message)) => response_body.result = message,
-                Err(DebuggerError::UserMessage(message)) => response_body.result = message,
-                Err(error) => response_body.result = format!("{error:?}"),
+        match evaluate_dispatch(
+            arguments.context.as_deref(),
+            &arguments.expression,
+            repl_commands,
+        ) {
+            EvaluateDispatch::Server => {
+                let response_body = session_data
+                    .backend
+                    .evaluate(core_index, &arguments)
+                    .await
+                    .map_err(DebuggerError::ProbeRs)?;
+                self.send_response(request, Ok(Some(response_body)))
             }
-            return self.send_response(request, Ok(Some(response_body)));
+            EvaluateDispatch::ReplCommand => {
+                let mut response_body = EvaluateResponseBody {
+                    indexed_variables: None,
+                    memory_reference: None,
+                    named_variables: None,
+                    presentation_hint: None,
+                    result: format!("<invalid expression {:?}>", arguments.expression),
+                    type_: None,
+                    variables_reference: 0,
+                    value_location_reference: None,
+                };
+                match self.handle_repl(session_data, core_index, &arguments).await {
+                    Ok(EvalResponse::Body(body)) => response_body = body,
+                    Ok(EvalResponse::Message(message)) => response_body.result = message,
+                    Err(DebuggerError::UserMessage(message)) => response_body.result = message,
+                    Err(error) => response_body.result = format!("{error:?}"),
+                }
+                self.send_response(request, Ok(Some(response_body)))
+            }
+            EvaluateDispatch::Unsupported => {
+                let context = arguments.context.as_deref().unwrap_or("<missing>");
+                let error = DebuggerError::UserMessage(format!(
+                    "Evaluate context {context:?} is not supported."
+                ));
+                self.send_response::<EvaluateResponseBody>(request, Err(&error))
+            }
         }
-
-        // `clipboard` and any other unadvertised context: echo the
-        // expression text. (clipboard is not advertised, so well-behaved
-        // clients never send it; watch/hover are handled server-side above
-        // and `repl` is handled just above.)
-        let response_body = EvaluateResponseBody {
-            indexed_variables: None,
-            memory_reference: None,
-            named_variables: None,
-            presentation_hint: None,
-            result: arguments.expression.clone(),
-            type_: None,
-            variables_reference: 0,
-            value_location_reference: None,
-        };
-        self.send_response(request, Ok(Some(response_body)))
     }
 
     async fn handle_repl(
@@ -506,6 +534,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         &mut self,
         session_data: &mut SessionData,
         core_index: usize,
+        program_binary: Option<&Path>,
         request: &Request,
     ) -> Result<()> {
         let arguments: SetVariableArguments = get_arguments(self, request)?;
@@ -652,29 +681,30 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             }
 
             if register_write_requires_stack_frame_refresh(register.core_register) {
-                if let Some(debug_info) = &session_data.core_data[cd_idx].debug_info {
+                // The write has already changed unwind-sensitive target
+                // state. Do not expose the old display cache while the
+                // server refresh is pending or if it fails.
+                session_data.core_data[cd_idx].invalidate_stack_frame_cache();
+                if let Some(program_binary) = program_binary {
                     match session_data
                         .backend
-                        .unwind_stack(core_index, None, debug_info, 500)
+                        .unwind_stack(core_index, program_binary, 500)
                         .await
                     {
-                        Ok(mut frames) => {
-                            if let Some(top) = frames.first_mut() {
-                                top.id = parent_key;
-                            }
-                            session_data.core_data[cd_idx].stack_frames = frames;
+                        Ok(frames) => {
+                            // Keep the ids assigned by the authoritative
+                            // server cache; scopes/variables resolve those
+                            // exact ids on subsequent requests.
+                            session_data.core_data[cd_idx].replace_stack_frame_cache(frames);
                         }
                         Err(error) => {
                             let message = format!(
                                 "Register {register_name} was written, but stack frames could not be refreshed: {error}"
                             );
                             tracing::warn!("{message}");
-                            session_data.core_data[cd_idx].stack_frames.clear();
                             self.show_message(MessageSeverity::Warning, message);
                         }
                     }
-                } else {
-                    session_data.core_data[cd_idx].stack_frames.clear();
                 }
             } else if let Some(cached_register) = session_data.core_data[cd_idx]
                 .stack_frames
@@ -690,12 +720,8 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
             response_body.value = written_register_value.to_string();
             response_body.variables_reference = Some(0);
         } else {
-            // Variable path: local backends resolve against the client-side
-            // `VariableCache` (in `CoreData`); the RPC backend has no
-            // client-side cache (it lives server-side), so it falls through
-            // to `backend.set_variable`.
-            // RPC path: the `VariableCache` lives server-side, so defer to
-            // the server for every variable update.
+            // Variable caches are server-owned; every non-register update is
+            // resolved and applied by the RPC endpoint.
             match session_data
                 .backend
                 .set_variable(
@@ -821,9 +847,7 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         let typed_source_path = NativePathBuf::from(source_path).to_typed_path_buf();
         let requested_bps = args.breakpoints.as_deref().unwrap_or_default().to_vec();
 
-        // Resolve addresses client-side and collect existing breakpoints for
-        // this source to clear. Both happen against `core_data` only.
-        let (resolved, clear_addrs) = {
+        let clear_addrs = {
             let Some(core_data) = session_data
                 .core_data
                 .iter_mut()
@@ -856,19 +880,11 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                         if bp_source.as_ref() == &source
                 )
             });
-
-            let Some(debug_info) = &core_data.debug_info else {
-                return self.send_response::<()>(
-                    request,
-                    Err(&DebuggerError::Other(anyhow!(
-                        "Cannot set source breakpoint without debug information."
-                    ))),
-                );
-            };
-
-            let mut resolved: Vec<Result<VerifiedBreakpoint, String>> =
-                Vec::with_capacity(requested_bps.len());
-            for bp in &requested_bps {
+            clear_addrs
+        };
+        let locations = requested_bps
+            .iter()
+            .map(|bp| {
                 let line = if self.lines_start_at_1 {
                     bp.line as u64
                 } else {
@@ -879,15 +895,36 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 } else {
                     Some(bp.column.unwrap_or(0) as u64 + 1)
                 };
-                match debug_info.get_breakpoint_location(typed_source_path.to_path(), line, column)
-                {
-                    Ok(vb) => resolved.push(Ok(vb)),
-                    Err(e) => resolved.push(Err(format!(
-                        "Cannot set breakpoint here. Try reducing compile time-, and link time-, optimization in your build configuration, or choose a different source location: {e}"
-                    ))),
+                SourceBreakpointLocation {
+                    path: typed_source_path.to_path().display().to_string(),
+                    line,
+                    column,
                 }
+            })
+            .collect();
+        let resolved = match session_data
+            .backend
+            .resolve_source_breakpoints(locations)
+            .await
+        {
+            Ok(resolved) => resolved
+                .into_iter()
+                .map(|result| {
+                    result.map_err(|error| {
+                        format!(
+                            "Cannot set breakpoint here. Try reducing compile time-, and link time-, optimization in your build configuration, or choose a different source location: {error}"
+                        )
+                    })
+                })
+                .collect::<Vec<Result<VerifiedBreakpoint, String>>>(),
+            Err(error) => {
+                return self.send_response::<()>(
+                    request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Cannot set source breakpoint without debug information: {error}"
+                    ))),
+                );
             }
-            (resolved, clear_addrs)
         };
 
         // One round trip to clear the old set, one to set the new set.
@@ -1054,17 +1091,20 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         let set_addrs: Vec<u64> = parsed.iter().copied().flatten().collect();
         let set_results = session_data
             .backend
-            .set_hw_breakpoints(core_index, set_addrs)
+            .set_hw_breakpoints(core_index, set_addrs.clone())
             .await
             .map_err(|e| {
                 DebuggerError::Other(anyhow!("Failed to set instruction breakpoints: {e}"))
             })?;
 
-        let debug_info = session_data
-            .core_data
-            .iter()
-            .find(|cd| cd.core_index == core_index)
-            .and_then(|cd| cd.debug_info.as_ref());
+        let source_locations = session_data
+            .backend
+            .resolve_source_locations(set_addrs.clone())
+            .await
+            .unwrap_or_else(|error| {
+                tracing::debug!("Could not resolve instruction breakpoint sources: {error}");
+                vec![None; set_addrs.len()]
+            });
 
         let mut breakpoints: Vec<Breakpoint> = Vec::with_capacity(requested.len());
         let mut to_cache: Vec<u64> = Vec::new();
@@ -1092,9 +1132,8 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                     set_idx += 1;
                     if verified {
                         to_cache.push(memory_reference);
-                        let (source, line, column, message) = match debug_info
-                            .and_then(|di| di.get_source_location(memory_reference))
-                        {
+                        let source_location = source_locations.get(set_idx - 1).cloned().flatten();
+                        let (source, line, column, message) = match source_location {
                             Some(loc) => {
                                 let line = loc.line.map(|l| l as i64);
                                 let column = loc.column.map(|c| match c {
@@ -1353,16 +1392,10 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         let arguments: DisassembleArguments = get_arguments(self, request)?;
 
         if let Ok(memory_reference) = parse_int::parse::<u64>(&arguments.memory_reference) {
-            let debug_info: Option<&probe_rs_debug::DebugInfo> = session_data
-                .core_data
-                .iter()
-                .find(|cd| cd.core_index == core_index)
-                .and_then(|cd| cd.debug_info.as_ref());
             match session_data
                 .backend
                 .disassemble(
                     core_index,
-                    debug_info,
                     memory_reference,
                     arguments.offset.unwrap_or(0_i64),
                     arguments.instruction_offset.unwrap_or(0_i64),
@@ -1812,6 +1845,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
         core_data: &mut CoreData,
     ) -> Result<CoreInformation> {
         let core_index = core_data.core_index;
+        core_data.invalidate_stack_frame_cache();
         let cpu_info = backend.halt(core_index, Duration::from_millis(500)).await?;
         let new_status = CoreStatus::Halted(HaltReason::Request);
         let event_body = Some(StoppedEventBody {
@@ -1837,6 +1871,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
         backend: &mut RpcBackend,
         core_data: &mut CoreData,
     ) -> Result<bool> {
+        core_data.invalidate_stack_frame_cache();
         backend.run(core_data.core_index).await?;
         core_data.last_known_status = CoreStatus::Unknown;
         self.all_cores_halted = false;
@@ -1851,6 +1886,7 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
         core_data: &mut CoreData,
     ) -> Result<CoreInformation> {
         let core_index = core_data.core_index;
+        core_data.invalidate_stack_frame_cache();
         let core_info: CoreInformation = RpcCoreClient::new_for_backend(
             backend.client.clone(),
             backend.sessid,
@@ -1896,14 +1932,14 @@ impl<P: ProtocolAdapter + ?Sized> DebugAdapter<P> {
         core_data: &mut CoreData,
     ) -> Result<u64> {
         let core_index = core_data.core_index;
-        // reset_core_status, inlined (no CoreHandle): mark status Unknown and
-        // clear all_cores_halted without notifying the client.
+        // Mark the adapter's cached status unknown before the server performs
+        // the step, without notifying the client.
+        core_data.invalidate_stack_frame_cache();
         core_data.last_known_status = CoreStatus::Unknown;
         self.all_cores_halted = false;
-        let debug_info = core_data.debug_info.as_ref();
 
         let (new_status, program_counter, warning) = backend
-            .debug_step(core_index, stepping_mode, debug_info)
+            .debug_step(core_index, stepping_mode)
             .await
             .map_err(DebuggerError::ProbeRs)?;
         if let Some(message) = warning {
@@ -2073,6 +2109,7 @@ pub fn get_arguments<T: DeserializeOwned, P: ProtocolAdapter>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::dap_server::debug_adapter::dap::repl_commands::REPL_COMMANDS;
     use probe_rs::{RegisterId, UnwindRule};
 
     static U32_ROLES: [RegisterRole; 1] = [RegisterRole::Core("r0")];
@@ -2155,6 +2192,46 @@ mod tests {
         data_type: RegisterDataType::UnsignedInteger(32),
         unwind_rule: UnwindRule::Preserve,
     };
+
+    #[test]
+    fn evaluate_dispatch_preserves_commands_and_routes_expressions_to_server() {
+        assert_eq!(
+            evaluate_dispatch(Some("repl"), "help", &REPL_COMMANDS),
+            EvaluateDispatch::ReplCommand
+        );
+        assert_eq!(
+            evaluate_dispatch(Some("repl"), "b", &REPL_COMMANDS),
+            EvaluateDispatch::ReplCommand
+        );
+        assert_eq!(
+            evaluate_dispatch(Some("repl"), "__dap_rpc_expression", &REPL_COMMANDS),
+            EvaluateDispatch::Server
+        );
+        assert_eq!(
+            evaluate_dispatch(Some("watch"), "help", &REPL_COMMANDS),
+            EvaluateDispatch::Server
+        );
+        assert_eq!(
+            evaluate_dispatch(Some("hover"), "help", &REPL_COMMANDS),
+            EvaluateDispatch::Server
+        );
+    }
+
+    #[test]
+    fn evaluate_dispatch_rejects_unsupported_contexts() {
+        assert_eq!(
+            evaluate_dispatch(Some("clipboard"), "value", &REPL_COMMANDS),
+            EvaluateDispatch::Unsupported
+        );
+        assert_eq!(
+            evaluate_dispatch(Some("variables"), "value", &REPL_COMMANDS),
+            EvaluateDispatch::Unsupported
+        );
+        assert_eq!(
+            evaluate_dispatch(None, "value", &REPL_COMMANDS),
+            EvaluateDispatch::Unsupported
+        );
+    }
 
     #[test]
     fn parse_register_value_supports_decimal_hex_and_separators() -> Result<()> {

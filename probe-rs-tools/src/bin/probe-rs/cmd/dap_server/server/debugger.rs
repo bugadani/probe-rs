@@ -35,6 +35,29 @@ use std::{
 };
 use time::UtcOffset;
 
+fn dap_capabilities() -> Capabilities {
+    Capabilities {
+        supports_configuration_done_request: Some(true),
+        supports_restart_request: Some(true),
+        support_suspend_debuggee: Some(true),
+        support_terminate_debuggee: Some(true),
+        supports_evaluate_for_hovers: Some(true),
+        // stackTrace serves the halt-time display cache; it does not
+        // perform an on-demand unwind for startFrame/levels requests.
+        supports_delayed_stack_trace_loading: Some(false),
+        supports_read_memory_request: Some(true),
+        supports_write_memory_request: Some(true),
+        supports_set_variable: Some(true),
+        supports_disassemble_request: Some(true),
+        supports_instruction_breakpoints: Some(true),
+        supports_stepping_granularity: Some(true),
+        supports_completions_request: Some(true),
+        // ANSI output is emitted only when the client also opts in.
+        supports_ansi_styling: Some(true),
+        ..Default::default()
+    }
+}
+
 #[derive(Debug)]
 /// Controls how `debug_session` responds to client `Terminate`/`Disconnect`/`Reset`
 /// requests and to unrecoverable errors during a target session.
@@ -95,12 +118,12 @@ impl Debugger {
     }
 
     /// The logic of this function is as follows:
-    /// - While we are waiting for DAP-Client, we have to continuously check in on the status of the probe.
+    /// - While we are waiting for DAP-Client, periodically query core status through the RPC backend.
     /// - Initially, while [`DebugAdapter::configuration_done`] = `false`, we do nothing.
-    /// - Once [`DebugAdapter::configuration_done`] = `true`, we can start polling the probe for status, as follows:
-    ///   - If the [`super::core_data::CoreData::last_known_status`] is `Halted(_)`, then we stop polling the Probe until the next DAP-Client request attempts an action
+    /// - Once [`DebugAdapter::configuration_done`] = `true`, status polling proceeds as follows:
+    ///   - If the [`super::core_data::CoreData::last_known_status`] is `Halted(_)`, then we stop sending status RPCs until the next DAP-Client request attempts an action
     ///   - If the `new_status` is an Err, then the probe is no longer available, and we  end the debugging session
-    ///   - If the `new_status` is `Running`, then we have to poll on a regular basis, until the Probe stops for good reasons like breakpoints, or bad reasons like panics.
+    ///   - If the `new_status` is `Running`, then we poll on a regular basis until the target stops for good reasons like breakpoints, or bad reasons like panics.
     pub(crate) async fn process_next_request<P: ProtocolAdapter>(
         &mut self,
         session_data: &mut SessionData,
@@ -151,8 +174,9 @@ impl Debugger {
         };
         let core_index = target_core_config.core_index;
 
-        // For some operations, we need to make sure the core isn't sleeping, by calling `Core::halt()`.
-        // When we do this, we need to flag it (`unhalt_me = true`), and later call `Core::run()` again.
+        // Some operations require a sleeping core to be halted through the
+        // RPC backend. Track that temporary halt so the backend can resume it
+        // after the request.
         // NOTE: The target will exit sleep mode as a result of this command.
         let mut unhalt_me = false;
         {
@@ -254,7 +278,12 @@ impl Debugger {
             }
             "setVariable" => {
                 debug_adapter
-                    .set_variable(session_data, core_index, &request)
+                    .set_variable(
+                        session_data,
+                        core_index,
+                        target_core_config.program_binary.as_deref(),
+                        &request,
+                    )
                     .await?;
             }
             "disassemble" => {
@@ -376,7 +405,7 @@ impl Debugger {
         let timestamp_offset = self.timestamp_offset;
         let result = self
             .debug_session_impl::<P, _>(debug_adapter, async move |config: &mut SessionConfig| {
-                SessionData::new_remote(client, config, timestamp_offset).await
+                SessionData::new_rpc_backed(client, config, timestamp_offset).await
             })
             .await;
         // Drop the session-scoped temporary directory holding any client-uploaded
@@ -615,17 +644,14 @@ impl Debugger {
             .await
             .map_err(DebuggerError::from)?;
 
-        // Before we complete, upload the (optional) CMSIS-SVD file so the
-        // server can build the per-core peripheral variable cache and surface
-        // peripheral registers/fields through the scopes/variables endpoints.
-        if let Some(svd_file) = &target_core_config.svd_file
-            && let Err(error) = session_data
-                .backend
-                .load_svd(core_index, svd_file.clone())
-                .await
+        // Synchronize the optional SVD configuration before exposing scopes.
+        // This is non-fatal: a failed load leaves the server cache cleared.
+        if let Err(error) = session_data
+            .backend
+            .load_svd(core_index, target_core_config.svd_file.clone())
+            .await
         {
-            // This is not a fatal error. We can continue the debug session without the SVD file.
-            tracing::warn!("Failed to load SVD file {}: {error:?}", svd_file.display());
+            tracing::warn!("Failed to load SVD file: {error:?}");
         }
 
         if requested_target_session_type == TargetSessionType::LaunchRequest {
@@ -672,10 +698,41 @@ impl Debugger {
                 // relevant entry so we can call mutating methods on
                 // `session_data`.
                 let target_core_config = target_core_config.clone();
-                session_data.load_debug_info_for_core(&target_core_config)?;
-                session_data.recompute_breakpoints(core_index).await?;
-
-                session_data.load_rtt_location(&self.config)?;
+                // Validate the replacement through the server before
+                // mutating the target. The server remains the only owner of
+                // parsed debug information.
+                session_data
+                    .backend
+                    .session_interface()
+                    .validate_debug_info(path_to_elf.clone())
+                    .await
+                    .map_err(|error| {
+                        DebuggerError::Other(anyhow!(
+                            "Failed to validate replacement debug info: {error}"
+                        ))
+                    })?;
+                if let Some(core_data) = session_data
+                    .core_data
+                    .iter_mut()
+                    .find(|core_data| core_data.core_index == core_index)
+                {
+                    // Reflashing changes the target image. Do not retain
+                    // frame ids from the pre-flash server unwind.
+                    core_data.invalidate_stack_frame_cache();
+                }
+                // Flashing can partially mutate the target before returning
+                // an error. Invalidate server-derived frame/variable handles
+                // first so no failure path can expose pre-flash state.
+                session_data
+                    .backend
+                    .session_interface()
+                    .clear_core_debug_state(core_index as u32)
+                    .await
+                    .map_err(|error| {
+                        DebuggerError::Other(anyhow!(
+                            "Failed to clear server debug state before reflash: {error}"
+                        ))
+                    })?;
 
                 Self::flash(
                     &self.config,
@@ -685,6 +742,14 @@ impl Debugger {
                     session_data,
                 )
                 .await?;
+
+                // Publish the new server-owned DWARF only after flashing
+                // succeeds, then recompute source breakpoints through RPC.
+                session_data
+                    .reload_debug_info_for_core(&target_core_config)
+                    .await?;
+                session_data.recompute_breakpoints(core_index).await?;
+                session_data.load_rtt_location(&self.config)?;
             }
         }
 
@@ -696,6 +761,17 @@ impl Debugger {
             .halt(core_index, Duration::from_millis(100))
             .await
             .map_err(DebuggerError::from)?;
+
+        // A DAP restart carries no replacement launch configuration, but the
+        // configured SVD file may have changed on disk. Reload it on every
+        // restart; `None` and failures clear any stale server cache.
+        if let Err(error) = session_data
+            .backend
+            .load_svd(core_index, target_core_config.svd_file.clone())
+            .await
+        {
+            tracing::warn!("Failed to reload SVD file during restart: {error:?}");
+        }
 
         // Reset RTT so that the link can be re-established.
         if let Some(cd) = session_data
@@ -897,26 +973,7 @@ impl Debugger {
         }
 
         // Reply to Initialize with `Capabilities`.
-        let capabilities = Capabilities {
-            supports_configuration_done_request: Some(true),
-            supports_restart_request: Some(true),
-            support_suspend_debuggee: Some(true),
-            supports_delayed_stack_trace_loading: Some(true),
-            supports_read_memory_request: Some(true),
-            supports_write_memory_request: Some(true),
-            supports_set_variable: Some(true),
-            supports_disassemble_request: Some(true),
-            supports_instruction_breakpoints: Some(true),
-            supports_stepping_granularity: Some(true),
-            supports_completions_request: Some(true),
-            support_terminate_debuggee: Some(true),
-            // supports_value_formatting_options: Some(true),
-            // supports_function_breakpoints: Some(true),
-            // TODO: Use DEMCR register to implement exception breakpoints
-            // supports_exception_options: Some(true),
-            // supports_exception_filter_options: Some (true),
-            ..Default::default()
-        };
+        let capabilities = dap_capabilities();
         debug_adapter.send_response(&initialize_request, Ok(Some(capabilities)))?;
 
         self.debug_logger.flush_to_dap(debug_adapter)?;
@@ -1021,20 +1078,58 @@ mod test {
     fn expected_capabilities() -> Capabilities {
         Capabilities {
             support_suspend_debuggee: Some(true),
+            support_terminate_debuggee: Some(true),
             supports_completions_request: Some(true),
             supports_configuration_done_request: Some(true),
-            supports_delayed_stack_trace_loading: Some(true),
+            supports_delayed_stack_trace_loading: Some(false),
             supports_disassemble_request: Some(true),
+            supports_evaluate_for_hovers: Some(true),
             supports_instruction_breakpoints: Some(true),
             supports_read_memory_request: Some(true),
             supports_write_memory_request: Some(true),
             supports_restart_request: Some(true),
             supports_set_variable: Some(true),
             supports_stepping_granularity: Some(true),
-            support_terminate_debuggee: Some(true),
+            supports_ansi_styling: Some(true),
 
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn initialize_capabilities_match_dispatch_and_behavior() {
+        let capabilities = super::dap_capabilities();
+
+        // Request capabilities with explicit handle_request arms.
+        assert_eq!(capabilities.supports_configuration_done_request, Some(true));
+        assert_eq!(capabilities.supports_restart_request, Some(true));
+        assert_eq!(capabilities.supports_read_memory_request, Some(true));
+        assert_eq!(capabilities.supports_write_memory_request, Some(true));
+        assert_eq!(capabilities.supports_set_variable, Some(true));
+        assert_eq!(capabilities.supports_disassemble_request, Some(true));
+        assert_eq!(capabilities.supports_instruction_breakpoints, Some(true));
+        assert_eq!(capabilities.supports_completions_request, Some(true));
+
+        // Behavior capabilities implemented by existing request handlers.
+        assert_eq!(capabilities.supports_evaluate_for_hovers, Some(true));
+        assert_eq!(capabilities.supports_stepping_granularity, Some(true));
+        assert_eq!(capabilities.support_suspend_debuggee, Some(true));
+        assert_eq!(capabilities.support_terminate_debuggee, Some(true));
+        assert_eq!(capabilities.supports_ansi_styling, Some(true));
+        assert_eq!(
+            capabilities.supports_delayed_stack_trace_loading,
+            Some(false)
+        );
+
+        // These pre-existing requests still take the fallback path and must
+        // remain unadvertised.
+        assert_ne!(capabilities.supports_terminate_request, Some(true));
+        assert_ne!(capabilities.supports_modules_request, Some(true));
+        assert_ne!(capabilities.supports_loaded_sources_request, Some(true));
+        assert_ne!(capabilities.supports_exception_info_request, Some(true));
+        assert_ne!(capabilities.supports_exception_options, Some(true));
+        assert_ne!(capabilities.supports_exception_filter_options, Some(true));
+        assert!(capabilities.exception_breakpoint_filters.is_none());
     }
 
     fn default_initialize_args() -> InitializeRequestArguments {

@@ -18,8 +18,8 @@ use probe_rs::{
     RegisterValue, Session, Target, VectorCatchCondition,
 };
 use probe_rs_debug::{
-    ColumnType, DebugInfo, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation,
-    StackFrame, SteppingMode, TypedPath,
+    ColumnType, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation, StackFrame,
+    SteppingMode, TypedPath, VerifiedBreakpoint,
 };
 use tokio::runtime::Handle;
 
@@ -33,7 +33,10 @@ use crate::rpc::{
     Key,
     client::{CoreInterface as RpcCoreClient, RpcClient, SessionInterface},
     functions::{
-        core_ops::{WireCoreStatus, WireRegisterId},
+        breakpoints::{
+            SourceBreakpointLocation, WireSourceLocation as WireBreakpointSourceLocation,
+        },
+        core_ops::{WireCoreMetadata, WireCoreStatus, WireRegisterId},
         debug_vars::WireSteppingMode,
         disassemble::{WireDisassembledInstruction, WireSource},
         flash::{
@@ -62,8 +65,8 @@ pub(crate) fn rpc_err(err: anyhow::Error) -> Error {
 /// Rebuild a [`DebugRegisters`] from a wire register dump, using the same
 /// static [`CoreRegisters`] file the server used so the resulting
 /// `DebugRegister` ordering and DWARF ids match what the server's `unwind`
-/// started from. This keeps client-side `get_stackframe_info` calls
-/// consistent with the server's.
+/// started from. The result is metadata for the client stack display cache;
+/// all DWARF interpretation remains server-side.
 pub(crate) fn rebuild_debug_registers(
     regs: &'static CoreRegisters,
     wire: &[WireDebugRegister],
@@ -190,7 +193,74 @@ pub struct CorePerAttachInfo {
     pub fp_register_count: Option<usize>,
 }
 
+impl CorePerAttachInfo {
+    pub(crate) async fn query(
+        client: &RpcClient,
+        sessid: Key<Session>,
+        core_index: usize,
+        architecture: Architecture,
+    ) -> Result<Self, Error> {
+        let metadata = RpcCoreClient::new_for_backend(client.clone(), sessid, core_index as u32)
+            .metadata()
+            .await
+            .map_err(rpc_err)?;
+        Ok(Self::from_wire(architecture, metadata))
+    }
+
+    fn from_wire(architecture: Architecture, metadata: WireCoreMetadata) -> Self {
+        Self {
+            architecture,
+            fpu_support: metadata.fpu_support,
+            fp_register_count: metadata
+                .floating_point_register_count
+                .map(|count| count as usize),
+        }
+    }
+}
+
 impl RpcBackend {
+    pub(crate) async fn resolve_source_breakpoints(
+        &self,
+        locations: Vec<SourceBreakpointLocation>,
+    ) -> Result<Vec<Result<VerifiedBreakpoint, String>>, Error> {
+        let resolved = self
+            .session_interface()
+            .resolve_source_breakpoints(locations)
+            .await
+            .map_err(rpc_err)?;
+        Ok(resolved
+            .into_iter()
+            .map(
+                |resolution| match (resolution.breakpoint, resolution.error) {
+                    (Some(breakpoint), _) => Ok(VerifiedBreakpoint {
+                        address: breakpoint.address,
+                        source_location: breakpoint.source_location.into(),
+                    }),
+                    (None, Some(error)) => Err(error),
+                    (None, None) => {
+                        Err("Server returned an empty breakpoint resolution.".to_string())
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn resolve_source_locations(
+        &self,
+        addresses: Vec<u64>,
+    ) -> Result<Vec<Option<DebugSourceLocation>>, Error> {
+        self.session_interface()
+            .resolve_source_locations(addresses)
+            .await
+            .map(|locations| {
+                locations
+                    .into_iter()
+                    .map(|location: Option<WireBreakpointSourceLocation>| location.map(Into::into))
+                    .collect()
+            })
+            .map_err(rpc_err)
+    }
+
     /// The wire conversion surfaces `GetCommandLine` as a placeholder
     /// `SemihostingCommand`; the server-side `core/handle_semihosting`
     /// endpoint re-derives the real command from the live core, so the
@@ -292,7 +362,6 @@ impl RpcBackend {
     pub(crate) async fn disassemble(
         &mut self,
         core_index: usize,
-        _debug_info: Option<&probe_rs_debug::DebugInfo>,
         memory_reference: u64,
         byte_offset: i64,
         instruction_offset: i64,
@@ -465,7 +534,6 @@ impl RpcBackend {
         &mut self,
         core_index: usize,
         mode: SteppingMode,
-        _debug_info: Option<&DebugInfo>,
     ) -> Result<(CoreStatus, u64, Option<String>), Error> {
         let wire_mode = match mode {
             SteppingMode::StepInstruction => WireSteppingMode::StepInstruction,
@@ -492,17 +560,12 @@ impl RpcBackend {
     pub(crate) async fn unwind_stack(
         &mut self,
         core_index: usize,
-        program_binary: Option<&Path>,
-        _debug_info: &DebugInfo,
+        program_binary: &Path,
         max_frames: usize,
     ) -> Result<Vec<StackFrame>, Error> {
-        let path = program_binary
-            .ok_or_else(|| Error::Other("program_binary required for RPC stack trace".into()))?
-            .to_path_buf();
-
         let session = self.session_interface();
         let rich: RichStackTraces = session
-            .take_rich_stack_trace(path, max_frames as u32)
+            .take_rich_stack_trace(program_binary.to_path_buf(), max_frames as u32)
             .await
             .map_err(rpc_err)?;
 
@@ -555,10 +618,14 @@ impl RpcBackend {
         Ok(frames)
     }
 
-    /// Upload the CMSIS-SVD file at `path` to the server and have it parse
-    /// the file and build the per-core peripheral variable cache server-side.
-    /// Non-fatal: callers should warn and continue on error.
-    pub(crate) async fn load_svd(&mut self, core_index: usize, path: PathBuf) -> Result<(), Error> {
+    /// Synchronize the server's per-core SVD state with the configured path.
+    /// `None` removes any existing peripheral cache. Non-fatal: callers
+    /// should warn and continue on error.
+    pub(crate) async fn load_svd(
+        &mut self,
+        core_index: usize,
+        path: Option<PathBuf>,
+    ) -> Result<(), Error> {
         self.session_interface()
             .load_svd(core_index as u32, path)
             .await
@@ -629,13 +696,7 @@ impl RpcBackend {
         &mut self,
         core_index: usize,
         arguments: &EvaluateArguments,
-    ) -> Result<Option<EvaluateResponseBody>, Error> {
-        // Only watch/hover go server-side; repl/clipboard stay local (the
-        // REPL drives the core directly via the bridge, and clipboard is
-        // just the expression text).
-        if !matches!(arguments.context.as_deref(), Some("watch") | Some("hover")) {
-            return Ok(None);
-        }
+    ) -> Result<EvaluateResponseBody, Error> {
         let session = self.session_interface();
         let wire = session
             .evaluate(
@@ -646,7 +707,7 @@ impl RpcBackend {
             )
             .await
             .map_err(rpc_err)?;
-        Ok(Some(EvaluateResponseBody {
+        Ok(EvaluateResponseBody {
             result: wire.result,
             type_: wire.type_,
             variables_reference: wire.variables_reference,
@@ -655,7 +716,36 @@ impl RpcBackend {
             memory_reference: wire.memory_reference,
             presentation_hint: None,
             value_location_reference: None,
-        }))
+        })
+    }
+
+    /// Resolve one REPL variable against the server-owned cache.
+    pub(crate) async fn evaluate_repl_variable(
+        &mut self,
+        core_index: usize,
+        frame_id: u32,
+        expression: String,
+    ) -> Result<EvaluateResponseBody, Error> {
+        let wire = self
+            .session_interface()
+            .evaluate(
+                core_index as u32,
+                Some(frame_id),
+                "repl".to_string(),
+                expression,
+            )
+            .await
+            .map_err(rpc_err)?;
+        Ok(EvaluateResponseBody {
+            result: wire.result,
+            type_: wire.type_,
+            variables_reference: wire.variables_reference,
+            named_variables: wire.named_variables,
+            indexed_variables: wire.indexed_variables,
+            memory_reference: wire.memory_reference,
+            presentation_hint: None,
+            value_location_reference: None,
+        })
     }
 
     pub(crate) async fn flash_binary(
@@ -712,6 +802,61 @@ impl RpcBackend {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use probe_rs::{Architecture, CoreRegisters, CoreType, RegisterRole};
+
+    use super::CorePerAttachInfo;
+    use crate::rpc::functions::core_ops::WireCoreMetadata;
+
+    #[test]
+    fn live_fpu_metadata_selects_floating_point_registers() {
+        let info = CorePerAttachInfo::from_wire(
+            Architecture::Arm,
+            WireCoreMetadata {
+                fpu_support: true,
+                floating_point_register_count: Some(32),
+            },
+        );
+
+        let registers = CoreRegisters::for_core_type(
+            CoreType::Armv7em,
+            info.fpu_support,
+            info.fp_register_count,
+        );
+
+        assert_eq!(info.fp_register_count, Some(32));
+        assert!(
+            registers
+                .all_registers()
+                .any(|register| register.register_has_role(RegisterRole::FloatingPoint))
+        );
+    }
+
+    #[test]
+    fn absent_fpu_metadata_selects_core_registers_only() {
+        let info = CorePerAttachInfo::from_wire(
+            Architecture::Arm,
+            WireCoreMetadata {
+                fpu_support: false,
+                floating_point_register_count: None,
+            },
+        );
+
+        let registers = CoreRegisters::for_core_type(
+            CoreType::Armv7em,
+            info.fpu_support,
+            info.fp_register_count,
+        );
+
+        assert!(
+            registers
+                .all_registers()
+                .all(|register| !register.register_has_role(RegisterRole::FloatingPoint))
+        );
     }
 }
 

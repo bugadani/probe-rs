@@ -128,27 +128,42 @@ pub struct LoadDebugInfoRequest {
 }
 
 pub type LoadDebugInfoResponse = NoResponse;
+pub type ValidateDebugInfoResponse = NoResponse;
 
-/// Eagerly load and cache the server-side [`DebugInfo`] for a session, keyed
-/// by `sessid`. This mirrors the local backend, which loads `DebugInfo` from
-/// the program binary at session start, so server-side consumers (notably
-/// `disassemble`) can resolve source locations before the first halt (which
-/// is when `take_rich_stack_trace` would otherwise populate it). Idempotent:
-/// if a [`ServerDebugState`] already exists for the session it is left
-/// untouched.
+/// Parse a prospective binary on the server without replacing session state.
+/// Used before reflashing so invalid DWARF is rejected before target mutation.
+pub async fn validate_debug_info(
+    _ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: LoadDebugInfoRequest,
+) -> ValidateDebugInfoResponse {
+    DebugInfo::from_file(&request.path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Eagerly load and cache the authoritative server-side [`DebugInfo`] for a
+/// session, keyed by `sessid`, so consumers can resolve source locations
+/// before the first halt.
+///
+/// A subsequent call replaces the cached DWARF and invalidates stack and
+/// variable state derived from the previous binary. Parsing completes before
+/// the existing state is changed, so a failed reload leaves it intact.
 pub async fn load_debug_info(
     ctx: &mut RpcContext,
     _header: VarHeader,
     request: LoadDebugInfoRequest,
 ) -> LoadDebugInfoResponse {
+    let debug_info = DebugInfo::from_file(&request.path).map_err(|e| e.to_string())?;
     let states = ctx.debug_states();
     let mut guard = states.lock().await;
-    if guard.contains_key(&request.sessid) {
-        return Ok(());
+    if let Some(state) = guard.get_mut(&request.sessid) {
+        state.replace_debug_info(debug_info);
+    } else {
+        guard.insert(
+            request.sessid,
+            crate::rpc::debug_state::ServerDebugState::new(debug_info),
+        );
     }
-    let debug_info = DebugInfo::from_file(&request.path).map_err(|e| e.to_string())?;
-    let state = crate::rpc::debug_state::ServerDebugState::new(debug_info);
-    guard.insert(request.sessid, state);
     Ok(())
 }
 

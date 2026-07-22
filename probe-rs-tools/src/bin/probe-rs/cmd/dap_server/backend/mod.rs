@@ -37,9 +37,9 @@ pub struct SemihostingHandleResult {
     pub events: Vec<SemihostingUiEvent>,
 }
 
-/// Seed for driving the server-side RTT client over RPC. [`rpc::RpcBackend`]
-/// returns `Some` here; a backend that drove RTT in-process would return `None`
-/// and use a local `RttClient` instead.
+/// Seed for creating and driving the server-side RTT client over RPC.
+/// In-process DAP sessions use the same interface through their in-process
+/// RPC server; there is no adapter-side RTT fallback.
 #[derive(Clone)]
 pub struct RttRemoteSeed {
     pub session: crate::rpc::client::SessionInterface,

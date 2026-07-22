@@ -35,30 +35,36 @@ use crate::{
             ClearCoreDebugStateEndpoint, ClearRttControlBlockEndpoint,
             CoreAvailableBpUnitsEndpoint, CoreClearHwBpEndpoint, CoreClearHwBpsEndpoint,
             CoreDisableVcEndpoint, CoreDumpEndpoint, CoreEnableVcEndpoint, CoreHaltEndpoint,
-            CoreHaltedEndpoint, CoreInstructionSetEndpoint, CoreReadRegEndpoint,
-            CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint, CoreSetHwBpsEndpoint,
-            CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint, CoreWriteRegEndpoint,
-            CreateRttClientEndpoint, CreateTempFileEndpoint, DisassembleEndpoint, EraseEndpoint,
-            EvaluateEndpoint, FlashEndpoint, GetRttChannelsEndpoint, HandleSemihostingEndpoint,
-            ListChipFamiliesEndpoint, ListProbesEndpoint, ListTestsEndpoint,
-            LoadChipFamilyEndpoint, LoadDebugInfoEndpoint, LoadSvdEndpoint, MonitorEndpoint,
-            PollRttUpEndpoint, ProgressEventTopic, ReadBytesEndpoint, ReadMemory8Endpoint,
-            ReadMemory16Endpoint, ReadMemory32Endpoint, ReadMemory64Endpoint,
-            ResetCoreAndHaltEndpoint, ResetCoreEndpoint, ResumeAllCoresEndpoint, RpcResult,
-            RttDownEndpoint, RunTestEndpoint, ScopesEndpoint, SelectProbeEndpoint,
-            SetVariableEndpoint, StackTraceStepEndpoint, TakeRichStackTraceEndpoint,
-            TakeStackTraceEndpoint, TargetInfoDataTopic, TargetInfoEndpoint, TargetNameEndpoint,
-            TempFileDataEndpoint, TestKickoffEndpoint, TokioSpawner, VariablesEndpoint,
-            VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
+            CoreHaltedEndpoint, CoreInstructionSetEndpoint, CoreMetadataEndpoint,
+            CoreReadRegEndpoint, CoreReadRegistersEndpoint, CoreRunEndpoint, CoreSetHwBpEndpoint,
+            CoreSetHwBpsEndpoint, CoreStatusEndpoint, CoreStepEndpoint, CoreWaitHaltedEndpoint,
+            CoreWriteRegEndpoint, CreateRttClientEndpoint, CreateTempFileEndpoint,
+            DisassembleEndpoint, EraseEndpoint, EvaluateEndpoint, FlashEndpoint,
+            GetRttChannelsEndpoint, HandleSemihostingEndpoint, ListChipFamiliesEndpoint,
+            ListProbesEndpoint, ListTestsEndpoint, LoadChipFamilyEndpoint, LoadDebugInfoEndpoint,
+            LoadSvdEndpoint, MonitorEndpoint, PollRttUpEndpoint, ProgressEventTopic,
+            ReadBytesEndpoint, ReadMemory8Endpoint, ReadMemory16Endpoint, ReadMemory32Endpoint,
+            ReadMemory64Endpoint, ResetCoreAndHaltEndpoint, ResetCoreEndpoint,
+            ResolveSourceBreakpointsEndpoint, ResolveSourceLocationsEndpoint,
+            ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint, ScopesEndpoint,
+            SelectProbeEndpoint, SetVariableEndpoint, StackTraceStepEndpoint,
+            TakeRichStackTraceEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic,
+            TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint, TestKickoffEndpoint,
+            TokioSpawner, ValidateDebugInfoEndpoint, VariablesEndpoint, VerifyEndpoint,
+            WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
             WriteMemory64Endpoint,
+            breakpoints::{
+                BreakpointResolution, ResolveSourceBreakpointsRequest,
+                ResolveSourceLocationsRequest, SourceBreakpointLocation, WireSourceLocation,
+            },
             chip::{ChipData, ChipFamily, ChipInfoRequest, LoadChipFamilyRequest},
             core_ops::{
                 CoreAccessRequest, CoreBreakpointRequest, CoreBreakpointsRequest, CoreDumpRequest,
                 CoreHaltRequest, CoreReadRegRequest, CoreReadRegistersRequest,
                 CoreVectorCatchRequest, CoreWaitHaltedRequest, CoreWriteRegRequest,
-                HandleSemihostingRequest, WireCoreDump, WireCoreInformation, WireCoreStatus,
-                WireInstructionSet, WireRegisterId, WireRegisterReadResult, WireRegisterValue,
-                WireVectorCatchCondition,
+                HandleSemihostingRequest, WireCoreDump, WireCoreInformation, WireCoreMetadata,
+                WireCoreStatus, WireInstructionSet, WireRegisterId, WireRegisterReadResult,
+                WireRegisterValue, WireVectorCatchCondition,
             },
             debug_vars::{
                 ClearCoreDebugStateRequest, EvaluateRequest, LoadSvdRequest, ScopesRequest,
@@ -757,7 +763,8 @@ impl SessionInterface {
     /// Eagerly load and cache the server-side `DebugInfo` for this session
     /// from `path`, so server-side consumers (e.g. `disassemble`) can resolve
     /// source locations before the first halt. Mirrors the local backend,
-    /// which loads `DebugInfo` at session start. Idempotent.
+    /// which loads `DebugInfo` at session start. Repeated calls replace the
+    /// server copy and invalidate DWARF-derived server state.
     pub async fn load_debug_info(&self, path: PathBuf) -> anyhow::Result<()> {
         let path = self.client.upload_file(&path).await?;
 
@@ -769,26 +776,73 @@ impl SessionInterface {
             .await
     }
 
-    /// Upload the CMSIS-SVD file at `path` to the server and have it parse the
-    /// file and build the per-core `SvdVariableCache` server-side, so the
-    /// `scopes`/`variables` endpoints can surface peripheral registers and
-    /// fields. Mirrors [`Self::load_debug_info`].
-    pub async fn load_svd(&self, core: u32, path: PathBuf) -> anyhow::Result<()> {
+    /// Parse a prospective binary server-side without publishing it.
+    pub async fn validate_debug_info(&self, path: PathBuf) -> anyhow::Result<()> {
+        let path = self.client.upload_file(&path).await?;
+
+        self.client
+            .send_resp::<ValidateDebugInfoEndpoint, _>(&LoadDebugInfoRequest {
+                sessid: self.sessid,
+                path: path.display().to_string(),
+            })
+            .await
+    }
+
+    /// Resolve source file/line requests against the server-owned debug info.
+    pub async fn resolve_source_breakpoints(
+        &self,
+        locations: Vec<SourceBreakpointLocation>,
+    ) -> anyhow::Result<Vec<BreakpointResolution>> {
+        self.client
+            .send_resp::<ResolveSourceBreakpointsEndpoint, _>(&ResolveSourceBreakpointsRequest {
+                sessid: self.sessid,
+                locations,
+            })
+            .await
+    }
+
+    /// Resolve instruction addresses to source metadata using server DWARF.
+    pub async fn resolve_source_locations(
+        &self,
+        addresses: Vec<u64>,
+    ) -> anyhow::Result<Vec<Option<WireSourceLocation>>> {
+        self.client
+            .send_resp::<ResolveSourceLocationsEndpoint, _>(&ResolveSourceLocationsRequest {
+                sessid: self.sessid,
+                addresses,
+            })
+            .await
+    }
+
+    /// Replace the server-side per-core SVD state, or clear it when `path` is
+    /// `None`. The old cache is cleared before upload/parse so a failed reload
+    /// cannot leave stale peripheral metadata visible.
+    pub async fn load_svd(&self, core: u32, path: Option<PathBuf>) -> anyhow::Result<()> {
+        self.client
+            .send_resp::<LoadSvdEndpoint, _>(&LoadSvdRequest {
+                sessid: self.sessid,
+                core,
+                path: None,
+            })
+            .await?;
+
+        let Some(path) = path else {
+            return Ok(());
+        };
         let path = self.client.upload_file(&path).await?;
 
         self.client
             .send_resp::<LoadSvdEndpoint, _>(&LoadSvdRequest {
                 sessid: self.sessid,
                 core,
-                path: path.display().to_string(),
+                path: Some(path.display().to_string()),
             })
             .await
     }
 
-    /// Fetch a rich stack trace (per-frame register state + frame metadata,
-    /// no local variables) for every core. The DAP-side caller rebuilds
-    /// `local_variables` from its own local [`DebugInfo`] using
-    /// [`DebugInfo::get_stackframe_info`].
+    /// Fetch a rich stack trace (per-frame register state + display metadata,
+    /// no local variables) for every core. DWARF-derived variable state stays
+    /// in the server cache and is queried through scopes/variables.
     pub async fn take_rich_stack_trace(
         &self,
         path: PathBuf,
@@ -835,9 +889,9 @@ impl SessionInterface {
             .await
     }
 
-    /// Drop the server-owned `VariableCache` for a core. Called when the
-    /// core resumes (or steps) so stale variable handles are not served
-    /// before the next halt rebuilds them.
+    /// Clear a core's server-owned stack and variable caches while preserving
+    /// binary-independent state such as SVD variables. Called before target
+    /// execution changes so stale frame and variable handles are not served.
     pub async fn clear_core_debug_state(&self, core: u32) -> anyhow::Result<()> {
         self.client
             .send_resp::<ClearCoreDebugStateEndpoint, _>(&ClearCoreDebugStateRequest {
@@ -1233,6 +1287,12 @@ impl CoreInterface {
     pub async fn instruction_set(&self) -> anyhow::Result<WireInstructionSet> {
         self.client
             .send_resp::<CoreInstructionSetEndpoint, _>(&self.access_request())
+            .await
+    }
+
+    pub async fn metadata(&self) -> anyhow::Result<WireCoreMetadata> {
+        self.client
+            .send_resp::<CoreMetadataEndpoint, _>(&self.access_request())
             .await
     }
 

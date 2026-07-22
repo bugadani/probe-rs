@@ -28,6 +28,13 @@ pub struct CoreAccessRequest {
     pub core: u32,
 }
 
+/// Live core properties needed to select the matching static register file.
+#[derive(Debug, Serialize, Deserialize, Schema, Clone, Copy, PartialEq, Eq)]
+pub struct WireCoreMetadata {
+    pub fpu_support: bool,
+    pub floating_point_register_count: Option<u64>,
+}
+
 #[derive(Serialize, Deserialize, Schema, Clone)]
 pub struct CoreHaltRequest {
     pub sessid: Key<Session>,
@@ -721,6 +728,26 @@ pub async fn core_instruction_set(
 ) -> RpcResult<WireInstructionSet> {
     let iset = with_core!(ctx, request, |core| { core.instruction_set() })?;
     Ok(iset.into())
+}
+
+pub async fn core_metadata(
+    ctx: &mut RpcContext,
+    _header: VarHeader,
+    request: CoreAccessRequest,
+) -> RpcResult<WireCoreMetadata> {
+    let metadata = with_core!(ctx, request, |core| {
+        let fpu_support = core.fpu_support()?;
+        let floating_point_register_count = fpu_support
+            .then(|| core.floating_point_register_count())
+            .transpose()?
+            .map(|count| count as u64);
+
+        Ok(WireCoreMetadata {
+            fpu_support,
+            floating_point_register_count,
+        })
+    })?;
+    Ok(metadata)
 }
 
 /// Bulk-read a set of registers in one request.

@@ -61,7 +61,7 @@ static DUMP: ReplCommand = ReplCommand {
 };
 
 async fn print_variables<'a>(
-    _backend: &'a mut RpcBackend,
+    backend: &'a mut RpcBackend,
     core_data: &'a mut CoreData,
     command_arguments: &'a str,
     evaluate_arguments: &'a EvaluateArguments,
@@ -94,7 +94,14 @@ async fn print_variables<'a>(
         }
     }
 
-    get_local_variable(evaluate_arguments, core_data, variable_name, gdb_nuf)
+    get_local_variable(
+        backend,
+        evaluate_arguments,
+        core_data,
+        variable_name,
+        gdb_nuf,
+    )
+    .await
 }
 
 async fn examine_memory<'a>(
@@ -192,7 +199,7 @@ async fn examine_memory<'a>(
         }
     };
 
-    memory_read_async(backend, core_data, core_index, input_address, gdb_nuf).await
+    memory_read_async(backend, core_index, input_address, gdb_nuf).await
 }
 
 async fn dump_core<'a>(

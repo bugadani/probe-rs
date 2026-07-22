@@ -24,7 +24,7 @@ pub struct SvdVariableCache {
 
 impl SvdVariableCache {
     /// Create a new, empty cache with a root variable.
-    fn new_svd_cache() -> Self {
+    pub(crate) fn new_svd_cache() -> Self {
         let root_variable_key = get_object_reference();
         let root_variable = Variable {
             variable_key: root_variable_key,

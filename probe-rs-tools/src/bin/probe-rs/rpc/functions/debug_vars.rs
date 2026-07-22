@@ -53,8 +53,9 @@ pub struct LoadSvdRequest {
     pub sessid: Key<Session>,
     pub core: u32,
     /// Server-side path to the CMSIS-SVD file (the client uploads it via the
-    /// temp-file endpoints, then passes the resulting path here).
-    pub path: String,
+    /// temp-file endpoints, then passes the resulting path here), or `None`
+    /// to remove the core's current SVD state.
+    pub path: Option<String>,
 }
 
 pub type LoadSvdResponse = crate::rpc::functions::RpcResult<()>;
@@ -384,28 +385,35 @@ pub async fn clear_core_debug_state(
     Ok(())
 }
 
-/// Parse the CMSIS-SVD file at `request.path` and store the resulting
-/// [`SvdVariableCache`] in the per-core debug state. Requires the session
-/// state to already exist (created by `load_debug_info` during session
-/// start); if it does not, the client should warn and continue without
-/// peripheral variables. The cache is stored on the per-core entry (created
-/// here if necessary) and is preserved across stack-frame refreshes by
-/// [`ServerDebugState::store_core`].
+/// Replace the per-core SVD state from `request.path`, or clear it when no
+/// path is supplied. A parse failure also clears the previous cache so stale
+/// peripheral metadata is never retained after a requested reload.
 pub async fn load_svd(
     ctx: &mut RpcContext,
     _header: VarHeader,
     request: LoadSvdRequest,
 ) -> LoadSvdResponse {
-    let svd_cache = crate::rpc::svd::parse_svd_file(std::path::Path::new(&request.path))?;
+    let parsed = request
+        .path
+        .as_deref()
+        .map(|path| crate::rpc::svd::parse_svd_file(std::path::Path::new(path)))
+        .transpose();
 
     let states = ctx.debug_states();
     let mut guard = states.lock().await;
     let Some(state) = guard.get_mut(&request.sessid) else {
         Err("No debug state for session (load debug info first)")?
     };
-    let core_state = state.per_core.entry(request.core as usize).or_default();
-    core_state.svd_variables = Some(svd_cache);
-    Ok(())
+    match parsed {
+        Ok(svd_variables) => {
+            state.replace_svd(request.core as usize, svd_variables);
+            Ok(())
+        }
+        Err(error) => {
+            state.replace_svd(request.core as usize, None);
+            Err(error.into())
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -499,9 +507,9 @@ pub async fn set_variable(
     })
 }
 
-/// Resolve an evaluate expression (watch/hover) against a `VariableCache`,
-/// expanding the single-root deferred case first. Returns `None` if the
-/// expression names no variable in `cache`.
+/// Resolve a DAP evaluate expression against a `VariableCache`, expanding the
+/// single-root deferred case first. Returns `None` if the expression names no
+/// variable in `cache`.
 fn resolve_expression(
     debug_info: &DebugInfo,
     core: &mut probe_rs::Core,
