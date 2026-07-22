@@ -144,13 +144,7 @@ impl SessionData {
             );
         }
 
-        let mut backend = RpcBackend::new(
-            tokio::runtime::Handle::current(),
-            client.clone(),
-            sessid,
-            target_metadata,
-            per_core,
-        );
+        let mut backend = RpcBackend::new(client.clone(), sessid, target_metadata, per_core);
 
         let core_data_vec = initialize_core_data(&mut backend, config)?;
         for core_config in config.core_configs.iter() {
@@ -351,33 +345,6 @@ impl SessionData {
             }
         }
         Ok(())
-    }
-
-    /// Replace the server-owned debug info after flashing a new binary.
-    #[allow(
-        dead_code,
-        reason = "path-based convenience; restart uses reload_debug_info_resolved"
-    )]
-    pub(crate) async fn reload_debug_info_for_core(
-        &mut self,
-        core_configuration: &CoreConfig,
-    ) -> Result<(), DebuggerError> {
-        let Some(binary_path) = core_configuration.program_binary.as_ref() else {
-            return Err(DebuggerError::Other(anyhow!(
-                "Cannot reload debug info without a program binary."
-            )));
-        };
-
-        let upload = self
-            .backend
-            .session_interface()
-            .resolve_upload(binary_path)
-            .await
-            .map_err(|error| {
-                DebuggerError::Other(anyhow!("Failed to resolve program binary upload: {error}"))
-            })?;
-        self.reload_debug_info_resolved(core_configuration, &upload)
-            .await
     }
 
     /// Publish server-owned debug info from a prior [`ResolvedUpload`].

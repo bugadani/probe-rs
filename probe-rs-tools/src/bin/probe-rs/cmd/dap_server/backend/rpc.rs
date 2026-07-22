@@ -6,21 +6,7 @@
 //! runtime, so async round trips can be `.await`ed directly — no
 //! `block_on`/`block_in_place` bridge is required.
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::Duration,
-};
-
-use probe_rs::{
-    Architecture, CoreInformation, CoreRegisters, CoreStatus, CoreType, Error, RegisterId,
-    RegisterValue, Session, VectorCatchCondition,
-};
-use probe_rs_debug::{
-    ColumnType, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation, StackFrame,
-    SteppingMode, TypedPath, VerifiedBreakpoint,
-};
-use tokio::runtime::Handle;
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use super::{SemihostingHandleResult, SemihostingUiEvent};
 use crate::cmd::dap_server::DebuggerError;
@@ -44,6 +30,14 @@ use crate::rpc::{
         },
         stack_trace::{RichStackTraces, SourceLocation as WireSourceLocation, WireDebugRegister},
     },
+};
+use probe_rs::{
+    Architecture, CoreInformation, CoreRegisters, CoreStatus, CoreType, Error, RegisterId,
+    RegisterValue, Session, VectorCatchCondition,
+};
+use probe_rs_debug::{
+    ColumnType, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation, StackFrame,
+    SteppingMode, TypedPath, VerifiedBreakpoint,
 };
 
 /// Convert an [`anyhow::Error`] coming out of the RPC client into the
@@ -103,7 +97,6 @@ pub struct SessionTargetMetadata {
 
 /// A DAP backend that drives a remote target over RPC.
 pub struct RpcBackend {
-    pub(crate) handle: Handle,
     pub(crate) client: RpcClient,
     pub(crate) sessid: Key<Session>,
     pub(crate) cores: Vec<(usize, CoreType)>,
@@ -125,22 +118,8 @@ impl RpcBackend {
     pub(crate) fn session_interface(&self) -> SessionInterface {
         SessionInterface::new(self.client.clone(), self.sessid)
     }
-
-    /// Access the tokio runtime handle used to drive async RPC calls from a
-    /// synchronous [`CoreInterface`] context.
-    #[allow(
-        dead_code,
-        reason = "Kept as a symmetric accessor alongside `session_interface`; consumed by future iterations of the backend glue."
-    )]
-    pub(crate) fn tokio_handle(&self) -> Handle {
-        self.handle.clone()
-    }
 }
 
-#[allow(
-    dead_code,
-    reason = "new/session_interface helpers keep being invoked from later patches."
-)]
 impl RpcBackend {
     /// Build a new RPC backend.
     ///
@@ -152,7 +131,6 @@ impl RpcBackend {
     /// * supplying per-core metadata: either by querying the server at
     ///   attach-time or by inferring it from the target description.
     pub fn new(
-        handle: Handle,
         client: RpcClient,
         sessid: Key<Session>,
         target_metadata: SessionTargetMetadata,
@@ -176,7 +154,6 @@ impl RpcBackend {
             .collect();
 
         Self {
-            handle,
             client,
             sessid,
             cores,
@@ -748,24 +725,6 @@ impl RpcBackend {
             presentation_hint: None,
             value_location_reference: None,
         })
-    }
-
-    #[allow(
-        dead_code,
-        reason = "path-based convenience; restart uses flash_binary_resolved"
-    )]
-    pub(crate) async fn flash_binary(
-        &mut self,
-        path_to_elf: &Path,
-        config: &FlashingConfig,
-        progress: &mut dyn FnMut(WireProgressEvent),
-    ) -> Result<(), DebuggerError> {
-        let upload = self
-            .session_interface()
-            .resolve_upload(path_to_elf)
-            .await
-            .map_err(|e| DebuggerError::Other(anyhow::anyhow!(e)))?;
-        self.flash_binary_resolved(&upload, config, progress).await
     }
 
     pub(crate) async fn flash_binary_resolved(

@@ -863,16 +863,6 @@ impl SessionInterface {
             .await
     }
 
-    /// Parse a prospective binary server-side without publishing it.
-    #[allow(
-        dead_code,
-        reason = "path-based convenience; restart uses validate_debug_info_resolved"
-    )]
-    pub async fn validate_debug_info(&self, path: PathBuf) -> anyhow::Result<()> {
-        let upload = self.client.resolve_upload(&path).await?;
-        self.validate_debug_info_resolved(&upload).await
-    }
-
     /// Validate DWARF from a prior [`ResolvedUpload`] without re-uploading.
     pub async fn validate_debug_info_resolved(
         &self,

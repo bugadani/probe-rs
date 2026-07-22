@@ -798,9 +798,8 @@ impl Debugger {
     /// Flash the given binary, and report the progress to the
     /// debug adapter.
     //
-    // The actual flashing is delegated to [`RpcBackend::flash_binary`] so
-    // that local `Session` and remote `RpcBackend` can share this DAP-level
-    // progress plumbing.
+    // The actual flashing is delegated to [`RpcBackend::flash_binary_resolved`]
+    // so local and remote RPC sessions share this DAP-level progress plumbing.
     async fn flash<P: ProtocolAdapter>(
         config: &SessionConfig,
         path_to_elf: &Path,
