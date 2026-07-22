@@ -112,12 +112,29 @@ impl Display for SourceLocation {
     }
 }
 
+/// Path-based stack trace for generic CLI callers. Parses DWARF from `path`
+/// on each request and does not use session [`ServerDebugState`].
 #[derive(Serialize, Deserialize, Schema)]
 pub struct TakeStackTraceRequest {
     pub sessid: Key<Session>,
     pub path: String,
     pub stack_frame_limit: u32,
 }
+
+/// Session-owned rich stack trace for DAP and other server-state consumers.
+/// Requires preloaded [`ServerDebugState`] via [`load_debug_info`]; never
+/// accepts or parses a binary path.
+#[derive(Serialize, Deserialize, Schema)]
+pub struct TakeRichStackTraceRequest {
+    pub sessid: Key<Session>,
+    /// When set, only unwind this core. When omitted, every enabled core is
+    /// unwound.
+    pub core: Option<u32>,
+    pub stack_frame_limit: u32,
+}
+
+pub(crate) const RICH_STACK_TRACE_NO_DEBUG_STATE: &str =
+    "No debug state for session (load debug info first)";
 
 pub type TakeStackTraceResponse = RpcResult<StackTraces>;
 
@@ -167,9 +184,9 @@ pub async fn load_debug_info(
     Ok(())
 }
 
-/// Shared per-core unwind loop used by both [`take_stack_trace`] and
-/// [`take_rich_stack_trace`]. Returns `(core_index, frames)` pairs, where
-/// each `StackFrame` is converted to `F` via `F::from`.
+/// Shared per-core unwind loop used by [`take_stack_trace`]. Returns
+/// `(core_index, frames)` pairs, where each `StackFrame` is converted to `F`
+/// via `F::from`.
 async fn unwind_all_cores<F: From<StackFrame>>(
     ctx: &mut RpcContext,
     request: &TakeStackTraceRequest,
@@ -309,26 +326,22 @@ pub type TakeRichStackTraceResponse = RpcResult<RichStackTraces>;
 /// returns per-frame register state + metadata plus the server-assigned
 /// `id`/`locals_reference`/`statics_reference` handles, so an RPC-backed
 /// DAP client can resolve `scopes`/`variables` server-side.
+///
+/// Requires preloaded session debug state from [`load_debug_info`]. Missing
+/// state is a deterministic lifecycle error; no path upload or fallback
+/// DWARF parsing is performed here.
 pub async fn take_rich_stack_trace(
     ctx: &mut RpcContext,
     _header: VarHeader,
-    request: TakeStackTraceRequest,
+    request: TakeRichStackTraceRequest,
 ) -> TakeRichStackTraceResponse {
-    // Load (and cache per session) the server-side `DebugInfo`.
     let debug_info = {
         let states = ctx.debug_states();
-        let mut guard = states.lock().await;
-        if let Some(state) = guard.get(&request.sessid) {
-            state.debug_info.clone()
-        } else {
-            let Some(debug_info) = DebugInfo::from_file(&request.path).ok() else {
-                Err("No debug info found.")?
-            };
-            let state = crate::rpc::debug_state::ServerDebugState::new(debug_info);
-            let arc = state.debug_info.clone();
-            guard.insert(request.sessid, state);
-            arc
-        }
+        let guard = states.lock().await;
+        let Some(state) = guard.get(&request.sessid) else {
+            Err(RICH_STACK_TRACE_NO_DEBUG_STATE)?
+        };
+        state.debug_info.clone()
     };
 
     let mut session = ctx.session(request.sessid).await;
@@ -343,6 +356,12 @@ pub async fn take_rich_stack_trace(
     )> = session.halted_access(|session| {
         let mut cores = Vec::new();
         for (idx, core_type) in session.list_cores() {
+            if let Some(requested_core) = request.core
+                && idx as u32 != requested_core
+            {
+                continue;
+            }
+
             let mut core = match session.core(idx) {
                 Ok(core) => core,
                 Err(Error::CoreDisabled(_)) => continue,
@@ -422,28 +441,57 @@ pub async fn take_rich_stack_trace(
     // and build the wire response from the same data (no extra clones).
     let states = ctx.debug_states();
     let mut guard = states.lock().await;
-    let wire_cores: Vec<RichStackTrace> = match guard.get_mut(&request.sessid) {
-        Some(state) => cores
-            .into_iter()
-            .map(|(core, frames, static_variables, rich_frames)| {
-                state.store_core(core as usize, frames, Some(static_variables));
-                RichStackTrace {
-                    core,
-                    frames: rich_frames,
-                }
-            })
-            .collect(),
-        None => cores
-            .into_iter()
-            .map(
-                |(core, _frames, _static_variables, rich_frames)| RichStackTrace {
-                    core,
-                    frames: rich_frames,
-                },
-            )
-            .collect(),
-    };
+    let state = guard
+        .get_mut(&request.sessid)
+        .expect("debug state checked before unwind");
+    let wire_cores: Vec<RichStackTrace> = cores
+        .into_iter()
+        .map(|(core, frames, static_variables, rich_frames)| {
+            state.store_core(core as usize, frames, Some(static_variables));
+            RichStackTrace {
+                core,
+                frames: rich_frames,
+            }
+        })
+        .collect();
     drop(guard);
 
     Ok(RichStackTraces { cores: wire_cores })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postcard::to_allocvec;
+
+    #[test]
+    fn rich_stack_trace_request_has_no_path_field() {
+        let request = TakeRichStackTraceRequest {
+            sessid: Key::test(1),
+            core: Some(0),
+            stack_frame_limit: 64,
+        };
+        let encoded = to_allocvec(&request).unwrap();
+        let decoded: TakeRichStackTraceRequest = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.core, Some(0));
+        assert_eq!(decoded.stack_frame_limit, 64);
+    }
+
+    #[test]
+    fn path_based_stack_trace_request_still_carries_path() {
+        let request = TakeStackTraceRequest {
+            sessid: Key::test(1),
+            path: "/tmp/test.elf".to_string(),
+            stack_frame_limit: 32,
+        };
+        assert_eq!(request.path, "/tmp/test.elf");
+    }
+
+    #[test]
+    fn rich_stack_trace_missing_state_error_is_deterministic() {
+        assert_eq!(
+            RICH_STACK_TRACE_NO_DEBUG_STATE,
+            "No debug state for session (load debug info first)"
+        );
+    }
 }

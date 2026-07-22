@@ -420,8 +420,13 @@ impl FormatKind {
 
     /// Replaces `FormatKind::Target` with a default format based on the target.
     pub fn resolve(self, target: &Target) -> FormatKind {
+        self.resolve_default_format(target.default_format.as_deref())
+    }
+
+    /// Replaces `FormatKind::Target` using a server-provided default format string.
+    pub fn resolve_default_format(self, default_format: Option<&str>) -> FormatKind {
         if self == FormatKind::Target {
-            FormatKind::from_optional(target.default_format.as_deref())
+            FormatKind::from_optional(default_format)
                 .expect("Failed to parse a default binary format. This shouldn't happen.")
         } else {
             self
@@ -795,6 +800,7 @@ fn load_config() -> anyhow::Result<Config> {
 
 #[cfg(test)]
 mod test {
+    use crate::FormatKind;
     use crate::multicall_check;
 
     #[test]
@@ -817,6 +823,22 @@ mod test {
             )
             .unwrap(),
             os_strs(&["cargo-flash", "--chip", "esp32c2"])
+        );
+    }
+
+    #[test]
+    fn format_kind_resolve_default_format_uses_server_hint() {
+        assert_eq!(
+            FormatKind::Target.resolve_default_format(Some("idf")),
+            FormatKind::Idf
+        );
+        assert_eq!(
+            FormatKind::Target.resolve_default_format(None),
+            FormatKind::Elf
+        );
+        assert_eq!(
+            FormatKind::Bin.resolve_default_format(Some("elf")),
+            FormatKind::Bin
         );
     }
 }

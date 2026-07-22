@@ -12,7 +12,7 @@ use crate::{
             DebuggerError,
             backend::{
                 RttRemoteSeed,
-                rpc::{RpcBackend, rpc_err},
+                rpc::{CorePerAttachInfo, RpcBackend, SessionTargetMetadata, rpc_err},
             },
             debug_adapter::{
                 dap::{
@@ -94,20 +94,18 @@ impl SessionData {
     /// The server is expected to have its chip registry populated (either
     /// through the builtin database or through a prior
     /// `client.load_chip_family`). The `config.chip` field is required: it
-    /// is used both to drive the remote `probe/attach` RPC and to look up
-    /// the matching [`probe_rs::Target`] description locally so that the
-    /// DAP server can answer memory-map / RTT / SVD queries without extra
-    /// round trips.
+    /// drives the remote `probe/attach` RPC. Session-scoped target facts
+    /// (name, default image format, core list) are fetched from the server
+    /// after attach so the DAP client does not mirror the full target
+    /// description locally.
     pub(crate) async fn new_rpc_backed(
         client: &RpcClient,
         config: &mut configuration::SessionConfig,
         timestamp_offset: UtcOffset,
     ) -> Result<Self, DebuggerError> {
-        use crate::cmd::dap_server::backend::rpc::CorePerAttachInfo;
-
-        let chip_name = config
+        config
             .chip
-            .clone()
+            .as_ref()
             .ok_or_else(|| anyhow!("A chip name is required when debugging over RPC."))?;
 
         // Reuse the shared CLI helper: it uploads any user-supplied chip
@@ -116,27 +114,25 @@ impl SessionData {
         let session = attach_probe_rpc(client, probe_options, None, false).await?;
         let sessid = session.session_key();
 
-        // The client has a local registry mirror: look up the target so we
-        // can serve memory-map / introspection locally. This assumes the
-        // client has loaded the same chip families the server has, which is
-        // how [`attach_probe_rpc`] already works.
-        let target = {
-            let registry = client.registry().await;
-            registry.get_target_by_name(&chip_name).map_err(|e| {
-                DebuggerError::Other(anyhow!(
-                    "Failed to resolve chip `{chip_name}` in the local registry: {e}"
-                ))
-            })?
+        let wire_metadata = session.target_metadata().await.map_err(|e| {
+            DebuggerError::Other(anyhow!(
+                "Failed to fetch target metadata from RPC server: {e}"
+            ))
+        })?;
+
+        let target_metadata = SessionTargetMetadata {
+            target_name: wire_metadata.target_name,
+            default_format: wire_metadata.default_format,
+            cores: wire_metadata
+                .cores
+                .into_iter()
+                .map(|core| (core.index as usize, core.core_type.into()))
+                .collect(),
         };
 
         apply_session_cwd(config)?;
 
-        let cores: Vec<(usize, probe_rs::CoreType)> = target
-            .cores
-            .iter()
-            .enumerate()
-            .map(|(idx, core)| (idx, core.core_type))
-            .collect();
+        let cores = target_metadata.cores.clone();
 
         // `probe/attach` leaves the target halted, so query the live core
         // properties needed to select the correct static register file.
@@ -152,8 +148,7 @@ impl SessionData {
             tokio::runtime::Handle::current(),
             client.clone(),
             sessid,
-            target,
-            cores,
+            target_metadata,
             per_core,
         );
 
@@ -209,7 +204,7 @@ impl SessionData {
             .flashing_config
             .format_options
             .binary_format
-            .resolve(&self.backend.target);
+            .resolve_default_format(self.backend.target_metadata.default_format.as_deref());
 
         for core_configuration in valid_core_configs {
             let Some(core_data) = self
@@ -359,9 +354,37 @@ impl SessionData {
     }
 
     /// Replace the server-owned debug info after flashing a new binary.
+    #[allow(
+        dead_code,
+        reason = "path-based convenience; restart uses reload_debug_info_resolved"
+    )]
     pub(crate) async fn reload_debug_info_for_core(
         &mut self,
         core_configuration: &CoreConfig,
+    ) -> Result<(), DebuggerError> {
+        let Some(binary_path) = core_configuration.program_binary.as_ref() else {
+            return Err(DebuggerError::Other(anyhow!(
+                "Cannot reload debug info without a program binary."
+            )));
+        };
+
+        let upload = self
+            .backend
+            .session_interface()
+            .resolve_upload(binary_path)
+            .await
+            .map_err(|error| {
+                DebuggerError::Other(anyhow!("Failed to resolve program binary upload: {error}"))
+            })?;
+        self.reload_debug_info_resolved(core_configuration, &upload)
+            .await
+    }
+
+    /// Publish server-owned debug info from a prior [`ResolvedUpload`].
+    pub(crate) async fn reload_debug_info_resolved(
+        &mut self,
+        core_configuration: &CoreConfig,
+        upload: &crate::rpc::upload_cache::ResolvedUpload,
     ) -> Result<(), DebuggerError> {
         let Some(core_data_index) = self
             .core_data
@@ -372,15 +395,10 @@ impl SessionData {
                 "No core at the specified index.",
             )));
         };
-        let Some(binary_path) = core_configuration.program_binary.as_ref() else {
-            return Err(DebuggerError::Other(anyhow!(
-                "Cannot reload debug info without a program binary."
-            )));
-        };
 
         self.backend
             .session_interface()
-            .load_debug_info(binary_path.clone())
+            .load_debug_info_resolved(upload)
             .await
             .map_err(|error| {
                 DebuggerError::Other(anyhow!("Failed to reload server debug info: {error}"))
@@ -819,31 +837,16 @@ impl SessionData {
                 self.core_data[cd_idx].invalidate_stack_frame_cache();
 
                 // RPC stack state and DebugInfo are owned by the server.
-                if session_config
-                    .core_configs
-                    .iter()
-                    .any(|c| c.core_index == core_index && c.program_binary.is_some())
-                {
-                    needs_unwind.push(core_index);
-                }
+                needs_unwind.push(core_index);
             }
         }
 
         // Ask the RPC server to unwind each newly halted core, then replace
         // the client metadata-only display cache with the returned frames.
         for &core_index in &needs_unwind {
-            let Some(program_binary) = session_config
-                .core_configs
-                .iter()
-                .find(|c| c.core_index == core_index)
-                .and_then(|c| c.program_binary.as_deref())
-            else {
-                continue;
-            };
-
             let frames = self
                 .backend
-                .unwind_stack(core_index, program_binary, 500)
+                .unwind_stack(core_index, 500)
                 .await
                 .map_err(DebuggerError::ProbeRs)?;
 
@@ -956,7 +959,7 @@ fn initialize_core_data(
     }
 
     let available_cores = backend.cores.clone();
-    let target_name = backend.target.name.clone();
+    let target_name = backend.target_metadata.target_name.clone();
 
     let valid_core_configs = config.core_configs.iter().filter(|&core_config| {
         available_cores

@@ -41,7 +41,10 @@ use crate::{
                 BuildRequest, BuildResponse, EraseRequest, FlashRequest, ProgressEvent,
                 VerifyRequest, VerifyResponse, build, erase, flash, verify,
             },
-            info::{InfoEvent, TargetInfoRequest, TargetNameRequest, target_info, target_name},
+            info::{
+                InfoEvent, TargetInfoRequest, TargetMetadataRequest, TargetNameRequest,
+                target_info, target_metadata, target_name,
+            },
             memory::{
                 ReadBytesRequest, ReadMemoryRequest, WriteMemoryRequest, read_bytes, read_memory,
                 write_memory,
@@ -60,9 +63,10 @@ use crate::{
                 create_rtt_client, get_rtt_channels, poll_rtt_up, write_rtt_down,
             },
             stack_trace::{
-                LoadDebugInfoRequest, LoadDebugInfoResponse, TakeRichStackTraceResponse,
-                TakeStackTraceRequest, TakeStackTraceResponse, ValidateDebugInfoResponse,
-                load_debug_info, take_rich_stack_trace, take_stack_trace, validate_debug_info,
+                LoadDebugInfoRequest, LoadDebugInfoResponse, TakeRichStackTraceRequest,
+                TakeRichStackTraceResponse, TakeStackTraceRequest, TakeStackTraceResponse,
+                ValidateDebugInfoResponse, load_debug_info, take_rich_stack_trace,
+                take_stack_trace, validate_debug_info,
             },
             test::{
                 ListTestsRequest, ListTestsResponse, RunTestRequest, RunTestResponse,
@@ -526,6 +530,7 @@ pub fn spawn_fn(
 }
 
 type TargetNameResponse = RpcResult<String>;
+type TargetMetadataResponse = RpcResult<info::WireSessionTargetMetadata>;
 
 type ReadMemory8Response = RpcResult<Vec<u8>>;
 type ReadMemory16Response = RpcResult<Vec<u16>>;
@@ -578,7 +583,7 @@ endpoints! {
     | CleanUpRttEndpoint        | RttChannelRequest       | NoResponse              | "rtt/clean_up"     |
     | ClearRttControlBlockEndpoint | ClearRttControlBlockRequest | ClearRttControlBlockResponse | "rtt/clear_control_block" |
     | TakeStackTraceEndpoint    | TakeStackTraceRequest   | TakeStackTraceResponse  | "stack_trace"      |
-    | TakeRichStackTraceEndpoint | TakeStackTraceRequest  | TakeRichStackTraceResponse | "stack_trace/rich" |
+    | TakeRichStackTraceEndpoint | TakeRichStackTraceRequest | TakeRichStackTraceResponse | "stack_trace/rich" |
     | LoadDebugInfoEndpoint     | LoadDebugInfoRequest    | LoadDebugInfoResponse    | "debug_state/load_debug_info" |
     | ValidateDebugInfoEndpoint | LoadDebugInfoRequest    | ValidateDebugInfoResponse | "debug_state/validate_debug_info" |
     | ResolveSourceBreakpointsEndpoint | ResolveSourceBreakpointsRequest | ResolveSourceBreakpointsResponse | "debug_state/resolve_source_breakpoints" |
@@ -609,6 +614,7 @@ endpoints! {
     | LoadChipFamilyEndpoint    | LoadChipFamilyRequest   | NoResponse              | "chips/load"       |
 
     | TargetNameEndpoint        | TargetNameRequest       | TargetNameResponse      | "target"      |
+    | TargetMetadataEndpoint    | TargetMetadataRequest   | TargetMetadataResponse  | "target/metadata" |
     | TargetInfoEndpoint        | TargetInfoRequest       | NoResponse              | "info"             |
     | ResetCoreEndpoint         | ResetCoreRequest        | NoResponse              | "reset"            |
     | ResetCoreAndHaltEndpoint  | ResetCoreAndHaltRequest | ResetAndHaltResponse        | "reset_and_halt"   |
@@ -720,6 +726,7 @@ postcard_rpc::define_dispatch! {
         | LoadChipFamilyEndpoint    | async     | load_chip_family  |
 
         | TargetNameEndpoint        | async     | target_name       |
+        | TargetMetadataEndpoint    | async     | target_metadata   |
         | TargetInfoEndpoint        | async     | target_info       |
         | ResetCoreEndpoint         | async     | reset             |
         | ResetCoreAndHaltEndpoint  | async     | reset_and_halt    |

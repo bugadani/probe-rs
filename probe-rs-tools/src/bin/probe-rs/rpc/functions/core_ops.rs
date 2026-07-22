@@ -809,7 +809,7 @@ pub struct WireCoreDump {
     pub floating_point_register_count: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Schema, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Schema, Clone, Copy, PartialEq, Eq)]
 pub enum WireCoreType {
     Armv6m,
     Armv7a,

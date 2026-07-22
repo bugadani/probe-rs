@@ -23,6 +23,7 @@ use crate::{
     rpc::{
         client::RpcClient,
         functions::flash::{Operation, ProgressEvent as WireProgressEvent},
+        upload_cache::ResolvedUpload,
     },
 };
 use anyhow::{Context, anyhow};
@@ -278,12 +279,7 @@ impl Debugger {
             }
             "setVariable" => {
                 debug_adapter
-                    .set_variable(
-                        session_data,
-                        core_index,
-                        target_core_config.program_binary.as_deref(),
-                        &request,
-                    )
+                    .set_variable(session_data, core_index, &request)
                     .await?;
             }
             "disassemble" => {
@@ -699,12 +695,22 @@ impl Debugger {
                 // `session_data`.
                 let target_core_config = target_core_config.clone();
                 // Validate the replacement through the server before
-                // mutating the target. The server remains the only owner of
-                // parsed debug information.
+                // mutating the target. Resolve the upload once so validate,
+                // flash, and debug-info publication share the same bytes.
+                let upload = session_data
+                    .backend
+                    .session_interface()
+                    .resolve_upload(&path_to_elf)
+                    .await
+                    .map_err(|error| {
+                        DebuggerError::Other(anyhow!(
+                            "Failed to resolve program binary upload: {error}"
+                        ))
+                    })?;
                 session_data
                     .backend
                     .session_interface()
-                    .validate_debug_info(path_to_elf.clone())
+                    .validate_debug_info_resolved(&upload)
                     .await
                     .map_err(|error| {
                         DebuggerError::Other(anyhow!(
@@ -734,19 +740,13 @@ impl Debugger {
                         ))
                     })?;
 
-                Self::flash(
-                    &self.config,
-                    &path_to_elf,
-                    debug_adapter,
-                    request,
-                    session_data,
-                )
-                .await?;
+                Self::flash_resolved(&self.config, &upload, debug_adapter, request, session_data)
+                    .await?;
 
                 // Publish the new server-owned DWARF only after flashing
                 // succeeds, then recompute source breakpoints through RPC.
                 session_data
-                    .reload_debug_info_for_core(&target_core_config)
+                    .reload_debug_info_resolved(&target_core_config, &upload)
                     .await?;
                 session_data.recompute_breakpoints(core_index).await?;
                 session_data.load_rtt_location(&self.config)?;
@@ -808,9 +808,36 @@ impl Debugger {
         launch_attach_request: &Request,
         session_data: &mut SessionData,
     ) -> Result<(), DebuggerError> {
+        let upload = session_data
+            .backend
+            .session_interface()
+            .resolve_upload(path_to_elf)
+            .await
+            .map_err(|error| {
+                DebuggerError::Other(anyhow!("Failed to resolve program binary upload: {error}"))
+            })?;
+        Self::flash_resolved(
+            config,
+            &upload,
+            debug_adapter,
+            launch_attach_request,
+            session_data,
+        )
+        .await
+    }
+
+    /// Flash using a prior [`ResolvedUpload`] so restart validate/flash/publish
+    /// share one uploaded object.
+    async fn flash_resolved<P: ProtocolAdapter>(
+        config: &SessionConfig,
+        upload: &ResolvedUpload,
+        debug_adapter: &mut DebugAdapter<P>,
+        launch_attach_request: &Request,
+        session_data: &mut SessionData,
+    ) -> Result<(), DebuggerError> {
         debug_adapter.log_to_console(format!(
             "FLASHING: Starting write of {} to device memory",
-            path_to_elf.display()
+            upload.canonical_path.display()
         ));
         let progress_id = debug_adapter
             .start_progress("Flashing device", Some(launch_attach_request.seq))
@@ -895,7 +922,7 @@ impl Debugger {
 
             session_data
                 .backend
-                .flash_binary(path_to_elf, &config.flashing_config, &mut on_event)
+                .flash_binary_resolved(upload, &config.flashing_config, &mut on_event)
                 .await
         };
 
@@ -906,7 +933,7 @@ impl Debugger {
         if result.is_ok() {
             debug_adapter.log_to_console(format!(
                 "FLASHING: Completed write of {} to device memory",
-                path_to_elf.display()
+                upload.canonical_path.display()
             ));
         }
 

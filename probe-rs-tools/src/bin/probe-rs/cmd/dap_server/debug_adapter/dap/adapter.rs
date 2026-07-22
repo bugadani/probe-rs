@@ -36,7 +36,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use typed_path::NativePathBuf;
 
-use std::{fmt::Display, path::Path, str, time::Duration};
+use std::{fmt::Display, str, time::Duration};
 
 /// Progress ID used for progress reporting when the debug adapter protocol is used.
 type ProgressId = i64;
@@ -534,7 +534,6 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
         &mut self,
         session_data: &mut SessionData,
         core_index: usize,
-        program_binary: Option<&Path>,
         request: &Request,
     ) -> Result<()> {
         let arguments: SetVariableArguments = get_arguments(self, request)?;
@@ -685,25 +684,19 @@ impl<P: ProtocolAdapter> DebugAdapter<P> {
                 // state. Do not expose the old display cache while the
                 // server refresh is pending or if it fails.
                 session_data.core_data[cd_idx].invalidate_stack_frame_cache();
-                if let Some(program_binary) = program_binary {
-                    match session_data
-                        .backend
-                        .unwind_stack(core_index, program_binary, 500)
-                        .await
-                    {
-                        Ok(frames) => {
-                            // Keep the ids assigned by the authoritative
-                            // server cache; scopes/variables resolve those
-                            // exact ids on subsequent requests.
-                            session_data.core_data[cd_idx].replace_stack_frame_cache(frames);
-                        }
-                        Err(error) => {
-                            let message = format!(
-                                "Register {register_name} was written, but stack frames could not be refreshed: {error}"
-                            );
-                            tracing::warn!("{message}");
-                            self.show_message(MessageSeverity::Warning, message);
-                        }
+                match session_data.backend.unwind_stack(core_index, 500).await {
+                    Ok(frames) => {
+                        // Keep the ids assigned by the authoritative
+                        // server cache; scopes/variables resolve those
+                        // exact ids on subsequent requests.
+                        session_data.core_data[cd_idx].replace_stack_frame_cache(frames);
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "Register {register_name} was written, but stack frames could not be refreshed: {error}"
+                        );
+                        tracing::warn!("{message}");
+                        self.show_message(MessageSeverity::Warning, message);
                     }
                 }
             } else if let Some(cached_register) = session_data.core_data[cd_idx]

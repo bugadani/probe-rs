@@ -20,7 +20,6 @@ use tokio::{
 };
 
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -49,9 +48,9 @@ use crate::{
             ResumeAllCoresEndpoint, RpcResult, RttDownEndpoint, RunTestEndpoint, ScopesEndpoint,
             SelectProbeEndpoint, SetVariableEndpoint, StackTraceStepEndpoint,
             TakeRichStackTraceEndpoint, TakeStackTraceEndpoint, TargetInfoDataTopic,
-            TargetInfoEndpoint, TargetNameEndpoint, TempFileDataEndpoint, TestKickoffEndpoint,
-            TokioSpawner, ValidateDebugInfoEndpoint, VariablesEndpoint, VerifyEndpoint,
-            WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
+            TargetInfoEndpoint, TargetMetadataEndpoint, TargetNameEndpoint, TempFileDataEndpoint,
+            TestKickoffEndpoint, TokioSpawner, ValidateDebugInfoEndpoint, VariablesEndpoint,
+            VerifyEndpoint, WriteMemory8Endpoint, WriteMemory16Endpoint, WriteMemory32Endpoint,
             WriteMemory64Endpoint,
             breakpoints::{
                 BreakpointResolution, ResolveSourceBreakpointsRequest,
@@ -78,7 +77,7 @@ use crate::{
                 BootInfo, BuildRequest, BuildResult, DownloadOptions, EraseCommand, EraseRequest,
                 FlashRequest, ProgressEvent, VerifyRequest, VerifyResult,
             },
-            info::{InfoEvent, TargetInfoRequest, TargetNameRequest},
+            info::{InfoEvent, TargetInfoRequest, TargetMetadataRequest, TargetNameRequest},
             memory::{ReadBytesRequest, ReadMemoryRequest, WriteMemoryRequest},
             monitor::{MonitorExitReason, MonitorMode, MonitorOptions, MonitorRequest},
             probe::{
@@ -93,11 +92,13 @@ use crate::{
                 ScanRegion,
             },
             stack_trace::{
-                LoadDebugInfoRequest, RichStackTraces, StackTraces, TakeStackTraceRequest,
+                LoadDebugInfoRequest, RichStackTraces, StackTraces, TakeRichStackTraceRequest,
+                TakeStackTraceRequest,
             },
             test::{ListTestsRequest, RunTestRequest, Test, TestKickoffRequest, TestResult, Tests},
         },
         transport::memory::{PostcardReceiver, PostcardSender, WireRx, WireTx},
+        upload_cache::{ContentHash, ResolvedUpload, UploadCache},
         utils::semihosting::SemihostingOptions,
     },
     util::{
@@ -269,18 +270,22 @@ mod tls {
     }
 }
 
+/// Maximum number of `(path, content-hash)` upload entries retained per RPC
+/// connection. Old entries for the same path are dropped when content changes.
+const UPLOAD_CACHE_MAX_ENTRIES: usize = 64;
+
 /// Websocket-backed connection to a remote probe-rs server.
 #[derive(Clone)]
 pub struct RpcClient {
     client: HostClient<String>,
-    uploaded_files: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,
+    upload_cache: Arc<Mutex<UploadCache>>,
     registry: Arc<Mutex<Registry>>,
     is_localhost: bool,
 }
 
 impl Drop for RpcClient {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.uploaded_files) == 1 {
+        if Arc::strong_count(&self.upload_cache) == 1 {
             // Dropping the last client
             self.client.close();
         }
@@ -304,7 +309,9 @@ impl RpcClient {
                     subscriber_timeout_if_full: Duration::from_secs(1),
                 },
             ),
-            uploaded_files: Arc::new(Mutex::new(HashMap::new())),
+            upload_cache: Arc::new(Mutex::new(UploadCache::with_capacity(
+                UPLOAD_CACHE_MAX_ENTRIES,
+            ))),
             registry: Arc::new(Mutex::new(Registry::from_builtin_families())),
             is_localhost: false,
         }
@@ -388,7 +395,15 @@ impl RpcClient {
         res
     }
 
-    pub async fn upload_file(&self, src_path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+    /// Resolve a local file to the path the RPC server should use.
+    ///
+    /// Reads and hashes the file once, reuses a prior remote upload when the
+    /// canonical path and content hash match, and uploads only on cache miss.
+    /// Failed uploads never update the cache.
+    pub async fn resolve_upload(
+        &self,
+        src_path: impl AsRef<Path>,
+    ) -> anyhow::Result<ResolvedUpload> {
         use anyhow::Context as _;
 
         let src_path = src_path
@@ -396,18 +411,63 @@ impl RpcClient {
             .canonicalize()
             .unwrap_or_else(|_| src_path.as_ref().to_path_buf());
 
-        if self.is_localhost {
-            return Ok(src_path);
-        }
-
-        let mut uploaded = self.uploaded_files.lock().await;
-        if let Some(path) = uploaded.get(&src_path) {
-            return Ok(path.clone());
-        }
-
         let data = tokio::fs::read(&src_path)
             .await
-            .context("Failed to read file")?;
+            .with_context(|| format!("Failed to read {}", src_path.display()))?;
+        let content_hash = ContentHash::from_bytes(&data);
+
+        if self.is_localhost {
+            return Ok(ResolvedUpload {
+                canonical_path: src_path.clone(),
+                content_hash,
+                remote_path: src_path,
+            });
+        }
+
+        if let Some(remote_path) = self
+            .upload_cache
+            .lock()
+            .await
+            .lookup(&src_path, content_hash)
+        {
+            tracing::debug!(
+                "Reusing cached upload for {} ({content_hash:?})",
+                src_path.display()
+            );
+            return Ok(ResolvedUpload {
+                canonical_path: src_path,
+                content_hash,
+                remote_path,
+            });
+        }
+
+        let remote_path = self
+            .upload_bytes(&src_path, &data)
+            .await
+            .context("Failed to upload file")?;
+
+        let mut cache = self.upload_cache.lock().await;
+        if let Some(existing) = cache.lookup(&src_path, content_hash) {
+            return Ok(ResolvedUpload {
+                canonical_path: src_path,
+                content_hash,
+                remote_path: existing,
+            });
+        }
+        cache.insert(src_path.clone(), content_hash, remote_path.clone());
+
+        Ok(ResolvedUpload {
+            canonical_path: src_path,
+            content_hash,
+            remote_path,
+        })
+    }
+
+    pub async fn upload_file(&self, src_path: impl AsRef<Path>) -> anyhow::Result<PathBuf> {
+        Ok(self.resolve_upload(src_path).await?.remote_path)
+    }
+
+    async fn upload_bytes(&self, src_path: &Path, data: &[u8]) -> anyhow::Result<PathBuf> {
         tracing::debug!("Uploading {} ({} bytes)", src_path.display(), data.len());
 
         let TempFile { key, path } = self.send_resp::<CreateTempFileEndpoint, _>(&()).await?;
@@ -420,11 +480,8 @@ impl RpcClient {
             .await?;
         }
 
-        tracing::debug!("Uploaded file to {}", path);
-        let path = PathBuf::from(path);
-        uploaded.insert(src_path, path.clone());
-
-        Ok(path)
+        tracing::debug!("Uploaded file to {path}");
+        Ok(PathBuf::from(path))
     }
 
     pub async fn attach_probe(&self, request: AttachRequest) -> anyhow::Result<AttachResult> {
@@ -495,6 +552,16 @@ impl SessionInterface {
             .await
     }
 
+    pub async fn target_metadata(
+        &self,
+    ) -> anyhow::Result<crate::rpc::functions::info::WireSessionTargetMetadata> {
+        self.client
+            .send_resp::<TargetMetadataEndpoint, _>(&TargetMetadataRequest {
+                sessid: self.sessid,
+            })
+            .await
+    }
+
     /// The server-side [`Key`] identifying the attached [`Session`].
     ///
     /// Exposed so that alternate backends (e.g. the DAP server's RPC
@@ -522,12 +589,24 @@ impl SessionInterface {
 
     pub async fn build_flash_loader(
         &self,
-        mut path: PathBuf,
+        path: PathBuf,
+        format: FormatOptions,
+        image_target: Option<String>,
+        read_flasher_rtt: bool,
+    ) -> anyhow::Result<BuildResult> {
+        let upload = self.client.resolve_upload(&path).await?;
+        self.build_flash_loader_resolved(&upload, format, image_target, read_flasher_rtt)
+            .await
+    }
+
+    pub async fn build_flash_loader_resolved(
+        &self,
+        upload: &ResolvedUpload,
         mut format: FormatOptions,
         image_target: Option<String>,
         read_flasher_rtt: bool,
     ) -> anyhow::Result<BuildResult> {
-        path = self.client.upload_file(&path).await?;
+        let path = upload.server_path().to_path_buf();
 
         if let Some(ref mut idf_bootloader) = format.idf_options.idf_bootloader {
             *idf_bootloader = self
@@ -744,6 +823,10 @@ impl SessionInterface {
             .await
     }
 
+    /// Path-based stack trace for generic CLI callers. Uploads and parses
+    /// DWARF from `path` on each request; does not use session
+    /// [`ServerDebugState`]. DAP stack refresh uses
+    /// [`Self::take_rich_stack_trace`] instead.
     pub async fn stack_trace(
         &self,
         path: PathBuf,
@@ -766,26 +849,47 @@ impl SessionInterface {
     /// which loads `DebugInfo` at session start. Repeated calls replace the
     /// server copy and invalidate DWARF-derived server state.
     pub async fn load_debug_info(&self, path: PathBuf) -> anyhow::Result<()> {
-        let path = self.client.upload_file(&path).await?;
+        let upload = self.client.resolve_upload(&path).await?;
+        self.load_debug_info_resolved(&upload).await
+    }
 
+    /// Publish server-side DWARF from a prior [`ResolvedUpload`].
+    pub async fn load_debug_info_resolved(&self, upload: &ResolvedUpload) -> anyhow::Result<()> {
         self.client
             .send_resp::<LoadDebugInfoEndpoint, _>(&LoadDebugInfoRequest {
                 sessid: self.sessid,
-                path: path.display().to_string(),
+                path: upload.server_path().display().to_string(),
             })
             .await
     }
 
     /// Parse a prospective binary server-side without publishing it.
+    #[allow(
+        dead_code,
+        reason = "path-based convenience; restart uses validate_debug_info_resolved"
+    )]
     pub async fn validate_debug_info(&self, path: PathBuf) -> anyhow::Result<()> {
-        let path = self.client.upload_file(&path).await?;
+        let upload = self.client.resolve_upload(&path).await?;
+        self.validate_debug_info_resolved(&upload).await
+    }
 
+    /// Validate DWARF from a prior [`ResolvedUpload`] without re-uploading.
+    pub async fn validate_debug_info_resolved(
+        &self,
+        upload: &ResolvedUpload,
+    ) -> anyhow::Result<()> {
         self.client
             .send_resp::<ValidateDebugInfoEndpoint, _>(&LoadDebugInfoRequest {
                 sessid: self.sessid,
-                path: path.display().to_string(),
+                path: upload.server_path().display().to_string(),
             })
             .await
+    }
+
+    /// Resolve a local path to a single upload identity for reuse across a
+    /// restart transaction (validate, flash, publish debug info).
+    pub async fn resolve_upload(&self, path: impl AsRef<Path>) -> anyhow::Result<ResolvedUpload> {
+        self.client.resolve_upload(path).await
     }
 
     /// Resolve source file/line requests against the server-owned debug info.
@@ -841,19 +945,18 @@ impl SessionInterface {
     }
 
     /// Fetch a rich stack trace (per-frame register state + display metadata,
-    /// no local variables) for every core. DWARF-derived variable state stays
-    /// in the server cache and is queried through scopes/variables.
+    /// no local variables) for the requested core(s). Requires server-side
+    /// debug state from [`Self::load_debug_info`]; does not upload or parse a
+    /// binary path.
     pub async fn take_rich_stack_trace(
         &self,
-        path: PathBuf,
+        core: Option<u32>,
         stack_frame_limit: u32,
     ) -> anyhow::Result<RichStackTraces> {
-        let path = self.client.upload_file(&path).await?;
-
         self.client
-            .send_resp::<TakeRichStackTraceEndpoint, _>(&TakeStackTraceRequest {
+            .send_resp::<TakeRichStackTraceEndpoint, _>(&TakeRichStackTraceRequest {
                 sessid: self.sessid,
-                path: path.display().to_string(),
+                core,
                 stack_frame_limit,
             })
             .await
@@ -1453,5 +1556,30 @@ where
 
     async fn next(&mut self) -> Option<Self::Message> {
         self.recv().await
+    }
+}
+
+#[cfg(test)]
+mod resolve_upload_tests {
+    use super::*;
+    use crate::rpc::functions::{ProbeAccess, RpcApp};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn local_resolve_upload_tracks_content_changes() {
+        let (_server, tx, rx) = RpcApp::create_server(16, ProbeAccess::All);
+        let client = RpcClient::new_local_from_wire(tx, rx);
+
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "v1").unwrap();
+        let path = file.path().to_path_buf();
+
+        let first = client.resolve_upload(&path).await.unwrap();
+        write!(file, "v2").unwrap();
+        let second = client.resolve_upload(&path).await.unwrap();
+
+        assert_ne!(first.content_hash, second.content_hash);
+        assert_eq!(first.remote_path, second.remote_path);
     }
 }

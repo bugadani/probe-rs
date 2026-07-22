@@ -9,13 +9,12 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
 use probe_rs::{
     Architecture, CoreInformation, CoreRegisters, CoreStatus, CoreType, Error, RegisterId,
-    RegisterValue, Session, Target, VectorCatchCondition,
+    RegisterValue, Session, VectorCatchCondition,
 };
 use probe_rs_debug::{
     ColumnType, DebugRegisters, ObjectRef, SourceLocation as DebugSourceLocation, StackFrame,
@@ -93,17 +92,22 @@ pub(crate) fn from_wire_location(w: &WireSourceLocation) -> DebugSourceLocation 
     }
 }
 
+/// Small session-scoped target facts returned by the RPC server so the DAP
+/// client does not need a local [`probe_rs::Target`] mirror.
+#[derive(Clone)]
+pub struct SessionTargetMetadata {
+    pub target_name: String,
+    pub default_format: Option<String>,
+    pub cores: Vec<(usize, CoreType)>,
+}
+
 /// A DAP backend that drives a remote target over RPC.
 pub struct RpcBackend {
     pub(crate) handle: Handle,
     pub(crate) client: RpcClient,
     pub(crate) sessid: Key<Session>,
     pub(crate) cores: Vec<(usize, CoreType)>,
-    /// A real `Target` obtained from the local registry by name. Never used
-    /// for probe I/O client-side; it only supplies `core_index_by_address`,
-    /// memory-map metadata and similar introspection the DAP server performs
-    /// locally.
-    pub(crate) target: Arc<Target>,
+    pub(crate) target_metadata: SessionTargetMetadata,
     /// Per-core metadata cached at attach-time so static-property methods
     /// (register file, architecture, ...) need no round trip.
     pub(crate) core_metadata: Vec<CoreMetadata>,
@@ -143,19 +147,18 @@ impl RpcBackend {
     /// The caller is responsible for:
     /// * having already completed `probe/attach` over RPC (yielding a
     ///   `Key<Session>`),
-    /// * producing a matching [`Target`] from the local chip registry (so
-    ///   that memory-map and core-addressing introspection works without
-    ///   extra round trips),
+    /// * fetching [`SessionTargetMetadata`] from the server (`target/metadata`)
+    ///   so core lists and image-format defaults match the attached session,
     /// * supplying per-core metadata: either by querying the server at
     ///   attach-time or by inferring it from the target description.
     pub fn new(
         handle: Handle,
         client: RpcClient,
         sessid: Key<Session>,
-        target: Target,
-        cores: Vec<(usize, CoreType)>,
+        target_metadata: SessionTargetMetadata,
         per_core: Vec<CorePerAttachInfo>,
     ) -> Self {
+        let cores = target_metadata.cores.clone();
         let core_metadata = cores
             .iter()
             .zip(per_core)
@@ -177,7 +180,7 @@ impl RpcBackend {
             client,
             sessid,
             cores,
-            target: Arc::new(target),
+            target_metadata,
             core_metadata,
         }
     }
@@ -560,12 +563,11 @@ impl RpcBackend {
     pub(crate) async fn unwind_stack(
         &mut self,
         core_index: usize,
-        program_binary: &Path,
         max_frames: usize,
     ) -> Result<Vec<StackFrame>, Error> {
         let session = self.session_interface();
         let rich: RichStackTraces = session
-            .take_rich_stack_trace(program_binary.to_path_buf(), max_frames as u32)
+            .take_rich_stack_trace(Some(core_index as u32), max_frames as u32)
             .await
             .map_err(rpc_err)?;
 
@@ -748,21 +750,34 @@ impl RpcBackend {
         })
     }
 
+    #[allow(
+        dead_code,
+        reason = "path-based convenience; restart uses flash_binary_resolved"
+    )]
     pub(crate) async fn flash_binary(
         &mut self,
         path_to_elf: &Path,
         config: &FlashingConfig,
         progress: &mut dyn FnMut(WireProgressEvent),
     ) -> Result<(), DebuggerError> {
+        let upload = self
+            .session_interface()
+            .resolve_upload(path_to_elf)
+            .await
+            .map_err(|e| DebuggerError::Other(anyhow::anyhow!(e)))?;
+        self.flash_binary_resolved(&upload, config, progress).await
+    }
+
+    pub(crate) async fn flash_binary_resolved(
+        &mut self,
+        upload: &crate::rpc::upload_cache::ResolvedUpload,
+        config: &FlashingConfig,
+        progress: &mut dyn FnMut(WireProgressEvent),
+    ) -> Result<(), DebuggerError> {
         let session = self.session_interface();
 
         let build_result = session
-            .build_flash_loader(
-                path_to_elf.to_path_buf(),
-                config.format_options.clone(),
-                None,
-                false,
-            )
+            .build_flash_loader_resolved(upload, config.format_options.clone(), None, false)
             .await
             .map_err(|e| DebuggerError::Other(anyhow::anyhow!(e)))?;
 
@@ -857,6 +872,41 @@ mod test {
                 .all_registers()
                 .all(|register| !register.register_has_role(RegisterRole::FloatingPoint))
         );
+    }
+
+    #[test]
+    fn wire_session_core_converts_to_backend_core_list() {
+        use super::SessionTargetMetadata;
+        use crate::rpc::functions::info::{WireSessionCore, WireSessionTargetMetadata};
+
+        let wire = WireSessionTargetMetadata {
+            target_name: "stm32f407vgtx".to_string(),
+            default_format: Some("elf".to_string()),
+            cores: vec![
+                WireSessionCore {
+                    index: 0,
+                    core_type: crate::rpc::functions::core_ops::WireCoreType::Armv7em,
+                },
+                WireSessionCore {
+                    index: 1,
+                    core_type: crate::rpc::functions::core_ops::WireCoreType::Armv7em,
+                },
+            ],
+        };
+
+        let metadata = SessionTargetMetadata {
+            target_name: wire.target_name.clone(),
+            default_format: wire.default_format.clone(),
+            cores: wire
+                .cores
+                .into_iter()
+                .map(|core| (core.index as usize, core.core_type.into()))
+                .collect(),
+        };
+
+        assert_eq!(metadata.cores.len(), 2);
+        assert_eq!(metadata.target_name, "stm32f407vgtx");
+        assert_eq!(metadata.default_format.as_deref(), Some("elf"));
     }
 }
 

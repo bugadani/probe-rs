@@ -24,6 +24,7 @@ pub mod debug_state;
 pub mod functions;
 pub mod svd;
 pub mod transport;
+pub(crate) mod upload_cache;
 pub mod utils;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -90,6 +91,16 @@ impl<T> Key<T> {
     pub unsafe fn cast<U>(&self) -> Key<U> {
         Key {
             key: self.key,
+            marker: PhantomData,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<T> Key<T> {
+    pub fn test(id: u64) -> Self {
+        Self {
+            key: id,
             marker: PhantomData,
         }
     }
