@@ -114,7 +114,15 @@ impl Cli {
         match self.subcommand {
             Subcommand::DapServer(cmd) => {
                 let log_path = self.log_file.as_deref();
-                cmd::dap_server::run(cmd, client, utc_offset, log_path).await
+                cmd::dap_server::run(
+                    cmd,
+                    Some(client),
+                    #[cfg(feature = "remote")]
+                    None,
+                    utc_offset,
+                    log_path,
+                )
+                .await
             }
             #[cfg(feature = "remote")]
             Subcommand::Serve(cmd) => cmd.run(_config.server).await,
@@ -602,15 +610,33 @@ async fn main() -> Result<()> {
 
     let is_local = connection_params.is_none();
 
-    let result = run_app(connection_params, async |client| {
-        anyhow::ensure!(
-            client.is_local_session() || cli.subcommand.is_remote_cmd(),
-            "The subcommand is not supported in remote mode."
-        );
+    let is_tcp_dap = matches!(&cli.subcommand, Subcommand::DapServer(cmd) if cmd.is_tcp_mode());
 
-        cli.run(client, config, utc_offset).await
-    })
-    .await;
+    let result = if is_tcp_dap {
+        let Subcommand::DapServer(cmd) = cli.subcommand else {
+            unreachable!("checked DapServer above");
+        };
+        let log_path = log_path.as_deref();
+        cmd::dap_server::run(
+            cmd,
+            None,
+            #[cfg(feature = "remote")]
+            connection_params,
+            utc_offset,
+            log_path,
+        )
+        .await
+    } else {
+        run_app(connection_params, async |client| {
+            anyhow::ensure!(
+                client.is_local_session() || cli.subcommand.is_remote_cmd(),
+                "The subcommand is not supported in remote mode."
+            );
+
+            cli.run(client, config, utc_offset).await
+        })
+        .await
+    };
 
     if is_local {
         // TODO: do something with remote crashes

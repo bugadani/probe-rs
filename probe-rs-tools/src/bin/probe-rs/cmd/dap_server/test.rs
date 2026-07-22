@@ -2,8 +2,31 @@ use std::sync::Mutex;
 
 use probe_rs::{
     integration::{FakeProbe, ProbeLister},
-    probe::{DebugProbeError, DebugProbeInfo, DebugProbeSelector, Probe, ProbeCreationError},
+    probe::{
+        DebugProbe, DebugProbeError, DebugProbeInfo, DebugProbeSelector, Probe, ProbeCreationError,
+        ProbeFactory,
+    },
 };
+use std::fmt::Display;
+
+#[derive(Debug)]
+pub struct MockProbeFactory;
+
+impl Display for MockProbeFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Mocked Probe")
+    }
+}
+
+impl ProbeFactory for MockProbeFactory {
+    fn open(&self, _selector: &DebugProbeSelector) -> Result<Box<dyn DebugProbe>, DebugProbeError> {
+        unreachable!("TestLister opens FakeProbe directly")
+    }
+
+    fn list_probes(&self) -> Vec<DebugProbeInfo> {
+        Vec::new()
+    }
+}
 
 #[derive(Debug)]
 pub struct TestLister {

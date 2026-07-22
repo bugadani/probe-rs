@@ -90,17 +90,40 @@ pub struct Cmd {
     single_session: bool,
 }
 
+impl Cmd {
+    /// True when the DAP server listens on TCP (`--port` was given).
+    pub(crate) fn is_tcp_mode(&self) -> bool {
+        self.port.is_some()
+    }
+}
+
 pub async fn run(
     cmd: Cmd,
-    client: RpcClient,
+    stdio_client: Option<RpcClient>,
+    #[cfg(feature = "remote")] remote: server::rpc_lifetime::DapRemoteParams,
     time_offset: UtcOffset,
     log_file: Option<&Path>,
 ) -> Result<()> {
     match cmd.port {
         Some(port) => {
             let addr = SocketAddr::new(cmd.ip, port);
-            debug_tcp(client, addr, cmd.single_session, log_file, time_offset).await
+            debug_tcp(
+                #[cfg(feature = "remote")]
+                remote,
+                #[cfg(not(feature = "remote"))]
+                (),
+                addr,
+                cmd.single_session,
+                log_file,
+                time_offset,
+            )
+            .await
         }
-        None => debug_stdio(client, log_file, time_offset).await,
+        None => {
+            let Some(client) = stdio_client else {
+                anyhow::bail!("stdio DAP mode requires an RPC client");
+            };
+            debug_stdio(client, log_file, time_offset).await
+        }
     }
 }

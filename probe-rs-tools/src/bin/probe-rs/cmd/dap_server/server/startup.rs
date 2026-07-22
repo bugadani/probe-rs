@@ -1,4 +1,7 @@
-use super::debugger::Debugger;
+use super::{
+    debugger::Debugger,
+    rpc_lifetime::{DapRemoteParams, with_dap_rpc_connection},
+};
 use crate::cmd::dap_server::debug_adapter::{dap::adapter::*, protocol::DapAdapter};
 use crate::rpc::client::RpcClient;
 use anyhow::{Context, Result};
@@ -34,7 +37,8 @@ impl std::str::FromStr for TargetSessionType {
 }
 
 pub async fn debug_tcp(
-    client: RpcClient,
+    #[cfg(feature = "remote")] remote: DapRemoteParams,
+    #[cfg(not(feature = "remote"))] _remote: DapRemoteParams,
     addr: std::net::SocketAddr,
     single_session: bool,
     log_file: Option<&Path>,
@@ -85,8 +89,16 @@ pub async fn debug_tcp(
                 // Flush any pending log messages to the debug adapter Console Log.
                 debugger.debug_logger.flush_to_dap(&mut debug_adapter)?;
 
-                let end_message =
-                    match run_debug_session(&mut debugger, &client, debug_adapter).await {
+                #[cfg(feature = "remote")]
+                let end_message = {
+                    let session_remote = remote.clone();
+                    match with_dap_rpc_connection(session_remote, async |client| {
+                        run_debug_session(&mut debugger, client, debug_adapter)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("{error:?}"))
+                    })
+                    .await
+                    {
                         // We no longer have a reference to the `debug_adapter`, so errors need
                         // special handling to ensure they are displayed to the user.
                         Err(error) => {
@@ -94,7 +106,24 @@ pub async fn debug_tcp(
                             format!("Session ended: {error}")
                         }
                         Ok(()) => format!("Closing debug session from: {addr}"),
-                    };
+                    }
+                };
+                #[cfg(not(feature = "remote"))]
+                let end_message = match with_dap_rpc_connection((), async |client| {
+                    run_debug_session(&mut debugger, client, debug_adapter)
+                        .await
+                        .map_err(|error| anyhow::anyhow!("{error:?}"))
+                })
+                .await
+                {
+                    // We no longer have a reference to the `debug_adapter`, so errors need
+                    // special handling to ensure they are displayed to the user.
+                    Err(error) => {
+                        eprintln!("Session ended with error: {error:?}");
+                        format!("Session ended: {error}")
+                    }
+                    Ok(()) => format!("Closing debug session from: {addr}"),
+                };
                 debugger.debug_logger.log_to_console(&end_message)?;
 
                 // Terminate after a single debug session. This is the behaviour expected by VSCode
