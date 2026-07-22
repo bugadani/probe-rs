@@ -190,111 +190,109 @@ impl Debugger {
             }
         }
 
-        // Route batched-breakpoint handling at the session level (it needs
-        // `&mut backend` for a single round trip); everything else goes through
-        // the per-core `dispatch_request` path.
-        let debug_session = match request.command.as_ref() {
+        let mut debug_session = DebugSessionStatus::Continue(Duration::ZERO);
+        match request.command.as_ref() {
             "setBreakpoints" => {
                 debug_adapter
                     .set_breakpoints(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "setInstructionBreakpoints" => {
                 debug_adapter
                     .set_instruction_breakpoints(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "readMemory" => {
                 debug_adapter
                     .read_memory(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "writeMemory" => {
                 debug_adapter
                     .write_memory(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "pause" => {
                 debug_adapter
                     .pause(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "scopes" => {
                 debug_adapter
                     .scopes(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "variables" => {
                 debug_adapter
                     .variables(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "evaluate" => {
                 debug_adapter
                     .evaluate(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "stackTrace" => {
                 debug_adapter
                     .stack_trace(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "next" => {
                 debug_adapter
                     .next(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "stepIn" => {
                 debug_adapter
                     .step_in(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "stepOut" => {
                 debug_adapter
                     .step_out(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "setVariable" => {
                 debug_adapter
                     .set_variable(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "disassemble" => {
                 debug_adapter
                     .disassemble(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
-            }
-            "disconnect" => {
-                debug_adapter
-                    .disconnect(session_data, core_index, &request)
-                    .await?;
-                DebugSessionStatus::Terminate
             }
             "configurationDone" => {
                 debug_adapter
                     .configuration_done(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
             }
             "threads" => {
                 debug_adapter
                     .threads(session_data, core_index, &request)
                     .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
+            }
+            "completions" => {
+                debug_adapter
+                    .completions(session_data, core_index, &request)
+                    .await?;
+            }
+            "rttWindowOpened" => {
+                debug_adapter
+                    .rtt_window_opened(session_data, core_index, &request)
+                    .await?;
+            }
+            "continue" => {
+                debug_adapter
+                    .r#continue(session_data, core_index, &request)
+                    .await?;
+            }
+
+            "disconnect" => {
+                debug_adapter
+                    .disconnect(session_data, core_index, &request)
+                    .await?;
+                debug_session = DebugSessionStatus::Terminate;
             }
             "restart" => {
                 session_data
@@ -302,27 +300,17 @@ impl Debugger {
                     .halt(core_index, Duration::from_millis(500))
                     .await
                     .context("Failed to halt core")?;
-                DebugSessionStatus::Restart(request)
+                debug_session = DebugSessionStatus::Restart(request);
             }
-            "completions" => {
-                debug_adapter
-                    .completions(session_data, core_index, &request)
-                    .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
+            _ => {
+                let unimplemented_command = request.command.as_str();
+                debug_adapter.send_response::<()>(
+                    &request,
+                    Err(&DebuggerError::Other(anyhow!(
+                        "Received request '{unimplemented_command}', which is not supported or not implemented yet"
+                    ))),
+                ).context("Error executing request.")?;
             }
-            "rttWindowOpened" => {
-                debug_adapter
-                    .rtt_window_opened(session_data, core_index, &request)
-                    .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
-            }
-            "continue" => {
-                debug_adapter
-                    .r#continue(session_data, core_index, &request)
-                    .await?;
-                DebugSessionStatus::Continue(Duration::ZERO)
-            }
-            _ => dispatch_request(debug_adapter, request).context("Error executing request.")?,
         };
 
         if unhalt_me && let Err(error) = session_data.backend.run(core_index).await {
@@ -935,22 +923,6 @@ impl Debugger {
 
         Ok(())
     }
-}
-
-// FIXME: why are we using anyhow internally, but an enum on the outside?
-fn dispatch_request<P: ProtocolAdapter>(
-    debug_adapter: &mut DebugAdapter<P>,
-    request: Request,
-) -> anyhow::Result<DebugSessionStatus> {
-    let unimplemented_command = request.command.as_str();
-    debug_adapter.send_response::<()>(
-        &request,
-        Err(&DebuggerError::Other(anyhow!(
-            "Received request '{unimplemented_command}', which is not supported or not implemented yet"
-        ))),
-    )?;
-
-    Ok(DebugSessionStatus::Continue(Duration::ZERO))
 }
 
 pub(crate) fn is_file_newer(
