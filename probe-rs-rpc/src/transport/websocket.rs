@@ -1,3 +1,4 @@
+#[cfg(feature = "axum")]
 use axum::extract::ws;
 use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
 use postcard_rpc::server::{WireRxErrorKind, WireTxErrorKind};
@@ -107,16 +108,19 @@ where
     }
 }
 
+#[cfg(feature = "axum")]
 // Sends length-prefixed binary messages to a websocket stream
 pub struct AxumWebsocketTx<S> {
     writer: S,
 }
+#[cfg(feature = "axum")]
 impl<S> AxumWebsocketTx<S> {
     pub fn new(writer: S) -> Self {
         Self { writer }
     }
 }
 
+#[cfg(feature = "axum")]
 impl<S> Sink<Vec<u8>> for AxumWebsocketTx<S>
 where
     S: Sink<ws::Message> + Unpin,

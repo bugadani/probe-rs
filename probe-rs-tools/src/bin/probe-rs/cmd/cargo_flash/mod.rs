@@ -7,7 +7,6 @@ use probe_rs::config::Registry;
 use std::ffi::OsString;
 use std::{path::PathBuf, process};
 
-use crate::rpc::client::RpcClient;
 use crate::util::cargo::build_artifact;
 use crate::util::cargo::cargo_target;
 use crate::util::common_options::{
@@ -16,6 +15,7 @@ use crate::util::common_options::{
 use crate::util::logging::{LevelFilter, setup_logging};
 use crate::util::{cli, logging};
 use crate::{Config, parse_and_resolve_cli_args, run_app};
+use probe_rs_rpc_client::RpcClient;
 
 /// Common options when flashing a target device.
 #[derive(Debug, clap::Parser)]
