@@ -12,8 +12,10 @@ pub use probe_rs_rpc::flash::{
 };
 use tokio::sync::mpsc::Sender;
 
+use probe_rs_rpc::ProgressEventTopic;
+
 use crate::{
-    rpc::functions::{NoResponse, ProgressEventTopic, RpcContext, RpcSpawnContext, convert::lift},
+    rpc::functions::{NoResponse, RpcContext, RpcSpawnContext, convert::lift},
     util::flash::build_loader,
 };
 
