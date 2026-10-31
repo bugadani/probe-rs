@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use crate::config::NvmRegion;
 use crate::flashing::{FlashError, FlashLayout, FlashProgress, ProgressOperation};
+use crate::probe::DebugProbeError;
 
 /// One erase sector, and the content that it must hold.
 #[derive(Debug)]
@@ -88,17 +89,13 @@ impl<'a> SectorCheck<'a> {
         mut read: impl FnMut(u64, &mut [u8]) -> Result<(), E>,
     ) -> Result<CompareOutcome, E> {
         if let Some(content) = self.sector_content() {
-            let Outside::Erased(erased) = self.outside else {
-                unreachable!("`sector_content` returns `Some` only for `Outside::Erased`")
-            };
-
             let mut read_back = vec![0; content.len()];
             read(self.sector.start, &mut read_back)?;
 
+            // On ECC flash, a written word can read as erased, so a read cannot show that a
+            // sector is empty.
             let outcome = if read_back == content {
                 CompareOutcome::Match
-            } else if read_back.iter().all(|&byte| byte == erased) {
-                CompareOutcome::Empty
             } else {
                 CompareOutcome::Mismatch
             };
@@ -137,7 +134,7 @@ pub enum CompareOutcome {
     Empty,
 }
 
-/// How much data a backend moves over the debug link.
+/// How much data a backend moves over the debug link. This sets the size of each call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareCost {
     /// The backend moves signatures. It gets each run of adjacent sectors in one call.
@@ -157,6 +154,9 @@ pub enum CompareCost {
 /// - Only set [`SectorCheck::outcome`]. Other backends can use the rest of the check.
 /// - Do not read erased flash on a target where such a read faults.
 pub trait FlashCompare: Send + Sync + Debug {
+    /// Returns the name of this method for the log.
+    fn name(&self) -> &str;
+
     /// Returns how much data this method moves over the debug link.
     fn cost(&self) -> CompareCost;
 
@@ -240,14 +240,52 @@ pub(crate) fn run_chain(
     progress: &mut FlashProgress<'_>,
     operation: ProgressOperation,
 ) -> Result<Vec<Vec<CompareOutcome>>, FlashError> {
+    let names = chain
+        .iter()
+        .map(|backend| backend.name())
+        .collect::<Vec<_>>();
+    tracing::info!("{operation:?} with {}", names.join(", "));
+
     for backend in chain {
         for region in &mut regions {
             region.run(backend.as_ref(), &mut context, progress, operation)?;
         }
     }
-    context.finish()?;
+    context.finish(operation == ProgressOperation::Compare)?;
 
     Ok(regions.into_iter().map(RegionCompare::finish).collect())
+}
+
+/// Returns `true` if `error` or one of its sources satisfies `predicate`.
+fn has_cause(
+    error: &FlashError,
+    predicate: impl Fn(&(dyn std::error::Error + 'static)) -> bool,
+) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if predicate(error) {
+            return true;
+        }
+        current = error.source();
+    }
+
+    false
+}
+
+/// Returns `true` if the cause of `error` is the probe.
+fn is_probe_error(error: &FlashError) -> bool {
+    has_cause(error, |cause| cause.is::<DebugProbeError>())
+}
+
+/// Returns `true` if the cause of `error` is a flash algorithm function that returned an error
+/// code.
+fn is_error_code(error: &FlashError) -> bool {
+    has_cause(error, |cause| {
+        matches!(
+            cause.downcast_ref::<FlashError>(),
+            Some(FlashError::RoutineCallFailed { .. })
+        )
+    })
 }
 
 /// The checks of one region, while the backends run.
@@ -281,9 +319,31 @@ impl<'a> RegionCompare<'a> {
         operation: ProgressOperation,
     ) -> Result<(), FlashError> {
         let region = self.region;
-        self.for_each_batch(backend.cost(), |batch| {
+        // Before programming, a backend can read erased flash, which faults on some targets. A
+        // mismatch only costs an erase.
+        let tolerate_errors = operation == ProgressOperation::Compare;
+
+        self.for_each_batch(backend.cost(), operation, |batch| {
+            // After a fault, the algorithm cannot run. The sectors that remain count as mismatches.
+            if context.faulted() {
+                return Ok(());
+            }
+
             let started = Instant::now();
-            backend.compare(context, region, batch)?;
+            let result = backend.compare(context, region, batch);
+            if !tolerate_errors {
+                result?;
+            } else if let Some(error) = Self::errors_to_mismatch(backend, result, batch)? {
+                context.handle_error(&error);
+            }
+
+            for check in batch.iter() {
+                tracing::debug!(
+                    "{backend:?}: sector {:#010x?}: {:?}",
+                    check.sector,
+                    check.outcome
+                );
+            }
 
             let done = batch
                 .iter()
@@ -298,47 +358,88 @@ impl<'a> RegionCompare<'a> {
         })
     }
 
+    /// Sets each result to a mismatch if `result` is an error, and returns the error then.
+    ///
+    /// A probe error stays an error, because each sector would wait for the same timeout.
+    fn errors_to_mismatch(
+        backend: &dyn FlashCompare,
+        result: Result<(), FlashError>,
+        batch: &mut [SectorCheck<'_>],
+    ) -> Result<Option<FlashError>, FlashError> {
+        match result {
+            Ok(()) => Ok(None),
+            Err(error) if is_probe_error(&error) => Err(error),
+            Err(error) => {
+                tracing::debug!("{backend:?} failed, the sectors count as mismatches: {error}");
+                for check in batch {
+                    check.outcome = Some(CompareOutcome::Mismatch);
+                }
+                Ok(Some(error))
+            }
+        }
+    }
+
     /// Calls `compare` for the checks that have no result yet.
+    ///
+    /// A verify stops at the first mismatch, because the verify fails then.
+    fn for_each_batch(
+        &mut self,
+        cost: CompareCost,
+        operation: ProgressOperation,
+        mut compare: impl FnMut(&mut [SectorCheck<'a>]) -> Result<(), FlashError>,
+    ) -> Result<(), FlashError> {
+        for batch in self.batches(cost) {
+            if operation == ProgressOperation::Verify && self.has_mismatch() {
+                break;
+            }
+            compare(&mut self.checks[batch])?;
+        }
+
+        Ok(())
+    }
+
+    /// Returns the batches of the checks that have no result yet, as index ranges.
     ///
     /// Each batch holds adjacent sectors. A cheap backend gets each run of adjacent sectors in one
     /// batch. A costly backend gets one sector in each batch, so that the progress moves while it
     /// runs.
-    fn for_each_batch(
-        &mut self,
-        cost: CompareCost,
-        mut compare: impl FnMut(&mut [SectorCheck<'a>]) -> Result<(), FlashError>,
-    ) -> Result<(), FlashError> {
+    fn batches(&self, cost: CompareCost) -> Vec<Range<usize>> {
+        let mut batches = Vec::new();
+        let mut start = 0;
         for run in self
             .checks
-            .chunk_by_mut(|a, b| a.outcome.is_none() == b.outcome.is_none())
+            .chunk_by(|a, b| a.outcome.is_none() == b.outcome.is_none())
         {
-            if run[0].outcome.is_some() {
-                continue;
+            let end = start + run.len();
+            if run[0].outcome.is_none() {
+                let batch_size = match cost {
+                    CompareCost::Cheap => run.len(),
+                    CompareCost::Costly => 1,
+                };
+                batches.extend(
+                    (start..end)
+                        .step_by(batch_size)
+                        .map(|first| first..(first + batch_size).min(end)),
+                );
             }
-
-            let batch_size = match cost {
-                CompareCost::Cheap => run.len(),
-                CompareCost::Costly => 1,
-            };
-            for batch in run.chunks_mut(batch_size) {
-                compare(batch)?;
-            }
+            start = end;
         }
 
-        Ok(())
+        batches
+    }
+
+    /// Returns `true` if a backend found a mismatch.
+    fn has_mismatch(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|check| check.outcome == Some(CompareOutcome::Mismatch))
     }
 
     /// Returns the results. A check that no backend could do counts as a mismatch.
     pub(crate) fn finish(self) -> Vec<CompareOutcome> {
         self.checks
             .iter()
-            .map(|check| {
-                let outcome = check.outcome.unwrap_or(CompareOutcome::Mismatch);
-                if outcome != CompareOutcome::Match {
-                    tracing::debug!("Sector {:#010x?}: {outcome:?}", check.sector);
-                }
-                outcome
-            })
+            .map(|check| check.outcome.unwrap_or(CompareOutcome::Mismatch))
             .collect()
     }
 }
@@ -348,6 +449,10 @@ mod tests {
     use probe_rs_target::{FlashProperties, SectorDescription};
 
     use super::*;
+    use crate::Error;
+    use crate::architecture::arm::ArmError;
+    use crate::architecture::riscv::communication_interface::RiscvError;
+    use crate::architecture::xtensa::communication_interface::XtensaError;
     use crate::flashing::FlashBuilder;
 
     const ERASED: u8 = 0xFF;
@@ -459,7 +564,7 @@ mod tests {
     ) -> Vec<Vec<u64>> {
         let mut batches = Vec::new();
         compare
-            .for_each_batch(cost, |batch| {
+            .for_each_batch(cost, ProgressOperation::Compare, |batch| {
                 batches.push(batch.iter().map(|check| check.sector.start).collect());
                 for check in batch {
                     check.outcome = settle(check.sector.start);
@@ -521,6 +626,37 @@ mod tests {
         );
     }
 
+    /// Returns the number of sectors that a backend gets in `operation`. The backend finds a
+    /// mismatch in each sector.
+    fn checked_with_mismatches(operation: ProgressOperation) -> usize {
+        let data = [1; 0x4000];
+        let layout = layout_with_geometry(&[(0, &data)], false, 0x400, 0x400);
+        let region = test_region(0..0x4000);
+        let mut compare = RegionCompare::new(&region, &layout, Outside::Any, true);
+
+        let mut checked = 0;
+        compare
+            .for_each_batch(CompareCost::Costly, operation, |batch| {
+                checked += batch.len();
+                for check in batch {
+                    check.outcome = Some(CompareOutcome::Mismatch);
+                }
+                Ok(())
+            })
+            .unwrap();
+        checked
+    }
+
+    #[test]
+    fn a_compare_checks_every_sector() {
+        assert_eq!(checked_with_mismatches(ProgressOperation::Compare), 16);
+    }
+
+    #[test]
+    fn a_verify_stops_at_the_first_mismatch() {
+        assert_eq!(checked_with_mismatches(ProgressOperation::Verify), 1);
+    }
+
     #[test]
     fn sector_content_supports_pages_larger_than_sectors() {
         let data = [0x5a; 128];
@@ -543,6 +679,44 @@ mod tests {
         assert_eq!(ranges[0].1.len(), 0x1000);
     }
 
+    #[test]
+    fn probe_errors_stop_the_compare() {
+        let probe_errors = [
+            Error::Probe(DebugProbeError::TargetNotFound),
+            Error::Arm(ArmError::Probe(DebugProbeError::TargetNotFound)),
+            Error::Riscv(RiscvError::DebugProbe(DebugProbeError::TargetNotFound)),
+            Error::Xtensa(XtensaError::DebugProbe(DebugProbeError::TargetNotFound)),
+            Error::Arm(ArmError::NoTargetResponse {
+                source: Box::new(ArmError::Probe(DebugProbeError::TargetNotFound)),
+            }),
+        ];
+        for error in probe_errors {
+            let mut batch = [SectorCheck::new(0..1, vec![], Outside::Any)];
+            let result = RegionCompare::errors_to_mismatch(
+                &ReadBackCore,
+                Err(FlashError::Core(error)),
+                &mut batch,
+            );
+            assert!(result.is_err());
+        }
+
+        let wrapped = FlashError::Init(Box::new(FlashError::UnableToReadCoreStatus(Error::Probe(
+            DebugProbeError::TargetNotFound,
+        ))));
+        let mut batch = [SectorCheck::new(0..1, vec![], Outside::Any)];
+        let result = RegionCompare::errors_to_mismatch(&ReadBackCore, Err(wrapped), &mut batch);
+        assert!(result.is_err());
+
+        let mut batch = [SectorCheck::new(0..1, vec![], Outside::Any)];
+        let result = RegionCompare::errors_to_mismatch(
+            &ReadBackCore,
+            Err(FlashError::Core(Error::Timeout)),
+            &mut batch,
+        );
+        assert!(matches!(result, Ok(Some(_))));
+        assert_eq!(batch[0].outcome, Some(CompareOutcome::Mismatch));
+    }
+
     /// Reads from a simulated flash that starts at address 0.
     fn read_from(flash: &[u8]) -> impl FnMut(u64, &mut [u8]) -> Result<(), ()> + '_ {
         |address, data| {
@@ -559,7 +733,7 @@ mod tests {
         let mut flash = vec![ERASED; 0x1000];
         assert_eq!(
             checks[0].compare_read_back(read_from(&flash)),
-            Ok(CompareOutcome::Empty)
+            Ok(CompareOutcome::Mismatch)
         );
 
         flash[0x10..0x12].copy_from_slice(&[1, 2]);
