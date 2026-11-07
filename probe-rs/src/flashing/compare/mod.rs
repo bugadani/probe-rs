@@ -306,7 +306,7 @@ impl<'a> RegionCompare<'a> {
         // mismatch only costs an erase.
         let tolerate_errors = operation == ProgressOperation::Compare;
 
-        self.for_each_batch(backend.cost(), |batch| {
+        self.for_each_batch(backend.cost(), operation, |batch| {
             // After a fault, the algorithm cannot run. The sectors that remain count as mismatches.
             if context.faulted() {
                 return Ok(());
@@ -364,32 +364,58 @@ impl<'a> RegionCompare<'a> {
 
     /// Calls `compare` for the checks that have no result yet.
     ///
-    /// Each batch holds adjacent sectors. A cheap backend gets each run of adjacent sectors in one
-    /// batch. A costly backend gets one sector in each batch, so that the progress moves while it
-    /// runs.
+    /// A verify stops at the first mismatch, because the verify fails then.
     fn for_each_batch(
         &mut self,
         cost: CompareCost,
+        operation: ProgressOperation,
         mut compare: impl FnMut(&mut [SectorCheck<'a>]) -> Result<(), FlashError>,
     ) -> Result<(), FlashError> {
-        for run in self
-            .checks
-            .chunk_by_mut(|a, b| a.outcome.is_none() == b.outcome.is_none())
-        {
-            if run[0].outcome.is_some() {
-                continue;
+        for batch in self.batches(cost) {
+            if operation == ProgressOperation::Verify && self.has_mismatch() {
+                break;
             }
-
-            let batch_size = match cost {
-                CompareCost::Cheap => run.len(),
-                CompareCost::Costly => 1,
-            };
-            for batch in run.chunks_mut(batch_size) {
-                compare(batch)?;
-            }
+            compare(&mut self.checks[batch])?;
         }
 
         Ok(())
+    }
+
+    /// Returns the batches of the checks that have no result yet, as index ranges.
+    ///
+    /// Each batch holds adjacent sectors. A cheap backend gets each run of adjacent sectors in one
+    /// batch. A costly backend gets one sector in each batch, so that the progress moves while it
+    /// runs.
+    fn batches(&self, cost: CompareCost) -> Vec<Range<usize>> {
+        let mut batches = Vec::new();
+        let mut start = 0;
+        for run in self
+            .checks
+            .chunk_by(|a, b| a.outcome.is_none() == b.outcome.is_none())
+        {
+            let end = start + run.len();
+            if run[0].outcome.is_none() {
+                let batch_size = match cost {
+                    CompareCost::Cheap => run.len(),
+                    CompareCost::Costly => 1,
+                };
+                batches.extend(
+                    (start..end)
+                        .step_by(batch_size)
+                        .map(|first| first..(first + batch_size).min(end)),
+                );
+            }
+            start = end;
+        }
+
+        batches
+    }
+
+    /// Returns `true` if a backend found a mismatch.
+    fn has_mismatch(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|check| check.outcome == Some(CompareOutcome::Mismatch))
     }
 
     /// Returns the results. A check that no backend could do counts as a mismatch.
@@ -518,7 +544,7 @@ mod tests {
     ) -> Vec<Vec<u64>> {
         let mut batches = Vec::new();
         compare
-            .for_each_batch(cost, |batch| {
+            .for_each_batch(cost, ProgressOperation::Compare, |batch| {
                 batches.push(batch.iter().map(|check| check.sector.start).collect());
                 for check in batch {
                     check.outcome = settle(check.sector.start);
@@ -578,6 +604,37 @@ mod tests {
             batches(&mut compare, CompareCost::Costly, |_| None),
             vec![vec![0x0000], vec![0x1000]]
         );
+    }
+
+    /// Returns the number of sectors that a backend gets in `operation`. The backend finds a
+    /// mismatch in each sector.
+    fn checked_with_mismatches(operation: ProgressOperation) -> usize {
+        let data = [1; 0x4000];
+        let layout = layout_with_geometry(&[(0, &data)], false, 0x400, 0x400);
+        let region = test_region(0..0x4000);
+        let mut compare = RegionCompare::new(&region, &layout, Outside::Any, true);
+
+        let mut checked = 0;
+        compare
+            .for_each_batch(CompareCost::Costly, operation, |batch| {
+                checked += batch.len();
+                for check in batch {
+                    check.outcome = Some(CompareOutcome::Mismatch);
+                }
+                Ok(())
+            })
+            .unwrap();
+        checked
+    }
+
+    #[test]
+    fn a_compare_checks_every_sector() {
+        assert_eq!(checked_with_mismatches(ProgressOperation::Compare), 16);
+    }
+
+    #[test]
+    fn a_verify_stops_at_the_first_mismatch() {
+        assert_eq!(checked_with_mismatches(ProgressOperation::Verify), 1);
     }
 
     #[test]
