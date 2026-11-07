@@ -1,6 +1,8 @@
 //! The target state that the compare backends share.
 
-use crate::flashing::{ActiveFlasher, FlashError, FlashProgress, Flasher, Verify};
+use std::time::Duration;
+
+use crate::flashing::{ActiveFlasher, FlashAlgorithm, FlashError, FlashProgress, Flasher, Verify};
 use crate::{Core, Session};
 
 /// Only the chain of a [`Flasher`] holds backends that use the flash algorithm.
@@ -18,6 +20,8 @@ pub struct CompareContext<'a> {
     flasher: Option<&'a mut Flasher>,
     progress: FlashProgress<'static>,
     initialized: bool,
+    init_failed: bool,
+    faulted: bool,
 }
 
 impl<'a> CompareContext<'a> {
@@ -28,6 +32,8 @@ impl<'a> CompareContext<'a> {
             flasher: Some(flasher),
             progress: FlashProgress::empty(),
             initialized: false,
+            init_failed: false,
+            faulted: false,
         }
     }
 
@@ -39,6 +45,8 @@ impl<'a> CompareContext<'a> {
             flasher: None,
             progress: FlashProgress::empty(),
             initialized: false,
+            init_failed: false,
+            faulted: false,
         }
     }
 
@@ -48,6 +56,7 @@ impl<'a> CompareContext<'a> {
     /// returns its error.
     pub fn session(&mut self) -> Result<&mut Session, FlashError> {
         self.uninit()?;
+        self.invalidate_code();
 
         Ok(self.session)
     }
@@ -61,21 +70,93 @@ impl<'a> CompareContext<'a> {
         self.session()?.core(core_index).map_err(FlashError::Core)
     }
 
+    /// Returns the flash algorithm of this compare, without loading it.
+    pub(crate) fn flash_algorithm(&self) -> Option<&FlashAlgorithm> {
+        self.flasher.as_deref().map(Flasher::flash_algorithm)
+    }
+
     /// Returns the flash algorithm, loaded and initialized for [`Verify`].
     pub(crate) fn algorithm(&mut self) -> Result<ActiveFlasher<'_, 'static, Verify>, FlashError> {
         let flasher = self.flasher.as_deref_mut().expect(NO_FLASHER);
         let mut active = flasher.activate(self.session, &mut self.progress)?;
         if !self.initialized {
-            active.init(None)?;
+            if let Err(error) = active.init(None) {
+                self.init_failed = true;
+                return Err(error);
+            }
             self.initialized = true;
         }
 
         Ok(active)
     }
 
+    /// Returns `true` if the flash algorithm cannot run after a backend error.
+    pub(crate) fn faulted(&self) -> bool {
+        self.faulted
+    }
+
+    /// Stops using the flash algorithm if a backend error can leave it unusable.
+    pub(crate) fn handle_error(&mut self, error: &FlashError) {
+        // A function that returns an error code leaves the initialized algorithm usable.
+        if self.initialized && super::is_error_code(error) {
+            return;
+        }
+        self.handle_fault();
+    }
+
+    /// Stops using the flash algorithm if a backend error happened in `Init` or while it was
+    /// initialized.
+    fn handle_fault(&mut self) {
+        // A timeout in `Init` leaves the core running.
+        if !self.initialized && !self.init_failed {
+            return;
+        }
+        self.faulted = true;
+        self.stop_algorithm();
+    }
+
+    /// Halts the core, calls `UnInit` if the algorithm is initialized, and makes the next use
+    /// write the code again.
+    fn stop_algorithm(&mut self) {
+        // The core can be in the fault handler of the application, or still run the algorithm.
+        let halted = self
+            .session
+            .core(self.core_index)
+            .and_then(|mut core| core.halt(Duration::from_millis(500)));
+        if let Err(error) = halted {
+            tracing::debug!("Halt after a compare error failed: {error}");
+        }
+
+        if let Err(error) = self.uninit() {
+            tracing::debug!("Uninit after a compare error failed: {error}");
+        }
+        self.invalidate_code();
+    }
+
+    /// Makes the next use of the flash algorithm write its code again.
+    ///
+    /// A fault or a backend with session access can overwrite the code in target RAM.
+    fn invalidate_code(&mut self) {
+        if let Some(flasher) = self.flasher.as_deref_mut() {
+            flasher.code_valid = false;
+        }
+    }
+
     /// Calls `UnInit` if the flash algorithm is initialized.
-    pub(crate) fn finish(mut self) -> Result<(), FlashError> {
-        self.uninit()
+    ///
+    /// If `tolerate_errors` is `true`, only a probe error is an error. The next step loads the
+    /// algorithm again.
+    pub(crate) fn finish(mut self, tolerate_errors: bool) -> Result<(), FlashError> {
+        let Err(error) = self.uninit() else {
+            return Ok(());
+        };
+        if !tolerate_errors || super::is_probe_error(&error) {
+            return Err(error);
+        }
+
+        tracing::debug!("Uninit after a compare failed: {error}");
+        self.stop_algorithm();
+        Ok(())
     }
 
     fn uninit(&mut self) -> Result<(), FlashError> {
