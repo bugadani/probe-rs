@@ -251,7 +251,7 @@ pub(crate) fn run_chain(
             region.run(backend.as_ref(), &mut context, progress, operation)?;
         }
     }
-    context.finish()?;
+    context.finish(operation == ProgressOperation::Compare)?;
 
     Ok(regions.into_iter().map(RegionCompare::finish).collect())
 }

@@ -112,18 +112,23 @@ impl<'a> CompareContext<'a> {
             return;
         }
         self.faulted = true;
+        self.stop_algorithm();
+    }
 
-        // The core can be in the fault handler of the application.
+    /// Halts the core, calls `UnInit` if the algorithm is initialized, and makes the next use
+    /// write the code again.
+    fn stop_algorithm(&mut self) {
+        // The core can be in the fault handler of the application, or still run the algorithm.
         let halted = self
             .session
             .core(self.core_index)
             .and_then(|mut core| core.halt(Duration::from_millis(500)));
         if let Err(error) = halted {
-            tracing::debug!("Halt after a compare fault failed: {error}");
+            tracing::debug!("Halt after a compare error failed: {error}");
         }
 
         if let Err(error) = self.uninit() {
-            tracing::debug!("Uninit after a compare fault failed: {error}");
+            tracing::debug!("Uninit after a compare error failed: {error}");
         }
         self.invalidate_code();
     }
@@ -138,8 +143,20 @@ impl<'a> CompareContext<'a> {
     }
 
     /// Calls `UnInit` if the flash algorithm is initialized.
-    pub(crate) fn finish(mut self) -> Result<(), FlashError> {
-        self.uninit()
+    ///
+    /// If `tolerate_errors` is `true`, only a probe error is an error. The next step loads the
+    /// algorithm again.
+    pub(crate) fn finish(mut self, tolerate_errors: bool) -> Result<(), FlashError> {
+        let Err(error) = self.uninit() else {
+            return Ok(());
+        };
+        if !tolerate_errors || super::is_probe_error(&error) {
+            return Err(error);
+        }
+
+        tracing::debug!("Uninit after a compare failed: {error}");
+        self.stop_algorithm();
+        Ok(())
     }
 
     fn uninit(&mut self) -> Result<(), FlashError> {
