@@ -19,21 +19,15 @@ pub(crate) struct SignatureHash {
     pub name: &'static str,
     /// The signature size in bytes.
     pub size: usize,
-    /// Computes the signature of the concatenated chunks.
-    pub compute: fn(&[&[u8]]) -> Vec<u8>,
+    /// Computes the signature of the data.
+    pub compute: fn(&[u8]) -> Vec<u8>,
 }
 
 /// The known signature algorithms, in preference order.
 pub(crate) const HASHES: &[SignatureHash] = &[SignatureHash {
     name: "md5",
     size: 16,
-    compute: |chunks| {
-        let mut hasher = Md5::new();
-        for chunk in chunks {
-            hasher.update(chunk);
-        }
-        hasher.finalize().to_vec()
-    },
+    compute: |data| Md5::digest(data).to_vec(),
 }];
 
 /// The prefix of a signature function in the vendor function map.
@@ -179,7 +173,7 @@ impl AlgorithmSignatures {
                 check: idx,
                 address: address as u32,
                 size: data.len() as u32,
-                expected: (self.hash.compute)(&[&data]),
+                expected: (self.hash.compute)(&data),
                 full_sector,
                 expected_erased: data.iter().all(|&byte| byte == erased),
             }));
@@ -193,10 +187,8 @@ impl AlgorithmSignatures {
         active: &mut ActiveFlasher<'_, '_, Verify>,
         entries: &[Entry],
     ) -> Result<Vec<(u32, Vec<u8>)>, FlashError> {
-        let algorithm = active.flash_algorithm();
-        let buffer = algorithm.page_buffers[0];
-        let capacity =
-            SignatureTable::capacity(self.hash, algorithm.flash_properties.page_size as usize);
+        let (buffer, buffer_size) = active.scratch_buffer();
+        let capacity = SignatureTable::capacity(self.hash, buffer_size);
         if capacity == 0 {
             return Err(FlashError::VendorFunctionFailed {
                 name: self.function.clone(),
@@ -243,6 +235,25 @@ impl AlgorithmSignatures {
 
         Ok(results)
     }
+}
+
+/// Compares `checks` with the signature function of the flash algorithm.
+///
+/// Sets the result of each check, and returns the name of the hash. Returns `None` if the
+/// algorithm has no known signature function.
+///
+/// Do not use, only exposed with `pub` visibility for target-gen.
+pub fn compare_with_signatures(
+    active: &mut ActiveFlasher<'_, '_, Verify>,
+    checks: &mut [SectorCheck<'_>],
+) -> Result<Option<&'static str>, FlashError> {
+    let Some(backend) = AlgorithmSignatures::new(active.flash_algorithm()) else {
+        return Ok(None);
+    };
+
+    backend.compare_checks(active, checks)?;
+
+    Ok(Some(backend.hash_name()))
 }
 
 /// Returns the result of a check from the results of its entries.
@@ -295,7 +306,7 @@ mod tests {
     fn md5_test_vector() {
         // RFC 1321, "abc".
         assert_eq!(
-            (hash("md5").compute)(&[b"a", b"bc"]),
+            (hash("md5").compute)(b"abc"),
             [
                 0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0, 0xd6, 0x96, 0x3f, 0x7d, 0x28, 0xe1,
                 0x7f, 0x72

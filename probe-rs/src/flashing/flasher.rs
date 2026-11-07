@@ -5,19 +5,15 @@ use zerocopy::IntoBytes;
 use super::{FlashAlgorithm, FlashBuilder, FlashError, FlashPage, FlashProgress};
 use crate::config::NvmRegion;
 use crate::error::Error;
-use crate::flashing::compare::{
-    AlgorithmSignatures, CmsisVerifyCompare, CompareContext, CompareOutcome, FlashCompare, Outside,
-    ReadBackCore, ReadFlashCompare, RegionCompare, SectorCheck, run_chain,
-};
+use crate::flashing::compare::{self, CompareOutcome, CompareTarget, Purpose};
 use crate::flashing::encoder::FlashEncoder;
-use crate::flashing::{FlashLayout, FlashSector, ProgressOperation};
+use crate::flashing::{FlashLayout, FlashSector};
 use crate::memory::MemoryInterface;
 use crate::rtt::{Rtt, RttTarget, ScanRegion};
 use crate::{Core, InstructionSet, RegisterValue, core::CoreRegisters, session::Session};
 use crate::{CoreStatus, Target};
 use std::borrow::Cow;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::{
     fmt::Debug,
     time::{Duration, Instant},
@@ -551,13 +547,10 @@ impl Flasher {
         progress: &mut FlashProgress<'_>,
         ignore_filled: bool,
     ) -> Result<bool, FlashError> {
-        let outcomes = self.compare(
-            session,
-            progress,
-            ProgressOperation::Verify,
-            Outside::Any,
-            ignore_filled,
-        )?;
+        let purpose = Purpose::Verify {
+            ignore_fills: ignore_filled,
+        };
+        let outcomes = compare::run(session, CompareTarget::Algorithm(self), progress, purpose)?;
 
         Ok(outcomes
             .iter()
@@ -572,18 +565,15 @@ impl Flasher {
         progress: &mut FlashProgress<'_>,
         keep_unwritten_bytes: bool,
     ) -> Result<(), FlashError> {
-        // Without restored bytes, a full flash leaves the erased value outside the image.
-        let outside = if keep_unwritten_bytes {
-            Outside::Any
-        } else {
-            Outside::Erased(self.flash_algorithm.flash_properties.erased_byte_value)
+        let purpose = Purpose::Prune {
+            keep_unwritten_bytes,
         };
 
-        progress.started(ProgressOperation::Compare);
-        let result = self.compare(session, progress, ProgressOperation::Compare, outside, true);
+        progress.started(purpose.progress());
+        let result = compare::run(session, CompareTarget::Algorithm(self), progress, purpose);
         match result.is_ok() {
-            true => progress.finished(ProgressOperation::Compare),
-            false => progress.failed(ProgressOperation::Compare),
+            true => progress.finished(purpose.progress()),
+            false => progress.failed(purpose.progress()),
         }
 
         for (region, outcomes) in self.regions.iter_mut().zip(result?) {
@@ -591,63 +581,6 @@ impl Flasher {
         }
 
         Ok(())
-    }
-
-    /// Returns the compare backends of this flasher for `operation`, in the order to try them.
-    fn compare_chain(
-        &self,
-        session: &Session,
-        operation: ProgressOperation,
-    ) -> Vec<Arc<dyn FlashCompare>> {
-        let mut chain: Vec<Arc<dyn FlashCompare>> = Vec::new();
-
-        // A verify compares the data, so that it does not depend on the signature function that
-        // selected the sectors to program.
-        if operation == ProgressOperation::Compare
-            && let Some(backend) = AlgorithmSignatures::new(&self.flash_algorithm)
-        {
-            chain.push(Arc::new(backend));
-        }
-        if let Some(backend) = session.target().debug_sequence.flash_compare() {
-            chain.push(backend);
-        }
-        if self.flash_algorithm.pc_verify.is_some() {
-            chain.push(Arc::new(CmsisVerifyCompare));
-        } else if self.flash_algorithm.pc_read.is_some() {
-            chain.push(Arc::new(ReadFlashCompare));
-        } else {
-            chain.push(Arc::new(ReadBackCore));
-        }
-
-        chain
-    }
-
-    /// Compares each sector of each loaded region with its expected content.
-    ///
-    /// Returns one result for each sector, for each region.
-    pub(super) fn compare(
-        &mut self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        operation: ProgressOperation,
-        outside: Outside,
-        ignore_fills: bool,
-    ) -> Result<Vec<Vec<CompareOutcome>>, FlashError> {
-        // The checks borrow this copy, so that the backends can borrow `self`.
-        let layouts = self
-            .regions
-            .iter()
-            .map(|region| (region.region.clone(), region.data.layout().clone()))
-            .collect::<Vec<_>>();
-
-        let regions = layouts
-            .iter()
-            .map(|(region, layout)| RegionCompare::new(region, layout, outside, ignore_fills))
-            .collect::<Vec<_>>();
-
-        let chain = self.compare_chain(session, operation);
-        let context = CompareContext::new(session, self);
-        run_chain(&chain, regions, context, progress, operation)
     }
 
     /// Perform an erase of all sectors given in `flash_layout`.
@@ -937,6 +870,15 @@ impl<'op, 'p, O: Operation> ActiveFlasher<'op, 'p, O> {
     /// Returns the flash algorithm that this flasher runs.
     pub(super) fn flash_algorithm(&self) -> &FlashAlgorithm {
         self.flash_algorithm
+    }
+
+    /// Returns the address and size of a RAM buffer that a function of the algorithm can use.
+    pub(super) fn scratch_buffer(&self) -> (u64, usize) {
+        let algo = self.flash_algorithm;
+        (
+            algo.page_buffers[0],
+            algo.flash_properties.page_size as usize,
+        )
     }
 
     /// Checks if the flash algorithm defines a vendor-specific entry point with the given name.
@@ -1387,40 +1329,8 @@ impl<'op, 'p, O: Operation> ActiveFlasher<'op, 'p, O> {
 }
 
 impl ActiveFlasher<'_, '_, Verify> {
-    /// Runs `BlankCheck` if the check and the algorithm allow it, and `compare` if the sector is
-    /// not blank.
-    pub(super) fn compare_after_blank_check(
-        &mut self,
-        check: &SectorCheck<'_>,
-        compare: impl FnOnce(&mut Self) -> Result<CompareOutcome, FlashError>,
-    ) -> Result<CompareOutcome, FlashError> {
-        let Outside::Erased(erased) = check.outside else {
-            return compare(self);
-        };
-        if self.flash_algorithm.pc_blank_check.is_none() {
-            return compare(self);
-        }
-
-        // On some targets, a read of erased flash faults.
-        let size = check.sector.end - check.sector.start;
-        if self.is_blank(check.sector.start, size)? {
-            let expected_erased = check
-                .expected
-                .iter()
-                .all(|(_, data)| data.iter().all(|&byte| byte == erased));
-            let outcome = if expected_erased {
-                CompareOutcome::Match
-            } else {
-                CompareOutcome::Empty
-            };
-            return Ok(outcome);
-        }
-
-        compare(self)
-    }
-
     /// Returns `true` if `BlankCheck` finds `size` bytes at `address` erased.
-    fn is_blank(&mut self, address: u64, size: u64) -> Result<bool, FlashError> {
+    pub(super) fn is_blank(&mut self, address: u64, size: u64) -> Result<bool, FlashError> {
         let algo = self.flash_algorithm;
         let blank_check = algo
             .pc_blank_check
@@ -1439,25 +1349,6 @@ impl ActiveFlasher<'_, '_, Verify> {
         )?;
 
         Ok(result == 0)
-    }
-
-    /// Compares `checks` with the signature function of the flash algorithm.
-    ///
-    /// Sets the result of each check, and returns the name of the hash. Returns `None` if the
-    /// algorithm has no known signature function.
-    ///
-    /// Do not use, only exposed with `pub` visibility for target-gen.
-    pub fn compare_with_signatures(
-        &mut self,
-        checks: &mut [SectorCheck<'_>],
-    ) -> Result<Option<&'static str>, FlashError> {
-        let Some(backend) = AlgorithmSignatures::new(self.flash_algorithm) else {
-            return Ok(None);
-        };
-
-        backend.compare_checks(self, checks)?;
-
-        Ok(Some(backend.hash_name()))
     }
 
     /// Returns `true` if CMSIS `Verify` finds `data` at `address`.

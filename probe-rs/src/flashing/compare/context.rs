@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
+use super::Purpose;
 use crate::flashing::{ActiveFlasher, FlashAlgorithm, FlashError, FlashProgress, Flasher, Verify};
+use crate::probe::DebugProbeError;
 use crate::{Core, Session};
 
 /// Only the chain of a [`Flasher`] holds backends that use the flash algorithm.
@@ -95,13 +97,22 @@ impl<'a> CompareContext<'a> {
         self.faulted
     }
 
-    /// Stops using the flash algorithm if a backend error can leave it unusable.
-    pub(crate) fn handle_error(&mut self, error: &FlashError) {
-        // A function that returns an error code leaves the initialized algorithm usable.
-        if self.initialized && super::is_error_code(error) {
-            return;
+    /// Handles a backend error, and returns it if the compare must stop.
+    ///
+    /// A probe error always stops the compare, because each sector would wait for the same
+    /// timeout. The context stops using the flash algorithm if the error can leave it unusable.
+    pub(crate) fn absorb(&mut self, error: FlashError, purpose: Purpose) -> Result<(), FlashError> {
+        if !purpose.tolerates_errors() || is_probe_error(&error) {
+            return Err(error);
         }
-        self.handle_fault();
+        tracing::debug!("Ignoring a compare error: {error}");
+
+        // A function that returns an error code leaves the initialized algorithm usable.
+        if !(self.initialized && is_error_code(&error)) {
+            self.handle_fault();
+        }
+
+        Ok(())
     }
 
     /// Stops using the flash algorithm if a backend error happened in `Init` or while it was
@@ -143,19 +154,13 @@ impl<'a> CompareContext<'a> {
     }
 
     /// Calls `UnInit` if the flash algorithm is initialized.
-    ///
-    /// If `tolerate_errors` is `true`, only a probe error is an error. The next step loads the
-    /// algorithm again.
-    pub(crate) fn finish(mut self, tolerate_errors: bool) -> Result<(), FlashError> {
-        let Err(error) = self.uninit() else {
-            return Ok(());
-        };
-        if !tolerate_errors || super::is_probe_error(&error) {
-            return Err(error);
+    pub(crate) fn finish(mut self, purpose: Purpose) -> Result<(), FlashError> {
+        if let Err(error) = self.uninit() {
+            self.absorb(error, purpose)?;
+            // The state of the algorithm is not known. The next step loads it again.
+            self.stop_algorithm();
         }
 
-        tracing::debug!("Uninit after a compare failed: {error}");
-        self.stop_algorithm();
         Ok(())
     }
 
@@ -168,5 +173,82 @@ impl<'a> CompareContext<'a> {
         let flasher = self.flasher.as_deref_mut().expect(NO_FLASHER);
         let mut active = flasher.activate::<Verify>(self.session, &mut self.progress)?;
         active.uninit()
+    }
+}
+
+/// Returns `true` if `error` or one of its sources satisfies `predicate`.
+fn has_cause(
+    error: &FlashError,
+    predicate: impl Fn(&(dyn std::error::Error + 'static)) -> bool,
+) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if predicate(error) {
+            return true;
+        }
+        current = error.source();
+    }
+
+    false
+}
+
+/// Returns `true` if the cause of `error` is the probe.
+fn is_probe_error(error: &FlashError) -> bool {
+    has_cause(error, |cause| cause.is::<DebugProbeError>())
+}
+
+/// Returns `true` if the cause of `error` is a flash algorithm function that returned an error
+/// code.
+fn is_error_code(error: &FlashError) -> bool {
+    has_cause(error, |cause| {
+        matches!(
+            cause.downcast_ref::<FlashError>(),
+            Some(FlashError::RoutineCallFailed { .. })
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Error;
+    use crate::architecture::arm::ArmError;
+    use crate::architecture::riscv::communication_interface::RiscvError;
+    use crate::architecture::xtensa::communication_interface::XtensaError;
+
+    #[test]
+    fn probe_errors_at_any_depth() {
+        let probe_errors = [
+            Error::Probe(DebugProbeError::TargetNotFound),
+            Error::Arm(ArmError::Probe(DebugProbeError::TargetNotFound)),
+            Error::Riscv(RiscvError::DebugProbe(DebugProbeError::TargetNotFound)),
+            Error::Xtensa(XtensaError::DebugProbe(DebugProbeError::TargetNotFound)),
+            Error::Arm(ArmError::NoTargetResponse {
+                source: Box::new(ArmError::Probe(DebugProbeError::TargetNotFound)),
+            }),
+        ];
+        for error in probe_errors {
+            assert!(is_probe_error(&FlashError::Core(error)));
+        }
+
+        let wrapped = FlashError::Init(Box::new(FlashError::UnableToReadCoreStatus(Error::Probe(
+            DebugProbeError::TargetNotFound,
+        ))));
+        assert!(is_probe_error(&wrapped));
+
+        assert!(!is_probe_error(&FlashError::Core(Error::Timeout)));
+    }
+
+    #[test]
+    fn error_codes_at_any_depth() {
+        let code = FlashError::FlashReadFailed {
+            source: Box::new(FlashError::RoutineCallFailed {
+                name: "read_flash".into(),
+                error_code: 1,
+            }),
+        };
+        assert!(is_error_code(&code));
+
+        assert!(!is_error_code(&FlashError::Core(Error::Timeout)));
     }
 }

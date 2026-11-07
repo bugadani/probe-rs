@@ -10,12 +10,9 @@ use probe_rs_target::{FlashProperties, NvmRegion, RawFlashAlgorithm, SectorDescr
 
 use super::builder::FlashBuilder;
 use super::{FlashError, FlashLayout, FlashProgress};
-use crate::flashing::compare::{
-    CompareContext, CompareOutcome, Outside, ReadBackCore, RegionCompare, run_chain,
-};
+use crate::flashing::compare::{self, CompareOutcome, CompareTarget, Purpose};
 use crate::flashing::flasher::FlashData;
 use crate::flashing::host_sequence::DebugFlashSequence;
-use crate::flashing::progress::ProgressOperation;
 use crate::memory::MemoryInterface;
 use crate::session::Session;
 
@@ -366,15 +363,11 @@ impl HostSideFlasher {
     ) -> Result<bool, FlashError> {
         progress.started_verifying();
 
-        let result = self
-            .compare(
-                session,
-                progress,
-                ProgressOperation::Verify,
-                Outside::Any,
-                false,
-            )
-            .map(|outcomes| {
+        let purpose = Purpose::Verify {
+            ignore_fills: false,
+        };
+        let result =
+            compare::run(session, CompareTarget::Host(self), progress, purpose).map(|outcomes| {
                 outcomes
                     .iter()
                     .flatten()
@@ -401,20 +394,17 @@ impl HostSideFlasher {
         progress: &mut FlashProgress<'_>,
         keep_unwritten_bytes: bool,
     ) -> Result<(), FlashError> {
-        // Without restored bytes, a full flash leaves the erased value outside the image.
-        let outside = if keep_unwritten_bytes {
-            Outside::Any
-        } else {
-            Outside::Erased(self.flash_algorithm.flash_properties.erased_byte_value)
+        let purpose = Purpose::Prune {
+            keep_unwritten_bytes,
         };
 
-        progress.started(ProgressOperation::Compare);
+        progress.started(purpose.progress());
         let result = self.run_with_flash(session, |this, session| {
-            this.compare(session, progress, ProgressOperation::Compare, outside, true)
+            compare::run(session, CompareTarget::Host(this), progress, purpose)
         });
         match result.is_ok() {
-            true => progress.finished(ProgressOperation::Compare),
-            false => progress.failed(ProgressOperation::Compare),
+            true => progress.finished(purpose.progress()),
+            false => progress.failed(purpose.progress()),
         }
 
         for (region, outcomes) in self.regions.iter_mut().zip(result?) {
@@ -422,37 +412,6 @@ impl HostSideFlasher {
         }
 
         Ok(())
-    }
-
-    /// Compares each sector of each region with its expected content.
-    ///
-    /// Returns one result for each sector, for each region.
-    fn compare(
-        &self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        operation: ProgressOperation,
-        outside: Outside,
-        ignore_fills: bool,
-    ) -> Result<Vec<Vec<CompareOutcome>>, FlashError> {
-        let regions = self
-            .regions
-            .iter()
-            .map(|region| {
-                RegionCompare::new(&region.region, region.flash_layout(), outside, ignore_fills)
-            })
-            .collect::<Vec<_>>();
-
-        let mut chain = session
-            .target()
-            .debug_sequence
-            .flash_compare()
-            .into_iter()
-            .collect::<Vec<_>>();
-        chain.push(Arc::new(ReadBackCore));
-
-        let context = CompareContext::without_algorithm(session, self.core_index);
-        run_chain(&chain, regions, context, progress, operation)
     }
 }
 

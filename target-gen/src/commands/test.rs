@@ -12,7 +12,7 @@ use probe_rs::{
     config::Registry,
     flashing::{
         CompareOutcome, DownloadOptions, FlashLoader, FlashProgress, Outside, ProgressEvent,
-        ProgressOperation, SectorCheck, erase, erase_all, run_blank_check,
+        ProgressOperation, SectorCheck, compare_with_signatures, erase, erase_all, run_blank_check,
     },
     probe::{DebugProbeSelector, WireProtocol, list::Lister},
 };
@@ -460,7 +460,7 @@ fn run_signature_check(
 
     let started = Instant::now();
     let result = flasher.run_verify(session, &mut progress, |active, _region| {
-        active.compare_with_signatures(slice::from_mut(&mut check))
+        compare_with_signatures(active, slice::from_mut(&mut check))
     })?;
 
     let Some(hash) = result else {

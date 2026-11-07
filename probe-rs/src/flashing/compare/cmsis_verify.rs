@@ -1,5 +1,6 @@
 //! Compare backend that uses the CMSIS `Verify` function of the flash algorithm.
 
+use super::blank_check::compare_after_blank_check;
 use super::{CompareContext, CompareCost, CompareOutcome, FlashCompare, SectorCheck};
 use crate::config::NvmRegion;
 use crate::flashing::{ActiveFlasher, FlashError, Verify};
@@ -40,8 +41,9 @@ impl FlashCompare for CmsisVerifyCompare {
     ) -> Result<(), FlashError> {
         let mut active = context.algorithm()?;
         for check in checks {
-            let outcome = active
-                .compare_after_blank_check(check, |active| Self::compare_check(active, check))?;
+            let outcome = compare_after_blank_check(&mut active, check, |active| {
+                Self::compare_check(active, check)
+            })?;
             check.outcome = Some(outcome);
         }
 

@@ -1,5 +1,6 @@
 //! Compare backend that uses the `ReadFlash` function of the flash algorithm.
 
+use super::blank_check::compare_after_blank_check;
 use super::{CompareContext, CompareCost, FlashCompare, SectorCheck};
 use crate::config::NvmRegion;
 use crate::flashing::FlashError;
@@ -25,7 +26,7 @@ impl FlashCompare for ReadFlashCompare {
     ) -> Result<(), FlashError> {
         let mut active = context.algorithm()?;
         for check in checks {
-            let outcome = active.compare_after_blank_check(check, |active| {
+            let outcome = compare_after_blank_check(&mut active, check, |active| {
                 check.compare_read_back(|address, data| active.read_flash(address, data))
             })?;
             check.outcome = Some(outcome);
