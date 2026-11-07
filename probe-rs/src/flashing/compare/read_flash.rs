@@ -9,6 +9,10 @@ use crate::flashing::FlashError;
 pub(crate) struct ReadFlashCompare;
 
 impl FlashCompare for ReadFlashCompare {
+    fn name(&self) -> &str {
+        "ReadFlash"
+    }
+
     fn cost(&self) -> CompareCost {
         CompareCost::Costly
     }

@@ -10,6 +10,10 @@ use crate::memory::MemoryInterface;
 pub(crate) struct ReadBackCore;
 
 impl FlashCompare for ReadBackCore {
+    fn name(&self) -> &str {
+        "core read-back"
+    }
+
     fn cost(&self) -> CompareCost {
         CompareCost::Costly
     }

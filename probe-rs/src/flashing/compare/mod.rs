@@ -157,6 +157,9 @@ pub enum CompareCost {
 /// - Only set [`SectorCheck::outcome`]. Other backends can use the rest of the check.
 /// - Do not read erased flash on a target where such a read faults.
 pub trait FlashCompare: Send + Sync + Debug {
+    /// Returns the name of this method for the log.
+    fn name(&self) -> &str;
+
     /// Returns how much data this method moves over the debug link.
     fn cost(&self) -> CompareCost;
 
@@ -240,6 +243,12 @@ pub(crate) fn run_chain(
     progress: &mut FlashProgress<'_>,
     operation: ProgressOperation,
 ) -> Result<Vec<Vec<CompareOutcome>>, FlashError> {
+    let names = chain
+        .iter()
+        .map(|backend| backend.name())
+        .collect::<Vec<_>>();
+    tracing::info!("{operation:?} with {}", names.join(", "));
+
     for backend in chain {
         for region in &mut regions {
             region.run(backend.as_ref(), &mut context, progress, operation)?;

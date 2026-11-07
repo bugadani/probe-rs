@@ -24,6 +24,10 @@ impl CmsisVerifyCompare {
 }
 
 impl FlashCompare for CmsisVerifyCompare {
+    fn name(&self) -> &str {
+        "CMSIS Verify"
+    }
+
     fn cost(&self) -> CompareCost {
         CompareCost::Costly
     }
