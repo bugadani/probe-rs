@@ -137,7 +137,7 @@ pub enum CompareOutcome {
     Empty,
 }
 
-/// How much data a backend moves over the debug link.
+/// How much data a backend moves over the debug link. This sets the size of each call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareCost {
     /// The backend moves signatures. It gets each run of adjacent sectors in one call.
@@ -302,10 +302,9 @@ impl<'a> RegionCompare<'a> {
         operation: ProgressOperation,
     ) -> Result<(), FlashError> {
         let region = self.region;
-        // Before programming, a costly backend can read erased flash, which faults on some
-        // targets.
-        let tolerate_errors =
-            operation == ProgressOperation::Compare && backend.cost() == CompareCost::Costly;
+        // Before programming, a backend can read erased flash, which faults on some targets. A
+        // mismatch only costs an erase.
+        let tolerate_errors = operation == ProgressOperation::Compare;
 
         self.for_each_batch(backend.cost(), |batch| {
             // After a fault, the algorithm cannot run. The sectors that remain count as mismatches.
