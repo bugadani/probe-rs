@@ -95,9 +95,18 @@ impl<'a> CompareContext<'a> {
         self.faulted
     }
 
+    /// Stops using the flash algorithm if a backend error can leave it unusable.
+    pub(crate) fn handle_error(&mut self, error: &FlashError) {
+        // A function that returns an error code leaves the initialized algorithm usable.
+        if self.initialized && super::is_error_code(error) {
+            return;
+        }
+        self.handle_fault();
+    }
+
     /// Stops using the flash algorithm if a backend error happened in `Init` or while it was
     /// initialized.
-    pub(crate) fn handle_fault(&mut self) {
+    fn handle_fault(&mut self) {
         // A timeout in `Init` leaves the core running.
         if !self.initialized && !self.init_failed {
             return;

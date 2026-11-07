@@ -277,6 +277,17 @@ fn is_probe_error(error: &FlashError) -> bool {
     has_cause(error, |cause| cause.is::<DebugProbeError>())
 }
 
+/// Returns `true` if the cause of `error` is a flash algorithm function that returned an error
+/// code.
+fn is_error_code(error: &FlashError) -> bool {
+    has_cause(error, |cause| {
+        matches!(
+            cause.downcast_ref::<FlashError>(),
+            Some(FlashError::RoutineCallFailed { .. })
+        )
+    })
+}
+
 /// The checks of one region, while the backends run.
 pub(crate) struct RegionCompare<'a> {
     region: &'a NvmRegion,
@@ -322,8 +333,8 @@ impl<'a> RegionCompare<'a> {
             let result = backend.compare(context, region, batch);
             if !tolerate_errors {
                 result?;
-            } else if Self::errors_to_mismatch(backend, result, batch)? {
-                context.handle_fault();
+            } else if let Some(error) = Self::errors_to_mismatch(backend, result, batch)? {
+                context.handle_error(&error);
             }
 
             for check in batch.iter() {
@@ -347,23 +358,23 @@ impl<'a> RegionCompare<'a> {
         })
     }
 
-    /// Sets each result to a mismatch if `result` is an error, and returns `true` then.
+    /// Sets each result to a mismatch if `result` is an error, and returns the error then.
     ///
     /// A probe error stays an error, because each sector would wait for the same timeout.
     fn errors_to_mismatch(
         backend: &dyn FlashCompare,
         result: Result<(), FlashError>,
         batch: &mut [SectorCheck<'_>],
-    ) -> Result<bool, FlashError> {
+    ) -> Result<Option<FlashError>, FlashError> {
         match result {
-            Ok(()) => Ok(false),
+            Ok(()) => Ok(None),
             Err(error) if is_probe_error(&error) => Err(error),
             Err(error) => {
                 tracing::debug!("{backend:?} failed, the sectors count as mismatches: {error}");
                 for check in batch {
                     check.outcome = Some(CompareOutcome::Mismatch);
                 }
-                Ok(true)
+                Ok(Some(error))
             }
         }
     }
@@ -702,7 +713,7 @@ mod tests {
             Err(FlashError::Core(Error::Timeout)),
             &mut batch,
         );
-        assert!(matches!(result, Ok(true)));
+        assert!(matches!(result, Ok(Some(_))));
         assert_eq!(batch[0].outcome, Some(CompareOutcome::Mismatch));
     }
 
