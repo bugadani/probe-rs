@@ -10,7 +10,6 @@ use probe_rs_target::{FlashProperties, NvmRegion, RawFlashAlgorithm, SectorDescr
 
 use super::builder::FlashBuilder;
 use super::{FlashError, FlashLayout, FlashProgress};
-use crate::flashing::compare::{self, CompareOutcome, CompareTarget, Purpose};
 use crate::flashing::flasher::FlashData;
 use crate::flashing::host_sequence::DebugFlashSequence;
 use crate::memory::MemoryInterface;
@@ -167,7 +166,8 @@ impl HostSideFlasher {
         })
     }
 
-    fn run_with_flash<R>(
+    /// Runs `f` between the setup and the cleanup of the flash sequence.
+    pub(super) fn run_with_flash<R>(
         &mut self,
         session: &mut Session,
         f: impl FnOnce(&mut Self, &mut Session) -> Result<R, FlashError>,
@@ -243,7 +243,6 @@ impl HostSideFlasher {
         restore_unwritten_bytes: bool,
         _enable_double_buffering: bool,
         skip_erasing: bool,
-        verify: bool,
     ) -> Result<(), FlashError> {
         tracing::debug!("Host-side: Starting program procedure");
 
@@ -332,86 +331,13 @@ impl HostSideFlasher {
                 }
             }
 
-            if verify && !this.verify_regions(session, progress)? {
-                return Err(FlashError::Verify);
-            }
-
             Ok(())
         })
-    }
-
-    /// Verify flash contents against expected data.
-    ///
-    /// Returns `true` if all pages verify successfully, `false` otherwise.
-    pub(super) fn verify(
-        &mut self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        _ignore_filled: bool,
-    ) -> Result<bool, FlashError> {
-        tracing::debug!("Host-side: Starting verify procedure");
-        self.run_with_flash(session, |this, session| {
-            this.verify_regions(session, progress)
-        })
-    }
-
-    /// Checks each sector of each region. The fill bytes of a page must hold the page data.
-    fn verify_regions(
-        &self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-    ) -> Result<bool, FlashError> {
-        progress.started_verifying();
-
-        let purpose = Purpose::Verify {
-            ignore_fills: false,
-        };
-        let result =
-            compare::run(session, CompareTarget::Host(self), progress, purpose).map(|outcomes| {
-                outcomes
-                    .iter()
-                    .flatten()
-                    .all(|outcome| *outcome == CompareOutcome::Match)
-            });
-
-        match result.is_ok() {
-            true => progress.finished_verifying(),
-            false => progress.failed_verifying(),
-        }
-
-        result
     }
 
     /// Returns `true` if a download can skip single sectors.
     pub(super) fn can_skip_sectors(&self) -> bool {
         self.flash_sequence.supports_sector_erase()
-    }
-
-    /// Compares the flash with the image, and removes the sectors that need no change.
-    pub(super) fn compare_and_prune(
-        &mut self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        keep_unwritten_bytes: bool,
-    ) -> Result<(), FlashError> {
-        let purpose = Purpose::Prune {
-            keep_unwritten_bytes,
-        };
-
-        progress.started(purpose.progress());
-        let result = self.run_with_flash(session, |this, session| {
-            compare::run(session, CompareTarget::Host(this), progress, purpose)
-        });
-        match result.is_ok() {
-            true => progress.finished(purpose.progress()),
-            false => progress.failed(purpose.progress()),
-        }
-
-        for (region, outcomes) in self.regions.iter_mut().zip(result?) {
-            region.data.layout_mut().prune(&outcomes);
-        }
-
-        Ok(())
     }
 }
 

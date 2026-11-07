@@ -5,7 +5,6 @@ use zerocopy::IntoBytes;
 use super::{FlashAlgorithm, FlashBuilder, FlashError, FlashPage, FlashProgress};
 use crate::config::NvmRegion;
 use crate::error::Error;
-use crate::flashing::compare::{self, CompareOutcome, CompareTarget, Purpose};
 use crate::flashing::encoder::FlashEncoder;
 use crate::flashing::{FlashLayout, FlashSector};
 use crate::memory::MemoryInterface;
@@ -433,7 +432,6 @@ impl Flasher {
         restore_unwritten_bytes: bool,
         enable_double_buffering: bool,
         skip_erasing: bool,
-        verify: bool,
     ) -> Result<(), FlashError> {
         tracing::debug!("Starting program procedure.");
 
@@ -454,14 +452,7 @@ impl Flasher {
         }
 
         // Flash all necessary pages.
-        self.do_program(session, progress, enable_double_buffering)?;
-
-        // The fills now hold the restored data or the erased value, so the full page must match.
-        if verify && !self.verify(session, progress, false)? {
-            return Err(FlashError::Verify);
-        }
-
-        Ok(())
+        self.do_program(session, progress, enable_double_buffering)
     }
 
     /// Fills all the unwritten bytes in `layout`.
@@ -520,67 +511,6 @@ impl Flasher {
         }
 
         result
-    }
-
-    /// Verifies all the to-be-written bytes of this flasher.
-    pub(super) fn verify(
-        &mut self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        ignore_filled: bool,
-    ) -> Result<bool, FlashError> {
-        progress.started_verifying();
-
-        let result = self.do_verify(session, progress, ignore_filled);
-
-        match result.is_ok() {
-            true => progress.finished_verifying(),
-            false => progress.failed_verifying(),
-        }
-
-        result
-    }
-
-    fn do_verify(
-        &mut self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        ignore_filled: bool,
-    ) -> Result<bool, FlashError> {
-        let purpose = Purpose::Verify {
-            ignore_fills: ignore_filled,
-        };
-        let outcomes = compare::run(session, CompareTarget::Algorithm(self), progress, purpose)?;
-
-        Ok(outcomes
-            .iter()
-            .flatten()
-            .all(|outcome| *outcome == CompareOutcome::Match))
-    }
-
-    /// Compares the flash with the image, and removes the sectors that need no change.
-    pub(super) fn compare_and_prune(
-        &mut self,
-        session: &mut Session,
-        progress: &mut FlashProgress<'_>,
-        keep_unwritten_bytes: bool,
-    ) -> Result<(), FlashError> {
-        let purpose = Purpose::Prune {
-            keep_unwritten_bytes,
-        };
-
-        progress.started(purpose.progress());
-        let result = compare::run(session, CompareTarget::Algorithm(self), progress, purpose);
-        match result.is_ok() {
-            true => progress.finished(purpose.progress()),
-            false => progress.failed(purpose.progress()),
-        }
-
-        for (region, outcomes) in self.regions.iter_mut().zip(result?) {
-            region.data.layout_mut().prune(&outcomes);
-        }
-
-        Ok(())
     }
 
     /// Perform an erase of all sectors given in `flash_layout`.

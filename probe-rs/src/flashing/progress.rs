@@ -104,11 +104,6 @@ impl<'a> FlashProgress<'a> {
         self.started(ProgressOperation::Program);
     }
 
-    /// Signal that the verifying procedure started.
-    pub(crate) fn started_verifying(&mut self) {
-        self.started(ProgressOperation::Verify);
-    }
-
     /// Signal that the sector erasing procedure has made progress.
     pub(super) fn sector_erased(&mut self, size: u64, time: Duration) {
         self.progressed(ProgressOperation::Erase, size, time);
@@ -139,11 +134,6 @@ impl<'a> FlashProgress<'a> {
         self.failed(ProgressOperation::Program);
     }
 
-    /// Signal that the verifying procedure failed.
-    pub(super) fn failed_verifying(&mut self) {
-        self.failed(ProgressOperation::Verify);
-    }
-
     /// Signal that the programming procedure completed successfully.
     pub(super) fn finished_programming(&mut self) {
         self.finished(ProgressOperation::Program);
@@ -157,11 +147,6 @@ impl<'a> FlashProgress<'a> {
     /// Signal that the filling procedure completed successfully.
     pub(super) fn finished_filling(&mut self) {
         self.finished(ProgressOperation::Fill);
-    }
-
-    /// Signal that the verifying procedure completed successfully.
-    pub(super) fn finished_verifying(&mut self) {
-        self.finished(ProgressOperation::Verify);
     }
 }
 
