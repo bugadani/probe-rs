@@ -164,7 +164,7 @@ impl FlashLayout {
     /// `outcomes` holds one result for each sector.
     ///
     /// - A matching sector loses its pages, fills and data blocks.
-    /// - An empty sector loses its erase and its fills.
+    /// - An empty sector loses its erase.
     /// - A page stays if one sector under it does not match. Then all its sectors are erased.
     pub(crate) fn prune(&mut self, outcomes: &[CompareOutcome]) {
         assert_eq!(outcomes.len(), self.sectors.len());
@@ -176,16 +176,12 @@ impl FlashLayout {
             .collect::<Vec<_>>();
         let outcomes = erase_under_kept_pages(&ranges, &self.pages, outcomes);
         log_prune(&ranges, &outcomes);
-        let sectors_with = |wanted: CompareOutcome| {
-            ranges
-                .iter()
-                .zip(&outcomes)
-                .filter(|(_, outcome)| **outcome == wanted)
-                .map(|(range, _)| range.clone())
-                .collect::<Vec<_>>()
-        };
-        let empty = sectors_with(CompareOutcome::Empty);
-        let matched = sectors_with(CompareOutcome::Match);
+        let matched = ranges
+            .iter()
+            .zip(&outcomes)
+            .filter(|(_, outcome)| **outcome == CompareOutcome::Match)
+            .map(|(range, _)| range.clone())
+            .collect::<Vec<_>>();
 
         // The new index of each page that stays.
         let mut new_index = vec![None; self.pages.len()];
@@ -200,11 +196,11 @@ impl FlashLayout {
 
         self.fills
             .retain_mut(|fill| match new_index[fill.page_index] {
-                Some(index) if !empty.iter().any(|range| range.contains(&fill.address)) => {
+                Some(index) => {
                     fill.page_index = index;
                     true
                 }
-                _ => false,
+                None => false,
             });
 
         self.data_blocks = self
@@ -835,8 +831,8 @@ mod tests {
         assert_eq!(layout.sectors().len(), 1);
         assert_eq!(layout.sectors()[0].address(), 0x1000);
         assert_eq!(layout.pages().len(), 2);
-        // The fills of the empty sector go, as they hold the erased value already.
-        assert!(layout.fills().iter().all(|fill| fill.address() >= 0x1000));
+        // A compressed transfer leaves out the fills, and does not program them.
+        assert!(layout.fills().iter().any(|fill| fill.address() < 0x1000));
         assert_eq!(layout.data_blocks().len(), 2);
     }
 
