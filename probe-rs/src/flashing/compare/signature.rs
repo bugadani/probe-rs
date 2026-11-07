@@ -5,7 +5,6 @@
 
 use std::time::Duration;
 
-use crc32fast::Hasher as Crc32;
 use md5::{Digest as _, Md5};
 
 use super::{CompareContext, CompareCost, CompareOutcome, FlashCompare, Outside, SectorCheck};
@@ -25,31 +24,17 @@ pub(crate) struct SignatureHash {
 }
 
 /// The known signature algorithms, in preference order.
-pub(crate) const HASHES: &[SignatureHash] = &[
-    SignatureHash {
-        name: "md5",
-        size: 16,
-        compute: |chunks| {
-            let mut hasher = Md5::new();
-            for chunk in chunks {
-                hasher.update(chunk);
-            }
-            hasher.finalize().to_vec()
-        },
+pub(crate) const HASHES: &[SignatureHash] = &[SignatureHash {
+    name: "md5",
+    size: 16,
+    compute: |chunks| {
+        let mut hasher = Md5::new();
+        for chunk in chunks {
+            hasher.update(chunk);
+        }
+        hasher.finalize().to_vec()
     },
-    SignatureHash {
-        name: "crc32",
-        size: 4,
-        compute: |chunks| {
-            // CRC-32/ISO-HDLC, stored little-endian.
-            let mut hasher = Crc32::new();
-            for chunk in chunks {
-                hasher.update(chunk);
-            }
-            hasher.finalize().to_le_bytes().to_vec()
-        },
-    },
-];
+}];
 
 /// The prefix of a signature function in the vendor function map.
 const FUNCTION_PREFIX: &str = "Signatures_";
@@ -317,14 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn crc32_check_value() {
-        assert_eq!(
-            (hash("crc32").compute)(&[b"1234", b"56789"]),
-            0xCBF4_3926u32.to_le_bytes()
-        );
-    }
-
-    #[test]
     fn md5_test_vector() {
         // RFC 1321, "abc".
         assert_eq!(
@@ -338,27 +315,23 @@ mod tests {
 
     #[test]
     fn table_stride() {
-        assert_eq!(SignatureTable::stride(hash("crc32")), 16);
         assert_eq!(SignatureTable::stride(hash("md5")), 28);
     }
 
     #[test]
     fn table_round_trip() {
-        let crc32 = hash("crc32");
-        let mut table = SignatureTable::encode(crc32, &[(0x1000, 0x400), (0x2000, 0x800)]);
+        let md5 = hash("md5");
+        let mut table = SignatureTable::encode(md5, &[(0x1000, 0x400), (0x2000, 0x800)]);
         assert_eq!(&table[0..8], &[0x00, 0x10, 0, 0, 0x00, 0x04, 0, 0]);
 
         // The algorithm signs the first entry, and finds the second one empty.
         table[8..12].copy_from_slice(&STATUS_SIGNED.to_le_bytes());
-        table[12..16].copy_from_slice(&[1, 2, 3, 4]);
-        table[24..28].copy_from_slice(&STATUS_EMPTY.to_le_bytes());
+        table[12..28].copy_from_slice(&[7; 16]);
+        table[36..40].copy_from_slice(&STATUS_EMPTY.to_le_bytes());
 
         assert_eq!(
-            SignatureTable::decode(crc32, &table),
-            vec![
-                (STATUS_SIGNED, vec![1, 2, 3, 4]),
-                (STATUS_EMPTY, vec![0; 4])
-            ]
+            SignatureTable::decode(md5, &table),
+            vec![(STATUS_SIGNED, vec![7; 16]), (STATUS_EMPTY, vec![0; 16])]
         );
     }
 

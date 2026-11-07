@@ -3064,7 +3064,6 @@ dependencies = [
  "bitvec",
  "clap",
  "cobs 0.5.1",
- "crc32fast",
  "docsplay",
  "dunce",
  "env_logger",
