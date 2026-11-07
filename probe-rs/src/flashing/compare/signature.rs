@@ -135,48 +135,24 @@ impl AlgorithmSignatures {
     fn entries(&self, checks: &[SectorCheck<'_>], erased: u8) -> Vec<Entry> {
         let mut entries = Vec::new();
         for (idx, check) in checks.iter().enumerate() {
-            let mut check_entries = Vec::new();
-            match check.outside {
-                Outside::Erased(erased) => {
-                    let content = check.sector_content().unwrap_or_default();
-                    check_entries.push((
-                        check.sector.start,
-                        content.len(),
-                        (self.hash.compute)(&[&content]),
-                        true,
-                        content.iter().all(|&byte| byte == erased),
-                    ));
-                }
-                Outside::Any => {
-                    for &(address, data) in &check.expected {
-                        check_entries.push((
-                            address,
-                            data.len(),
-                            (self.hash.compute)(&[data]),
-                            false,
-                            data.iter().all(|&byte| byte == erased),
-                        ));
-                    }
-                }
-            }
+            let full_sector = matches!(check.outside, Outside::Erased(_));
+            let ranges = check.contiguous_ranges();
 
-            let fits = check_entries.iter().all(|&(address, size, ..)| {
-                u32::try_from(address).is_ok() && u32::try_from(size).is_ok()
+            let fits = ranges.iter().all(|(address, data)| {
+                u32::try_from(*address).is_ok() && u32::try_from(data.len()).is_ok()
             });
             if !fits {
                 continue;
             }
 
-            entries.extend(check_entries.into_iter().map(
-                |(address, size, expected, full_sector, expected_erased)| Entry {
-                    check: idx,
-                    address: address as u32,
-                    size: size as u32,
-                    expected,
-                    full_sector,
-                    expected_erased,
-                },
-            ));
+            entries.extend(ranges.into_iter().map(|(address, data)| Entry {
+                check: idx,
+                address: address as u32,
+                size: data.len() as u32,
+                expected: (self.hash.compute)(&[&data]),
+                full_sector,
+                expected_erased: data.iter().all(|&byte| byte == erased),
+            }));
         }
         entries
     }
@@ -395,7 +371,7 @@ mod tests {
         let erased_data = [0xFF; 0x400];
         let check = SectorCheck::new(
             0x0..0x1000,
-            vec![(0x0, &erased_data[..]), (0x400, &[1, 2])],
+            vec![(0x0, &erased_data[..]), (0x800, &[1, 2])],
             Outside::Any,
         );
 
