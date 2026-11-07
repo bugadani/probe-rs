@@ -593,11 +593,19 @@ impl Flasher {
         Ok(())
     }
 
-    /// Returns the compare backends of this flasher, in the order to try them.
-    fn compare_chain(&self, session: &Session) -> Vec<Arc<dyn FlashCompare>> {
+    /// Returns the compare backends of this flasher for `operation`, in the order to try them.
+    fn compare_chain(
+        &self,
+        session: &Session,
+        operation: ProgressOperation,
+    ) -> Vec<Arc<dyn FlashCompare>> {
         let mut chain: Vec<Arc<dyn FlashCompare>> = Vec::new();
 
-        if let Some(backend) = AlgorithmSignatures::new(&self.flash_algorithm) {
+        // A verify compares the data, so that it does not depend on the signature function that
+        // selected the sectors to program.
+        if operation == ProgressOperation::Compare
+            && let Some(backend) = AlgorithmSignatures::new(&self.flash_algorithm)
+        {
             chain.push(Arc::new(backend));
         }
         if let Some(backend) = session.target().debug_sequence.flash_compare() {
@@ -637,7 +645,7 @@ impl Flasher {
             .map(|(region, layout)| RegionCompare::new(region, layout, outside, ignore_fills))
             .collect::<Vec<_>>();
 
-        let chain = self.compare_chain(session);
+        let chain = self.compare_chain(session, operation);
         let context = CompareContext::new(session, self);
         run_chain(&chain, regions, context, progress, operation)
     }
