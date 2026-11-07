@@ -18,12 +18,9 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::Error;
-use crate::architecture::arm::ArmError;
-use crate::architecture::riscv::communication_interface::RiscvError;
-use crate::architecture::xtensa::communication_interface::XtensaError;
 use crate::config::NvmRegion;
 use crate::flashing::{FlashError, FlashLayout, FlashProgress, ProgressOperation};
+use crate::probe::DebugProbeError;
 
 /// One erase sector, and the content that it must hold.
 #[derive(Debug)]
@@ -259,25 +256,25 @@ pub(crate) fn run_chain(
     Ok(regions.into_iter().map(RegionCompare::finish).collect())
 }
 
-/// Returns `true` if the cause of `error` is the probe.
-fn is_probe_error(error: &FlashError) -> bool {
+/// Returns `true` if `error` or one of its sources satisfies `predicate`.
+fn has_cause(
+    error: &FlashError,
+    predicate: impl Fn(&(dyn std::error::Error + 'static)) -> bool,
+) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(error) = current {
-        if matches!(
-            error.downcast_ref::<Error>(),
-            Some(
-                Error::Probe(_)
-                    | Error::Arm(ArmError::Probe(_))
-                    | Error::Riscv(RiscvError::DebugProbe(_))
-                    | Error::Xtensa(XtensaError::DebugProbe(_))
-            )
-        ) {
+        if predicate(error) {
             return true;
         }
         current = error.source();
     }
 
     false
+}
+
+/// Returns `true` if the cause of `error` is the probe.
+fn is_probe_error(error: &FlashError) -> bool {
+    has_cause(error, |cause| cause.is::<DebugProbeError>())
 }
 
 /// The checks of one region, while the backends run.
@@ -441,8 +438,11 @@ mod tests {
     use probe_rs_target::{FlashProperties, SectorDescription};
 
     use super::*;
+    use crate::Error;
+    use crate::architecture::arm::ArmError;
+    use crate::architecture::riscv::communication_interface::RiscvError;
+    use crate::architecture::xtensa::communication_interface::XtensaError;
     use crate::flashing::FlashBuilder;
-    use crate::probe::DebugProbeError;
 
     const ERASED: u8 = 0xFF;
 
@@ -675,6 +675,9 @@ mod tests {
             Error::Arm(ArmError::Probe(DebugProbeError::TargetNotFound)),
             Error::Riscv(RiscvError::DebugProbe(DebugProbeError::TargetNotFound)),
             Error::Xtensa(XtensaError::DebugProbe(DebugProbeError::TargetNotFound)),
+            Error::Arm(ArmError::NoTargetResponse {
+                source: Box::new(ArmError::Probe(DebugProbeError::TargetNotFound)),
+            }),
         ];
         for error in probe_errors {
             let mut batch = [SectorCheck::new(0..1, vec![], Outside::Any)];
