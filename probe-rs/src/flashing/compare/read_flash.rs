@@ -29,7 +29,7 @@ impl FlashCompare for ReadFlashCompare {
             let outcome = compare_after_blank_check(&mut active, check, |active| {
                 check.compare_read_back(|address, data| active.read_flash(address, data))
             })?;
-            check.outcome = Some(outcome);
+            check.set_outcome(outcome);
         }
 
         Ok(())

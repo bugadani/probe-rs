@@ -149,7 +149,9 @@ impl AlgorithmSignatures {
             if of_check.peek().is_none() {
                 continue;
             }
-            check.outcome = check_outcome(of_check);
+            if let Some(outcome) = check_outcome(of_check) {
+                check.set_outcome(outcome);
+            }
         }
 
         Ok(())
@@ -159,7 +161,7 @@ impl AlgorithmSignatures {
     fn entries(&self, checks: &[SectorCheck<'_>], erased: u8) -> Vec<Entry> {
         let mut entries = Vec::new();
         for (idx, check) in checks.iter().enumerate() {
-            let full_sector = matches!(check.outside, Outside::Erased(_));
+            let full_sector = matches!(check.outside(), Outside::Erased(_));
             let ranges = check.contiguous_ranges();
 
             let fits = ranges.iter().all(|(address, data)| {

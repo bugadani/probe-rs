@@ -471,11 +471,11 @@ fn run_signature_check(
         "{}: Signature ({hash}) of {:#010x?}: {:?} in {:?}",
         "Test".green(),
         sector,
-        check.outcome,
+        check.outcome(),
         started.elapsed()
     );
 
-    match (expected, check.outcome) {
+    match (expected, check.outcome()) {
         (expected, Some(outcome)) if expected == outcome => {}
         (CompareOutcome::Empty, Some(CompareOutcome::Mismatch)) => {
             println!(

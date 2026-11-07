@@ -30,7 +30,7 @@ impl FlashCompare for ReadBackCore {
             .is_some_and(|algorithm| algorithm.pc_blank_check.is_some())
             && checks
                 .iter()
-                .any(|check| matches!(check.outside, Outside::Erased(_)));
+                .any(|check| matches!(check.outside(), Outside::Erased(_)));
 
         // `context.core()` calls `UnInit`, so `BlankCheck` and the read share the algorithm.
         if uses_blank_check {
@@ -39,7 +39,7 @@ impl FlashCompare for ReadBackCore {
                 let outcome = compare_after_blank_check(&mut active, check, |active| {
                     check.compare_read_back(|address, data| active.read_flash(address, data))
                 })?;
-                check.outcome = Some(outcome);
+                check.set_outcome(outcome);
             }
 
             return Ok(());
@@ -50,7 +50,7 @@ impl FlashCompare for ReadBackCore {
             let outcome = check.compare_read_back(|address, data| {
                 core.read(address, data).map_err(FlashError::Core)
             })?;
-            check.outcome = Some(outcome);
+            check.set_outcome(outcome);
         }
 
         Ok(())

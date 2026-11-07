@@ -10,7 +10,7 @@ pub(super) fn compare_after_blank_check<'op, 'p>(
     check: &SectorCheck<'_>,
     compare: impl FnOnce(&mut ActiveFlasher<'op, 'p, Verify>) -> Result<CompareOutcome, FlashError>,
 ) -> Result<CompareOutcome, FlashError> {
-    let Outside::Erased(erased) = check.outside else {
+    let Outside::Erased(erased) = check.outside() else {
         return compare(active);
     };
     if active.flash_algorithm().pc_blank_check.is_none() {
@@ -18,10 +18,10 @@ pub(super) fn compare_after_blank_check<'op, 'p>(
     }
 
     // On some targets, a read of erased flash faults.
-    let size = check.sector.end - check.sector.start;
-    if active.is_blank(check.sector.start, size)? {
+    let sector = check.sector();
+    if active.is_blank(sector.start, sector.end - sector.start)? {
         let expected_erased = check
-            .expected
+            .expected()
             .iter()
             .all(|(_, data)| data.iter().all(|&byte| byte == erased));
         let outcome = if expected_erased {

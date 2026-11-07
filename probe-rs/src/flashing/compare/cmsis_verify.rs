@@ -44,7 +44,7 @@ impl FlashCompare for CmsisVerifyCompare {
             let outcome = compare_after_blank_check(&mut active, check, |active| {
                 Self::compare_check(active, check)
             })?;
-            check.outcome = Some(outcome);
+            check.set_outcome(outcome);
         }
 
         Ok(())
